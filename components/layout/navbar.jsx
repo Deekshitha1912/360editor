@@ -11,16 +11,32 @@ import {
     DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { LogOutIcon } from "lucide-react";
 
 export default function DashboardNavbar() {
     const [user, setUser] = useState(null);
+    const [firstName, setFirstName] = useState("");
 
     useEffect(() => {
-        const getUser = async () => {
-            const { data } = await supabase.auth.getUser();
-            setUser(data.user);
+        const load = async () => {
+            const { data: auth } = await supabase.auth.getUser();
+            const u = auth?.user;
+            setUser(u);
+
+            if (!u?.id) return;
+
+            const { data: profile } = await supabase
+                .from("profiles")
+                .select("first_name")
+                .eq("id", u.id)
+                .single();
+
+            if (profile?.first_name) {
+                setFirstName(profile.first_name);
+            }
         };
-        getUser();
+
+        load();
     }, []);
 
     const handleLogout = async () => {
@@ -28,7 +44,8 @@ export default function DashboardNavbar() {
         window.location.href = "/login";
     };
 
-    const fullName =
+    const displayName =
+        firstName ||
         user?.user_metadata?.full_name ||
         user?.email?.split("@")[0] ||
         "User";
@@ -48,16 +65,16 @@ export default function DashboardNavbar() {
                     <Avatar className="cursor-pointer border">
                         <AvatarImage src="" alt="avatar" />
                         <AvatarFallback>
-                            {fullName[0]?.toUpperCase()}
+                            {displayName?.[0]?.toUpperCase()}
                         </AvatarFallback>
                     </Avatar>
                 </DropdownMenuTrigger>
 
                 <DropdownMenuContent className="w-48 mr-4">
-                    <DropdownMenuLabel>{fullName}</DropdownMenuLabel>
+                    <DropdownMenuLabel>{displayName}</DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={handleLogout}>
-                        Logout
+                        <LogOutIcon /> Logout
                     </DropdownMenuItem>
                 </DropdownMenuContent>
             </DropdownMenu>
