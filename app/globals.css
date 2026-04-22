@@ -121,3 +121,24 @@
   }
 }
 
+.direction-hotspot {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  display: flex;
+  height: 58px;
+  justify-content: center;
+  min-width: 58px;
+  padding: 0;
+  position: relative;
+}
+
+.direction-hotspot img {
+  display: block;
+  filter: drop-shadow(0 8px 14px rgb(0 0 0 / 35%));
+  height: 58px;
+  object-fit: contain;
+  pointer-events: none;
+  width: 58px;
+}

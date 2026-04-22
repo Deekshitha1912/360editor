@@ -11,7 +11,7 @@ import {
     DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { LogOutIcon } from "lucide-react";
+import { Boxes, LogOutIcon } from "lucide-react";
 
 export default function DashboardNavbar() {
     const [user, setUser] = useState(null);
@@ -51,15 +51,18 @@ export default function DashboardNavbar() {
         "User";
 
     return (
-        <div className="w-full flex items-center justify-between px-6 py-4 border-b bg-white shadow-sm">
-
-            {/* Left: Logo */}
-            <div className="flex items-center space-x-2">
-                <span className="text-xl font-bold">MyLogo</span>
-                <span className="text-gray-500">/ 360Editor</span>
+        <div className="sticky top-0 z-20 w-full border-b bg-white/95 px-6 py-4 shadow-sm backdrop-blur">
+            <div className="mx-auto flex max-w-6xl items-center justify-between">
+            <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-md bg-black text-white">
+                    <Boxes className="size-5" />
+                </div>
+                <div>
+                    <span className="block text-lg font-semibold leading-none">360Editor</span>
+                    <span className="text-sm text-muted-foreground">Dashboard</span>
+                </div>
             </div>
 
-            {/* Right: Avatar dropdown */}
             <DropdownMenu>
                 <DropdownMenuTrigger>
                     <Avatar className="cursor-pointer border">
@@ -78,6 +81,7 @@ export default function DashboardNavbar() {
                     </DropdownMenuItem>
                 </DropdownMenuContent>
             </DropdownMenu>
+            </div>
         </div>
     );
 }

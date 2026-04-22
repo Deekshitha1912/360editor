@@ -1,100 +1,224 @@
-﻿"use client";
+"use client";
 
-import { useRef, useEffect, useState } from "react";
-import { db } from "@/lib/db";
-import {useEditor} from "@/context/editor_provider";
+import { useRef, useState } from "react";
+import { ImagePlus, Loader2, Trash2, UploadCloud } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import ConfirmationDialog from "@/components/ui/confirmation-dialog";
 
-export default function EditorLeft() {
+export default function EditorLeft({
+    photos,
+    activePhoto,
+    setActivePhoto,
+    uploadPhotos,
+    deletePhoto,
+    uploading,
+    loadingProject,
+}) {
     const fileInputRef = useRef(null);
-    const { photos, setPhotos, activePhoto, setActivePhoto } = useEditor();
-    const [thumbs, setThumbs] = useState({}); // { id: url }
+    const [photoToDelete, setPhotoToDelete] = useState(null);
+    const [pendingFiles, setPendingFiles] = useState([]);
+    const [pendingNames, setPendingNames] = useState([]);
 
     const handleImport = () => fileInputRef.current?.click();
 
-    const handleFilesSelected = async (e) => {
-        let files = Array.from(e.target.files);
+    const handleFilesSelected = (event) => {
+        let files = Array.from(event.target.files || []);
+        event.target.value = "";
 
-        if (photos.length + files.length > 30)
+        if (!files.length) return;
+
+        if (photos.length + files.length > 30) {
             files = files.slice(0, 30 - photos.length);
-
-        const metaData = [];
-
-        for (const file of files) {
-            const id = crypto.randomUUID();
-            await db.store(id, file);
-            metaData.push({ id, name: file.name });
         }
 
-        setPhotos([...photos, ...metaData]);
+        setPendingFiles(files);
+        setPendingNames(files.map((file) => file.name.replace(/\.[^/.]+$/, "")));
     };
 
-    const deletePhoto = (id) => {
-        setPhotos((prev) => prev.filter((p) => p.id !== id));
+    const closeUploadDialog = () => {
+        if (uploading) return;
+        setPendingFiles([]);
+        setPendingNames([]);
+    };
 
-        setThumbs((prev) => {
-            const cache = { ...prev };
-            delete cache[id];
-            return cache;
+    const confirmUpload = async () => {
+        const names = pendingNames.map((name, index) => {
+            const fallback = pendingFiles[index]?.name.replace(/\.[^/.]+$/, "") || "Image";
+            return name.trim() || fallback;
         });
 
-        if (activePhoto === id) {
-            setActivePhoto(null);
+        await uploadPhotos(pendingFiles, names);
+        closeUploadDialog();
+    };
+
+    const handleDragStart = (id, event) => {
+        event.dataTransfer.setData("photo-id", id);
+    };
+
+    const handleConfirmDelete = async (yes) => {
+        if (yes && photoToDelete) {
+            await deletePhoto(photoToDelete.id);
         }
-        const ls = JSON.parse(localStorage.getItem("photos") || "[]").filter((p) => p.id !== id);
-        localStorage.setItem("photos", JSON.stringify(ls));
-        // refresh pannellum / UI safely
-        setTimeout(() => {
-            window.location.reload();
-        }, 80);
-    };
 
-    const handleDragStart = (id, e) => {
-        e.dataTransfer.setData("photo-id", id);
+        setPhotoToDelete(null);
     };
-
-    // Load preview thumbnails (only for left panel)
-    useEffect(() => {
-        photos.forEach((p) => {
-            if (!thumbs[p.id]) {
-                db.get(p.id).then((blob) => {
-                    const url = URL.createObjectURL(blob);
-                    setThumbs((prev) => ({ ...prev, [p.id]: url }));
-                });
-            }
-        });
-    }, [photos]);
 
     return (
-        <div className="w-64 border-r p-4">
-            <button onClick={handleImport} className="w-full py-3 bg-black text-white rounded-lg">
-                Import Photos
-            </button>
+        <>
+            <aside className="flex h-full w-80 shrink-0 flex-col border-r bg-white">
+                <div className="border-b p-5">
+                    <div className="mb-4 flex items-center gap-3">
+                        <div className="flex size-10 items-center justify-center rounded-md bg-black text-white">
+                            <ImagePlus className="size-5" />
+                        </div>
+                        <div>
+                            <h2 className="text-base font-semibold">Image Library</h2>
+                            <p className="text-sm text-muted-foreground">
+                                {photos.length}/30 panoramas
+                            </p>
+                        </div>
+                    </div>
 
-            <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={handleFilesSelected}
+                    <Button
+                        onClick={handleImport}
+                        disabled={uploading || loadingProject || photos.length >= 30}
+                        className="h-11 w-full"
+                    >
+                        {uploading ? (
+                            <Loader2 className="animate-spin" />
+                        ) : (
+                            <UploadCloud />
+                        )}
+                        {uploading ? "Uploading..." : "Import images"}
+                    </Button>
+
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={handleFilesSelected}
+                    />
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4">
+                    {!photos.length && (
+                        <div className="flex h-full min-h-80 flex-col items-center justify-center rounded-md border border-dashed bg-slate-50 p-6 text-center">
+                            <UploadCloud className="mb-3 size-8 text-slate-400" />
+                            <p className="text-sm font-medium">No images imported</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                                Upload equirectangular images, then drag one into the viewer.
+                            </p>
+                        </div>
+                    )}
+
+                    <div className="space-y-3">
+                        {photos.map((photo) => (
+                            <div
+                                key={photo.id}
+                                draggable
+                                onDragStart={(event) => handleDragStart(photo.id, event)}
+                                onClick={() => setActivePhoto(photo.id)}
+                                className={`group relative cursor-grab overflow-hidden rounded-md border bg-white shadow-sm transition hover:border-slate-400 ${
+                                    activePhoto === photo.id ? "border-black ring-2 ring-black/10" : ""
+                                }`}
+                            >
+                                {photo.url ? (
+                                    <img
+                                        src={photo.url}
+                                        alt={photo.name}
+                                        className="h-32 w-full object-cover"
+                                    />
+                                ) : (
+                                    <div className="flex h-32 items-center justify-center bg-slate-100 text-sm text-muted-foreground">
+                                        Preview unavailable
+                                    </div>
+                                )}
+
+                                <div className="flex items-center justify-between gap-2 p-3">
+                                    <div className="min-w-0">
+                                        <p className="truncate text-sm font-medium">{photo.name}</p>
+                                        <p className="truncate text-xs text-muted-foreground">
+                                            {photo.original_name || "Supabase Storage"}
+                                        </p>
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        className="shrink-0 text-red-600 hover:bg-red-50 hover:text-red-700"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            setPhotoToDelete(photo);
+                                        }}
+                                    >
+                                        <Trash2 />
+                                        <span className="sr-only">Delete image</span>
+                                    </Button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </aside>
+
+            <ConfirmationDialog
+                open={Boolean(photoToDelete)}
+                setOpen={(open) => {
+                    if (!open) setPhotoToDelete(null);
+                }}
+                title="Delete image?"
+                message={`Delete "${photoToDelete?.name || "this image"}" from this project and Supabase Storage?`}
+                onConfirm={handleConfirmDelete}
+                requireFeedback={false}
             />
 
-            <div className="mt-6 space-y-2 overflow-y-auto max-h-[80vh]">
-                {photos.map((p) => (
-                    <div key={p.id} draggable onDragStart={(e) => handleDragStart(p.id, e)} className="relative">
-                        {thumbs[p.id] && (
-                            <img src={thumbs[p.id]} className="w-full rounded shadow" />
-                        )}
+            <Dialog open={Boolean(pendingFiles.length)} onOpenChange={(open) => !open && closeUploadDialog()}>
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Name images before upload</DialogTitle>
+                    </DialogHeader>
 
-                        <button
-                            onClick={() => deletePhoto(p.id)}
-                            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded"
-                        >
-                            X
-                        </button>
+                    <div className="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
+                        {pendingFiles.map((file, index) => (
+                            <div key={`${file.name}-${index}`} className="space-y-2 rounded-md border p-3">
+                                <Label htmlFor={`image-name-${index}`}>Image name</Label>
+                                <Input
+                                    id={`image-name-${index}`}
+                                    value={pendingNames[index] || ""}
+                                    disabled={uploading}
+                                    onChange={(event) => {
+                                        const nextNames = [...pendingNames];
+                                        nextNames[index] = event.target.value;
+                                        setPendingNames(nextNames);
+                                    }}
+                                />
+                                <p className="truncate text-xs text-muted-foreground">{file.name}</p>
+                            </div>
+                        ))}
                     </div>
-                ))}
-            </div>
-        </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={closeUploadDialog} disabled={uploading}>
+                            Cancel
+                        </Button>
+                        <Button onClick={confirmUpload} disabled={uploading}>
+                            {uploading && <Loader2 className="animate-spin" />}
+                            Upload images
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </>
     );
 }

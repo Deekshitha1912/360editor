@@ -1,16 +1,17 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card";
-import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { Boxes, UserPlus } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { supabase } from "@/lib/supabase";
 
 export default function SignupPage() {
     const router = useRouter();
-
     const [firstName, setFirstName] = useState("");
     const [lastName, setLastName] = useState("");
     const [email, setEmail] = useState("");
@@ -21,91 +22,147 @@ export default function SignupPage() {
         e.preventDefault();
         setLoading(true);
 
-        // 1. Create auth user
-        const { data, error } = await supabase.auth.signUp({
-            email,
-            password,
-            email_confirm: true,
+        const signupResponse = await fetch("/api/signup", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                firstName,
+                lastName,
+                email,
+                password,
+            }),
         });
 
-        if (error) {
-            toast.error(error.message);
+        const signupResult = await signupResponse.json();
+
+        if (!signupResponse.ok) {
+            toast.error(signupResult.error || "Signup failed.");
             setLoading(false);
             return;
         }
 
-        const user = data.user;
-
-        // 2. Insert into profiles table
-        const { error: profileError } = await supabase.from("profiles").insert({
-            id: user.id,
-            first_name: firstName,
-            last_name: lastName,
-            email: email,
+        const loginResponse = await fetch("/api/login", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                email,
+                password,
+            }),
         });
 
-        if (profileError) {
-            toast.error(profileError.message);
+        const loginResult = await loginResponse.json();
+
+        if (!loginResponse.ok) {
+            toast.error(loginResult.error || "Account created, but login failed.");
+            setLoading(false);
+            return;
+        }
+
+        const { error: sessionError } = await supabase.auth.setSession({
+            access_token: loginResult.session.access_token,
+            refresh_token: loginResult.session.refresh_token,
+        });
+
+        if (sessionError) {
+            toast.error(sessionError.message);
             setLoading(false);
             return;
         }
 
         toast.success("Account created!");
-
-        // 3. Supabase already logs user in on signUp (if email confirmation disabled)
         router.push("/dashboard");
-
         setLoading(false);
     };
 
     return (
-        <div className="min-h-screen grid grid-cols-1 md:grid-cols-2">
-            <div className="flex items-center justify-center bg-gray-100">
-                <h1 className="text-4xl font-bold">MyLogo</h1>
+        <div className="grid min-h-screen grid-cols-1 bg-slate-50 lg:grid-cols-[1fr_520px]">
+            <div className="hidden bg-slate-950 p-10 text-white lg:flex lg:flex-col lg:justify-between">
+                <div className="flex items-center gap-3">
+                    <div className="flex size-10 items-center justify-center rounded-md bg-white text-slate-950">
+                        <Boxes className="size-5" />
+                    </div>
+                    <div>
+                        <p className="text-lg font-semibold">360Editor</p>
+                        <p className="text-sm text-white/60">Panorama project studio</p>
+                    </div>
+                </div>
+
+                <div>
+                    <h1 className="max-w-xl text-5xl font-semibold tracking-tight">
+                        Create a workspace for immersive image projects.
+                    </h1>
+                    <p className="mt-5 max-w-lg text-base leading-7 text-white/65">
+                        Store imports by user and project, then inspect each image in a 360 viewer.
+                    </p>
+                </div>
             </div>
 
             <div className="flex items-center justify-center p-6">
-                <Card className="w-full max-w-md">
+                <Card className="w-full max-w-md border bg-white shadow-sm">
                     <CardHeader>
-                        <CardTitle>Sign Up</CardTitle>
+                        <div className="mb-2 flex size-11 items-center justify-center rounded-md bg-black text-white">
+                            <UserPlus className="size-5" />
+                        </div>
+                        <CardTitle className="text-2xl">Create account</CardTitle>
+                        <p className="text-sm text-muted-foreground">
+                            Set up your 360Editor workspace.
+                        </p>
                     </CardHeader>
 
                     <CardContent>
                         <form onSubmit={handleSignup} className="space-y-4">
-                            <Input
-                                placeholder="First Name"
-                                value={firstName}
-                                disabled={loading}
-                                onChange={(e) => setFirstName(e.target.value)}
-                            />
+                            <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="space-y-2">
+                                    <Label>First name</Label>
+                                    <Input
+                                        placeholder="First name"
+                                        value={firstName}
+                                        disabled={loading}
+                                        onChange={(e) => setFirstName(e.target.value)}
+                                    />
+                                </div>
 
-                            <Input
-                                placeholder="Last Name"
-                                value={lastName}
-                                disabled={loading}
-                                onChange={(e) => setLastName(e.target.value)}
-                            />
+                                <div className="space-y-2">
+                                    <Label>Last name</Label>
+                                    <Input
+                                        placeholder="Last name"
+                                        value={lastName}
+                                        disabled={loading}
+                                        onChange={(e) => setLastName(e.target.value)}
+                                    />
+                                </div>
+                            </div>
 
-                            <Input
-                                type="email"
-                                placeholder="Email"
-                                value={email}
-                                disabled={loading}
-                                onChange={(e) => setEmail(e.target.value)}
-                            />
+                            <div className="space-y-2">
+                                <Label>Email</Label>
+                                <Input
+                                    type="email"
+                                    placeholder="you@example.com"
+                                    value={email}
+                                    disabled={loading}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                />
+                            </div>
 
-                            <Input
-                                type="password"
-                                placeholder="Password"
-                                value={password}
-                                disabled={loading}
-                                onChange={(e) => setPassword(e.target.value)}
-                            />
+                            <div className="space-y-2">
+                                <Label>Password</Label>
+                                <Input
+                                    type="password"
+                                    placeholder="Create a password"
+                                    value={password}
+                                    disabled={loading}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                />
+                            </div>
 
                             <Button
                                 type="submit"
-                                className="w-full"
-                                disabled={loading || !email || !password}
+                                className="h-11 w-full"
+                                disabled={loading || !firstName || !email || !password}
                             >
                                 {loading ? "Signing up..." : "Sign Up"}
                             </Button>
