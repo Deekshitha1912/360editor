@@ -1,68 +1,39 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+﻿// app/api/signup/route.js — profile creation now handled by the DB trigger
+import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase-server'
 
-export async function POST(request) {
+export async function POST(req) {
     try {
-        const body = await request.json();
-        const firstName = body?.firstName?.trim();
-        const lastName = body?.lastName?.trim();
-        const email = body?.email?.trim().toLowerCase();
-        const password = body?.password;
+        const { firstName, lastName, email, password } = await req.json()
 
-        if (!firstName || !email || !password) {
-            return NextResponse.json(
-                { error: "First name, email, and password are required." },
-                { status: 400 }
-            );
+        if (!email || !password || !firstName)
+            return NextResponse.json({ error: 'First name, email, and password are required.' }, { status: 400 })
+        if (password.length < 8)
+            return NextResponse.json({ error: 'Password must be at least 8 characters.' }, { status: 400 })
+
+        const trimmedEmail = email.trim().toLowerCase()
+        const trimmedFirst = firstName.trim()
+        const trimmedLast  = (lastName ?? '').trim()
+
+        const supabase = await createClient()
+
+        const { data: authData, error: authErr } = await supabase.auth.signUp({
+            email: trimmedEmail,
+            password,
+            options: { data: { first_name: trimmedFirst, last_name: trimmedLast } },
+        })
+
+        if (authErr) {
+            if (authErr.message.toLowerCase().includes('already registered'))
+                return NextResponse.json({ error: 'already_exists' }, { status: 409 })
+            return NextResponse.json({ error: authErr.message }, { status: 400 })
         }
+        if (!authData?.user?.id)
+            return NextResponse.json({ error: 'already_exists' }, { status: 409 })
 
-        const { data: authData, error: authError } =
-            await supabaseAdmin.auth.admin.createUser({
-                email,
-                password,
-                email_confirm: true,
-                user_metadata: {
-                    first_name: firstName,
-                    last_name: lastName || null,
-                    full_name: [firstName, lastName].filter(Boolean).join(" "),
-                },
-            });
-
-        if (authError || !authData?.user) {
-            return NextResponse.json(
-                { error: authError?.message || "Unable to create user." },
-                { status: 400 }
-            );
-        }
-
-        const user = authData.user;
-        const { error: profileError } = await supabaseAdmin.from("profiles").insert({
-            id: user.id,
-            first_name: firstName,
-            last_name: lastName || null,
-            email,
-        });
-
-        if (profileError) {
-            await supabaseAdmin.auth.admin.deleteUser(user.id);
-
-            return NextResponse.json(
-                { error: profileError.message },
-                { status: 400 }
-            );
-        }
-
-        return NextResponse.json({
-            message: "Account created successfully.",
-            user: {
-                id: user.id,
-                email: user.email,
-            },
-        });
-    } catch {
-        return NextResponse.json(
-            { error: "Invalid signup request." },
-            { status: 400 }
-        );
+        return NextResponse.json({ success: true }, { status: 200 })
+    } catch (err) {
+        console.error('[signup] unexpected error:', err)
+        return NextResponse.json({ error: err.message || 'Unexpected error.' }, { status: 500 })
     }
 }

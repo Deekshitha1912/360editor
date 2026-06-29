@@ -1,172 +1,87 @@
-import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import {
-    buildPanoramaConfig,
-    getAuthenticatedUser,
-    getOwnedProject,
-    jsonError,
-    signProjectImages,
-    STORAGE_BUCKET,
-    updateProjectImages,
-} from "../_utils";
+﻿// app/api/projects/[id]/route.js
+import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase-server'
 
-export async function GET(request, { params }) {
-    const auth = await getAuthenticatedUser(request);
-    if (auth.error) return jsonError(auth.error, auth.status);
+export async function GET(_req, { params }) {
+    try {
+        const supabase = await createClient()
+        const { data: { user }, error: authErr } = await supabase.auth.getUser()
+        if (authErr || !user) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
 
-    const { id } = await params;
-    const result = await getOwnedProject(id, auth.user.id);
-    if (result.error) return jsonError(result.error, result.status);
+        const { id } = await params
+        const [{ data: project }, { data: scenes }, { data: hotspots }] = await Promise.all([
+            supabase
+                .from('projects')
+                .select('id, name, created_at, logo_url, show_intro, auto_rotate, logo_x, logo_y, logo_size')
+                .eq('id', id)
+                .eq('user_id', user.id)
+                .single(),
+            supabase
+                .from('scenes')
+                .select('id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, created_at')
+                .eq('project_id', id)
+                .order('created_at'),
+            supabase.from('hotspots')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id')
+                .eq('project_id', id),
+        ])
 
-    return NextResponse.json({
-        project: await signProjectImages(result.project),
-    });
+        if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
+        return NextResponse.json({ project, scenes: scenes ?? [], hotspots: hotspots ?? [] })
+    } catch (err) {
+        return NextResponse.json({ error: err.message || 'Unexpected error.' }, { status: 500 })
+    }
 }
 
-export async function PATCH(request, { params }) {
-    const auth = await getAuthenticatedUser(request);
-    if (auth.error) return jsonError(auth.error, auth.status);
+// update project settings (logo_url, show_intro, auto_rotate) + logo position
+export async function PATCH(req, { params }) {
+    try {
+        const supabase = await createClient()
+        const { data: { user }, error: authErr } = await supabase.auth.getUser()
+        if (authErr || !user) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
 
-    const { id } = await params;
-    const result = await getOwnedProject(id, auth.user.id);
-    if (result.error) return jsonError(result.error, result.status);
+        const { id } = await params
+        const body = await req.json()
 
-    const project = result.project;
-    const body = await request.json();
-    const action = body?.action;
-    const photos = Array.isArray(project.images) ? project.images : [];
+        // Only allow safe fields to be patched
+        const allowed = ['logo_url', 'show_intro', 'auto_rotate', 'name', 'logo_x', 'logo_y', 'logo_size']
+        const updates = Object.fromEntries(
+            Object.entries(body).filter(([k]) => allowed.includes(k))
+        )
+        if (Object.keys(updates).length === 0)
+            return NextResponse.json({ error: 'No valid fields.' }, { status: 400 })
 
-    if (action === "rename") {
-        const name = body?.name?.trim();
-        if (!name) return jsonError("Project name is required.");
-
-        const { data, error } = await supabaseAdmin
-            .from("projects")
-            .update({
-                name,
-                panorama_config: buildPanoramaConfig(photos, name),
-                updated_at: new Date().toISOString(),
-            })
-            .eq("id", project.id)
+        const { data: project, error } = await supabase
+            .from('projects')
+            .update(updates)
+            .eq('id', id)
+            .eq('user_id', user.id)
             .select()
-            .single();
+            .single()
 
-        if (error) return jsonError(error.message);
-
-        return NextResponse.json({
-            project: await signProjectImages(data),
-        });
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
+        return NextResponse.json({ project })
+    } catch (err) {
+        return NextResponse.json({ error: err.message || 'Unexpected error.' }, { status: 500 })
     }
+}
 
-    if (action === "addHotspot") {
-        const photoId = body?.photoId;
-        const hotspot = body?.hotspot;
+export async function DELETE(_req, { params }) {
+    try {
+        const supabase = await createClient()
+        const { data: { user }, error: authErr } = await supabase.auth.getUser()
+        if (authErr || !user) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
 
-        if (!photoId || !hotspot?.id) {
-            return jsonError("Photo id and hotspot are required.");
-        }
+        const { id } = await params
+        const { data: project } = await supabase
+            .from('projects').select('id').eq('id', id).eq('user_id', user.id).single()
+        if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
 
-        const nextPhotos = photos.map((photo) =>
-            photo.id === photoId
-                ? { ...photo, hotSpots: [...(photo.hotSpots || []), hotspot] }
-                : photo
-        );
-
-        const data = await updateProjectImages(project, nextPhotos);
-        return NextResponse.json({
-            project: await signProjectImages(data),
-        });
+        const { error } = await supabase.from('projects').delete().eq('id', id).eq('user_id', user.id)
+        if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        return NextResponse.json({ success: true })
+    } catch (err) {
+        return NextResponse.json({ error: err.message || 'Unexpected error.' }, { status: 500 })
     }
-
-    if (action === "updateHotspot") {
-        const photoId = body?.photoId;
-        const hotspot = body?.hotspot;
-
-        if (!photoId || !hotspot?.id) {
-            return jsonError("Photo id and hotspot are required.");
-        }
-
-        const nextPhotos = photos.map((photo) =>
-            photo.id === photoId
-                ? {
-                      ...photo,
-                      hotSpots: (photo.hotSpots || []).map((item) =>
-                          item.id === hotspot.id ? hotspot : item
-                      ),
-                  }
-                : photo
-        );
-
-        const data = await updateProjectImages(project, nextPhotos);
-        return NextResponse.json({
-            project: await signProjectImages(data),
-        });
-    }
-
-    if (action === "deleteHotspot") {
-        const photoId = body?.photoId;
-        const hotspotId = body?.hotspotId;
-
-        if (!photoId || !hotspotId) {
-            return jsonError("Photo id and hotspot id are required.");
-        }
-
-        const nextPhotos = photos.map((photo) =>
-            photo.id === photoId
-                ? {
-                      ...photo,
-                      hotSpots: (photo.hotSpots || []).filter(
-                          (hotspot) => hotspot.id !== hotspotId
-                      ),
-                  }
-                : photo
-        );
-
-        const data = await updateProjectImages(project, nextPhotos);
-        return NextResponse.json({
-            project: await signProjectImages(data),
-        });
-    }
-
-    if (action === "deleteImage") {
-        const photoId = body?.photoId;
-        const photo = photos.find((item) => item.id === photoId);
-
-        if (!photo) return jsonError("Image not found.", 404);
-
-        if (photo.path) {
-            const { error } = await supabaseAdmin.storage
-                .from(STORAGE_BUCKET)
-                .remove([photo.path]);
-
-            if (error) return jsonError(error.message);
-        }
-
-        const nextPhotos = photos.filter((item) => item.id !== photoId);
-        const data = await updateProjectImages(project, nextPhotos);
-
-        return NextResponse.json({
-            project: await signProjectImages(data),
-        });
-    }
-
-    if (action === "clearImages") {
-        const paths = photos.map((photo) => photo.path).filter(Boolean);
-
-        if (paths.length) {
-            const { error } = await supabaseAdmin.storage
-                .from(STORAGE_BUCKET)
-                .remove(paths);
-
-            if (error) return jsonError(error.message);
-        }
-
-        const data = await updateProjectImages(project, []);
-
-        return NextResponse.json({
-            project: await signProjectImages(data),
-        });
-    }
-
-    return jsonError("Unsupported project action.");
 }
