@@ -129,4 +129,31 @@
   html {
     @apply font-sans;
   }
+
+  /* Every clickable control shows a hand cursor (Tailwind v4 defaults buttons to
+     the arrow cursor, so this restores the expected affordance app-wide). */
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  summary,
+  select,
+  label:has(> input[type="checkbox"]),
+  label:has(> input[type="radio"]) {
+    cursor: pointer;
+  }
+
+  /* Disabled / busy controls make it obvious they can't be clicked. */
+  button:disabled,
+  button[disabled],
+  [aria-disabled="true"],
+  [aria-busy="true"] {
+    cursor: not-allowed;
+  }
+
+  /* Instant press feedback — the button visibly "presses" the moment it's clicked,
+     so the action is acknowledged right away even while the request is in flight. */
+  button:not(:disabled):active,
+  [role="button"]:not(:disabled):active {
+    transform: translateY(1px);
+    transition: transform .04s ease;
+  }
 }

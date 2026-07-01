@@ -155,7 +155,7 @@ export default function DashboardClient({ user, projects: initialProjects }) {
                 <div className="pointer-events-none absolute -bottom-32 right-[-80px] w-[360px] h-[360px] rounded-full blur-[120px]" style={{ background:'radial-gradient(circle,rgba(163,230,53,.14),transparent 70%)' }} />
                 <div className="relative max-w-6xl mx-auto px-6 py-10">
                     <p className="text-[13px] text-[#b9b9cc] font-medium mb-1.5 fade-up">
-                        Welcome back{profile?.first_name ? `, ${profile.first_name}` : ''} 
+                        Welcome back{profile?.first_name ? `, ${profile.first_name}` : ''}
                     </p>
                     <h1 className="serif text-white text-[clamp(28px,4vw,40px)] font-semibold tracking-[-1px] leading-none fade-up" style={{ animationDelay:'.05s' }}>
                         {projects.length ? 'Pick up where you left off' : 'Let\u2019s build your first tour'}
