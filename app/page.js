@@ -149,22 +149,15 @@ export default async function Page() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  let profile = null
-  if (user) {
-    const { data } = await supabase
-        .from('profiles').select('email, first_name, last_name').eq('id', user.id).single()
-    profile = data ?? null
-  }
-  const displayName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ')
-  const initials = displayName
-      ? displayName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
-      : (profile?.email?.[0] || user?.email?.[0] || '?').toUpperCase()
+  // Avatar initials come from the auth email — no profiles query needed here.
+  const email = user?.email || ''
+  const initials = (email[0] || '?').toUpperCase()
 
   const primaryHref  = user ? '/360editor' : '/signup'
   const primaryLabel = user ? 'Go to your dashboard →' : 'Build your first tour →'
 
   return (
-      <div className="min-h-screen bg-[#FAFAF7] overflow-x-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <div className="min-h-screen bg-[#FAFAF7] overflow-x-hidden pt-[60px]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
@@ -195,7 +188,7 @@ export default async function Page() {
         `}</style>
 
         {/* ── NAV ── */}
-        <nav className="sticky top-0 z-50 bg-white/85 backdrop-blur-lg border-b border-[#E2E2DA]">
+        <nav className="fixed top-0 left-0 right-0 z-50 bg-white/85 backdrop-blur-lg border-b border-[#E2E2DA]">
           <div className="max-w-5xl mx-auto px-6 h-[60px] flex items-center justify-between">
             <Link href="/" className="flex items-center gap-2.5 no-underline group">
               <div className="w-8 h-8 bg-[#3730a3] rounded-lg flex items-center justify-center transition-colors group-hover:bg-[#312e81]">
@@ -214,8 +207,8 @@ export default async function Page() {
                   </summary>
                   <div className="absolute right-0 mt-2 w-56 bg-white border border-[#E2E2DA] rounded-xl shadow-xl overflow-hidden z-50">
                     <div className="px-3.5 py-3 border-b border-[#E2E2DA]">
-                      <p className="text-[13px] font-semibold text-[#1a1a18] truncate">{displayName || 'My Account'}</p>
-                      <p className="text-[11.5px] text-[#6b6b60] truncate">{profile?.email || user.email}</p>
+                      <p className="text-[13px] font-semibold text-[#1a1a18] truncate">My Account</p>
+                      <p className="text-[11.5px] text-[#6b6b60] truncate">{email}</p>
                     </div>
                     <Link href="/360editor" className="flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-[#1a1a18] hover:bg-[#F4F4EF] no-underline">
                       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
@@ -259,9 +252,6 @@ export default async function Page() {
                 <Button asChild className="bg-[#3730a3] hover:bg-[#4338ca] text-white h-12 px-7 text-[15px] font-semibold rounded-xl glow-indigo">
                   <Link href={primaryHref}>{primaryLabel}</Link>
                 </Button>
-                <a href="#demo" className="text-[14px] text-[#cfcfe6] hover:text-white underline underline-offset-4 decoration-white/30">
-                  or try the live one →
-                </a>
               </div>
               <div className="flex items-center gap-5 text-[12.5px] text-[#9a9ab2] fade-up" style={{ animationDelay:'.2s' }}>
                 <span className="flex items-center gap-1.5"><Check/> Up to 30 rooms</span>

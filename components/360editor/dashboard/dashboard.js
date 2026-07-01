@@ -1,8 +1,8 @@
 ﻿'use client'
-// app/360editor/dashboard.js  (components/360editor/dashboard/dashboard.js)
-// Visual refresh to match the landing page — self-contained fonts + animations,
-// welcome banner, and richer project cards. All data/API logic is unchanged.
-import { useState } from 'react'
+// components/360editor/dashboard/dashboard.js
+// Loads the profile from /api/profile (no profiles fetch in the page).
+// Warm, human copy. All create/delete/logout logic is unchanged.
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -27,13 +27,24 @@ function thumbFor(id) {
     return THUMBS[h % THUMBS.length]
 }
 
-export default function DashboardClient({ user, profile, projects: initialProjects }) {
+export default function DashboardClient({ user, projects: initialProjects }) {
     const router = useRouter()
     const [projects, setProjects] = useState(initialProjects)
+    const [profile, setProfile] = useState(null)
     const [showNewProject, setShowNewProject] = useState(false)
     const [projectName, setProjectName] = useState('')
     const [creating, setCreating] = useState(false)
     const [error, setError] = useState('')
+
+    // Profile comes from the API now, not the page.
+    useEffect(() => {
+        let alive = true
+        fetch('/api/profile')
+            .then(r => (r.ok ? r.json() : null))
+            .then(d => { if (alive && d?.profile) setProfile(d.profile) })
+            .catch(() => {})
+        return () => { alive = false }
+    }, [])
 
     async function handleLogout() {
         await fetch('/api/logout', { method: 'POST' })
@@ -68,15 +79,16 @@ export default function DashboardClient({ user, profile, projects: initialProjec
 
     async function deleteProject(id, e) {
         e.stopPropagation()
-        if (!confirm('Delete this project and all its scenes?')) return
+        if (!confirm('Delete this tour and everything in it?')) return
         const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' })
         if (res.ok) setProjects(projects.filter(p => p.id !== id))
     }
 
+    const email = profile?.email || user?.email || ''
     const displayName = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ')
     const initials = displayName
         ? displayName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
-        : profile?.email?.[0]?.toUpperCase() || '?'
+        : email?.[0]?.toUpperCase() || '?'
 
     return (
         <div className="min-h-screen bg-[#FAFAF7]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -123,7 +135,7 @@ export default function DashboardClient({ user, profile, projects: initialProjec
                         <DropdownMenuContent align="end" className="w-52 shadow-lg border-[#E2E2DA]">
                             <div className="px-3 py-2">
                                 <p className="text-xs font-medium text-[#1a1a18] truncate">{displayName || 'My Account'}</p>
-                                <p className="text-[11px] text-[#6b6b60] truncate">{profile?.email}</p>
+                                <p className="text-[11px] text-[#6b6b60] truncate">{email}</p>
                             </div>
                             <DropdownMenuSeparator className="bg-[#E2E2DA]" />
                             <DropdownMenuItem
@@ -137,24 +149,24 @@ export default function DashboardClient({ user, profile, projects: initialProjec
                 </div>
             </nav>
 
-            {/* WELCOME BANNER — cinematic accent, echoing the landing hero */}
+            {/* WELCOME BANNER */}
             <div className="relative overflow-hidden bg-[#0d0c14] grain border-b border-[#E2E2DA]">
                 <div className="pointer-events-none absolute -top-28 -left-20 w-[420px] h-[420px] rounded-full blur-[110px]" style={{ background:'radial-gradient(circle,rgba(55,48,163,.55),transparent 70%)' }} />
                 <div className="pointer-events-none absolute -bottom-32 right-[-80px] w-[360px] h-[360px] rounded-full blur-[120px]" style={{ background:'radial-gradient(circle,rgba(163,230,53,.14),transparent 70%)' }} />
                 <div className="relative max-w-6xl mx-auto px-6 py-10">
                     <p className="text-[13px] text-[#b9b9cc] font-medium mb-1.5 fade-up">
-                        Good to see you, {profile?.first_name || 'there'} 👋
+                        Welcome back{profile?.first_name ? `, ${profile.first_name}` : ''} 👋
                     </p>
                     <h1 className="serif text-white text-[clamp(28px,4vw,40px)] font-semibold tracking-[-1px] leading-none fade-up" style={{ animationDelay:'.05s' }}>
-                        Your virtual tours
+                        {projects.length ? 'Pick up where you left off' : 'Let\u2019s build your first tour'}
                     </h1>
                     <div className="flex items-center gap-5 mt-5 fade-up" style={{ animationDelay:'.1s' }}>
                         <div className="flex items-center gap-2 text-[12.5px] text-[#cfcfe6]">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#a3e635]" style={{ boxShadow:'0 0 8px #a3e635' }} />
-                            {projects.length} {projects.length === 1 ? 'project' : 'projects'}
+                            {projects.length} {projects.length === 1 ? 'tour' : 'tours'}
                         </div>
                         <span className="text-white/20">·</span>
-                        <span className="text-[12.5px] text-[#9a9ab2]">Up to 30 scenes each · one-click export</span>
+                        <span className="text-[12.5px] text-[#9a9ab2]">Each one exports to a single file you can send anywhere</span>
                     </div>
                 </div>
             </div>
@@ -163,7 +175,7 @@ export default function DashboardClient({ user, profile, projects: initialProjec
             <main className="max-w-6xl mx-auto px-6 py-10">
                 <div className="flex items-center justify-between mb-7">
                     <h2 className="text-[17px] font-semibold text-[#1a1a18]">
-                        All projects
+                        Your tours
                     </h2>
                     <Button
                         onClick={() => setShowNewProject(true)}
@@ -172,7 +184,7 @@ export default function DashboardClient({ user, profile, projects: initialProjec
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <path d="M12 5v14M5 12h14"/>
                         </svg>
-                        New Project
+                        New tour
                     </Button>
                 </div>
 
@@ -184,13 +196,13 @@ export default function DashboardClient({ user, profile, projects: initialProjec
                     <DialogContent className="sm:max-w-[400px] border-[#E2E2DA] shadow-xl">
                         <DialogHeader>
                             <DialogTitle className="text-[18px] font-semibold serif">
-                                New Project
+                                Name your new tour
                             </DialogTitle>
                         </DialogHeader>
                         <div className="py-2">
-                            <Label className="text-[13px] font-medium text-[#1a1a18] mb-1.5 block">Project name</Label>
+                            <Label className="text-[13px] font-medium text-[#1a1a18] mb-1.5 block">What should we call it?</Label>
                             <Input
-                                placeholder="e.g. Office Virtual Tour"
+                                placeholder="e.g. Riverside Apartment"
                                 value={projectName}
                                 onChange={e => setProjectName(e.target.value)}
                                 onKeyDown={e => e.key === 'Enter' && createProject()}
@@ -212,7 +224,7 @@ export default function DashboardClient({ user, profile, projects: initialProjec
                                 disabled={creating || !projectName.trim()}
                                 className="bg-[#3730a3] hover:bg-[#312e81] text-white text-[13px] h-9"
                             >
-                                {creating ? 'Creating…' : 'Create project'}
+                                {creating ? 'Creating…' : 'Create tour'}
                             </Button>
                         </DialogFooter>
                     </DialogContent>
@@ -227,13 +239,15 @@ export default function DashboardClient({ user, profile, projects: initialProjec
                                 <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                             </svg>
                         </div>
-                        <h3 className="text-[16px] font-semibold text-[#1a1a18] mb-1.5">No projects yet</h3>
-                        <p className="text-[13px] text-[#6b6b60] mb-5">Create your first 360° virtual tour to get started.</p>
+                        <h3 className="text-[16px] font-semibold text-[#1a1a18] mb-1.5">Nothing here yet</h3>
+                        <p className="text-[13px] text-[#6b6b60] mb-5 max-w-[320px] mx-auto leading-relaxed">
+                            Start your first tour — upload a few 360° photos, link the rooms, and export a file you can share.
+                        </p>
                         <Button
                             onClick={() => setShowNewProject(true)}
                             className="bg-[#3730a3] hover:bg-[#312e81] text-white text-[13px] h-9 px-5 rounded-lg"
                         >
-                            Create first project
+                            Create your first tour
                         </Button>
                     </div>
                 ) : (
@@ -282,8 +296,9 @@ export default function DashboardClient({ user, profile, projects: initialProjec
 
                                     <button
                                         onClick={e => deleteProject(p.id, e)}
+                                        aria-label="Delete tour"
                                         className="absolute top-2.5 left-2.5 opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg flex items-center justify-center text-white/80 hover:text-white hover:bg-red-500/80 transition-all bg-black/30 backdrop-blur border-none cursor-pointer"
-                                        title="Delete project"
+                                        title="Delete tour"
                                     >
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                                             <path d="M18 6L6 18M6 6l12 12"/>

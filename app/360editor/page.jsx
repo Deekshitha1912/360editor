@@ -1,4 +1,5 @@
 ﻿// app/360editor/page.js  — dashboard (logged-in only, server component)
+// Profiles are no longer fetched here — the client loads them from /api/profile.
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase-server'
 import DashboardClient from "@/components/360editor/dashboard/dashboard";
@@ -10,23 +11,15 @@ export default async function Page() {
     // Not logged in → send to landing
     if (!user) redirect('/')
 
-    const [{ data: profile }, { data: projects }] = await Promise.all([
-        supabase
-            .from('profiles')
-            .select('id, email, first_name, last_name, role')
-            .eq('id', user.id)
-            .single(),
-        supabase
-            .from('projects')
-            .select('id, name, created_at')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: false }),
-    ])
+    const { data: projects } = await supabase
+        .from('projects')
+        .select('id, name, created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
 
     return (
         <DashboardClient
-            user={user}
-            profile={profile ?? null}
+            user={{ id: user.id, email: user.email }}
             projects={projects ?? []}
         />
     )
