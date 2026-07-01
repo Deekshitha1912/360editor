@@ -181,6 +181,10 @@ export default async function Page() {
           .grain:before{content:'';position:absolute;inset:0;pointer-events:none;opacity:.5;
             background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px);background-size:3px 3px}
           @keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
+          @keyframes dropIn{0%{opacity:0;transform:translateY(-14px) scale(.96)}100%{opacity:1;transform:none}}
+          @keyframes arrowPop{0%,40%{opacity:0;transform:scale(.4)}55%{opacity:1;transform:scale(1.15)}70%,100%{opacity:1;transform:scale(1)}}
+          @keyframes barFill{from{width:14%}to{width:100%}}
+          @keyframes glowPulse{0%,100%{opacity:.55}50%{opacity:1}}
           .avatar-menu>summary{list-style:none}
           .avatar-menu>summary::-webkit-details-marker{display:none}
           .avatar-menu[open]>summary:before{content:'';position:fixed;inset:0;z-index:40;cursor:default}
@@ -318,26 +322,110 @@ export default async function Page() {
           </div>
         </section>
 
-        {/* ── STEPS: how it works ── */}
+        {/* ── INSIDE THE EDITOR: how it looks + how it works ── */}
         <section id="steps" className="bg-white border-y border-[#E2E2DA]">
           <div className="max-w-5xl mx-auto px-6 py-20">
             <h2 className="serif text-[clamp(24px,3.4vw,34px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-2 text-center" data-reveal>
-              Four steps, start to finish
+              Here&apos;s the editor you&apos;ll be working in
             </h2>
-            <p className="text-[15px] text-[#6b6b60] text-center max-w-[440px] mx-auto mb-12" data-reveal>
-              From a folder of photos to a link you can send — usually in an afternoon.
+            <p className="text-[15px] text-[#6b6b60] text-center max-w-[500px] mx-auto mb-10" data-reveal>
+              Three panels, one screen. Scenes on the left, your live 360° view in the middle,
+              arrows and branding on the right.
             </p>
+
+            {/* Editor mockup */}
+            <div className="rounded-2xl border border-[#E2E2DA] shadow-xl overflow-hidden mb-12" data-reveal>
+              <div className="flex items-center justify-between px-4 h-11 bg-[#F4F4EF] border-b border-[#E2E2DA]">
+                <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1a1a18]">
+                  <span className="w-2 h-2 rounded-full bg-[#3730a3]" /> Apartment Tour
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px] border border-[#E2E2DA] bg-white text-[#1a1a18] px-3 py-1 rounded-lg font-medium">Preview</span>
+                  <span className="text-[12px] bg-[#3730a3] text-white px-3 py-1 rounded-lg font-medium">Export HTML</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-[130px_1fr_150px] md:grid-cols-[190px_1fr_210px] h-[300px] md:h-[360px]">
+                {/* LEFT — scenes */}
+                <div className="border-r border-[#E2E2DA] bg-[#FAFAF7] p-3 overflow-hidden">
+                  <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase mb-2.5">Scenes</div>
+                  {[['Living Room','#4a4368','0s',true],['Hallway','#3a4566','.5s',false],['Balcony','#9fc6e8','1s',false]].map(([name,col,d,active]) => (
+                      <div key={name} className="flex items-center gap-2 mb-2 p-1.5 rounded-lg border border-[#E2E2DA] bg-white"
+                           style={{ animation:`dropIn .6s ease ${d} both`, boxShadow: active ? '0 0 0 2px #3730a3' : 'none' }}>
+                        <span className="w-9 h-7 rounded-md shrink-0" style={{ background:col }} />
+                        <span className="text-[11px] text-[#1a1a18] font-medium truncate">{name}</span>
+                      </div>
+                  ))}
+                  <div className="mt-2 border-2 border-dashed border-[#cdcdc2] rounded-lg py-3 text-center text-[10px] text-[#9a9a8e]"
+                       style={{ animation:'glowPulse 2.4s ease-in-out infinite 1.4s' }}>
+                    + Upload panorama
+                  </div>
+                </div>
+
+                {/* MIDDLE — viewer */}
+                <div className="relative overflow-hidden" style={{ background:'radial-gradient(120% 90% at 50% 30%, #4a4368 0%, #2a2740 55%, #15131f 100%)' }}>
+                  <div className="absolute inset-x-0 bottom-0 h-1/2" style={{ backgroundImage:'repeating-linear-gradient(90deg,transparent 0 38px,rgba(184,155,115,.18) 38px 40px)' }} />
+                  {/* arrow with hover-style label */}
+                  <div className="absolute left-[30%] top-[52%] flex flex-col items-center" style={{ animation:'arrowPop 4s ease-in-out infinite' }}>
+                    <span className="mb-1 text-[10px] font-semibold text-white bg-black/60 px-2 py-0.5 rounded-md whitespace-nowrap">Go to Hallway</span>
+                    <div className="w-11 h-11 rounded-full flex items-center justify-center border-[1.5px] border-white/60" style={{ background:'rgba(55,48,163,.55)', backdropFilter:'blur(3px)' }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                    </div>
+                  </div>
+                  <div className="absolute left-[60%] top-[40%]" style={{ animation:'arrowPop 4s ease-in-out infinite 1.3s' }}>
+                    <div className="w-11 h-11 rounded-full flex items-center justify-center border-[1.5px] border-white/60" style={{ background:'rgba(55,48,163,.55)', backdropFilter:'blur(3px)' }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                    </div>
+                  </div>
+                  <div className="absolute right-4 bottom-3 text-white/85 font-bold text-[12px] flex items-center gap-1.5" style={{ animation:'dropIn .7s ease 1.8s both' }}>
+                    <span className="w-4 h-4 rounded bg-[#a3e635]" /> YOUR LOGO
+                  </div>
+                  <div className="absolute left-1/2 -translate-x-1/2 top-3 text-[10.5px] text-white/80 bg-black/35 px-3 py-1 rounded-full backdrop-blur">
+                    Living Room · drag to look around
+                  </div>
+                </div>
+
+                {/* RIGHT — directions */}
+                <div className="border-l border-[#E2E2DA] bg-[#FAFAF7] p-3 overflow-hidden">
+                  <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase mb-2">Directions</div>
+                  <div className="grid grid-cols-2 gap-1.5 mb-3">
+                    {['M12 19V5M5 12l7-7 7 7','M19 12H5M12 19l-7-7 7-7','M7 17L17 7M7 7h10v10','M17 17L7 7M17 7H7v10'].map((d,i)=>(
+                        <div key={i} className="aspect-square rounded-lg border border-[#E2E2DA] bg-white flex items-center justify-center"
+                             style={{ animation:`dropIn .5s ease ${0.2*i}s both`, boxShadow:i===0?'0 0 0 2px #3730a3':'none' }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3730a3" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>
+                        </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase">Hotspot size</span>
+                    <span className="text-[9px] text-[#9a9a8e] font-mono">90px</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-[#E2E2DA] overflow-hidden mb-3">
+                    <div className="h-full bg-[#3730a3] rounded-full" style={{ animation:'barFill 2.6s ease-in-out infinite alternate' }} />
+                  </div>
+                  <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase mb-1.5">Placed</div>
+                  {['→ Hallway','↑ Balcony'].map((t,i)=>(
+                      <div key={t} className="text-[11px] text-[#1a1a18] bg-white border border-[#E2E2DA] rounded-md px-2 py-1.5 mb-1.5" style={{ animation:`dropIn .5s ease ${0.6+0.3*i}s both` }}>{t}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Steps tied to the editor */}
+            <h3 className="serif text-[20px] font-semibold text-[#1a1a18] text-center mb-8" data-reveal>
+              And here&apos;s how you use it — four steps
+            </h3>
             <div className="grid md:grid-cols-2 gap-5">
               {[
-                ['1','Upload your 360° photos','Drag your equirectangular panoramas into the scene panel — one per room, up to 30 in a tour.'],
-                ['2','Connect the rooms','Drop an arrow on a doorway and link it to the next room. That single step is your whole navigation.'],
-                ['3','Make it yours','Add your logo, set the starting view, choose a gentle auto-spin, and size the arrows to taste.'],
-                ['4','Export and send','One click gives you a single HTML file. Preview it first, then host it anywhere or email it as-is.'],
+                ['1','Add your scenes','Upload a 360° photo for each room into the left panel — up to 30 in one tour. Click a scene to open it in the middle viewer.'],
+                ['2','Drop the arrows','Drag an arrow from the right panel onto a doorway in the view, then pick the room it leads to. That link is your navigation.'],
+                ['3','Brand and adjust','Add your logo and drag it where you want, set one size for all arrows, choose the auto-spin, and give each arrow a label.'],
+                ['4','Preview, then export','Hit Preview to walk the finished tour, then Export to download one HTML file you can host or send anywhere.'],
               ].map(([n, title, body]) => (
                   <div key={n} className="flex gap-4 bg-[#FAFAF7] border border-[#E2E2DA] rounded-2xl p-5" data-reveal>
                     <div className="shrink-0 w-10 h-10 rounded-xl bg-[#3730a3] text-white flex items-center justify-center font-bold text-[15px]">{n}</div>
                     <div>
-                      <h3 className="text-[16px] font-semibold text-[#1a1a18] mb-1">{title}</h3>
+                      <h4 className="text-[15.5px] font-semibold text-[#1a1a18] mb-1">{title}</h4>
                       <p className="text-[14px] text-[#6b6b60] leading-relaxed">{body}</p>
                     </div>
                   </div>
