@@ -217,6 +217,7 @@ export function HotspotPopup({ pos, viewerSize, state, scenes, activeSceneId, on
                                     yaw:             hotspot.yaw,
                                     label:           hotspot.label || '',
                                     target_scene_id: hotspot.target_scene_id,
+                                    size:            hotspot.size ?? 120,
                                 })}
                                 className="flex-1 h-7 text-[11px] rounded-lg bg-[#3730a3] text-white
                                            font-semibold hover:bg-[#312e81] transition-colors">

@@ -12,7 +12,7 @@ export async function GET(_req, { params }) {
         const [{ data: project }, { data: scenes }, { data: hotspots }] = await Promise.all([
             supabase
                 .from('projects')
-                .select('id, name, created_at, logo_url, show_intro, auto_rotate, logo_x, logo_y, logo_size')
+                .select('id, name, created_at, logo_url, show_intro, auto_rotate, logo_x, logo_y, logo_size, hotspot_size')
                 .eq('id', id)
                 .eq('user_id', user.id)
                 .single(),
@@ -44,10 +44,13 @@ export async function PATCH(req, { params }) {
         const body = await req.json()
 
         // Only allow safe fields to be patched
-        const allowed = ['logo_url', 'show_intro', 'auto_rotate', 'name', 'logo_x', 'logo_y', 'logo_size']
+        const allowed = ['logo_url', 'show_intro', 'auto_rotate', 'name', 'logo_x', 'logo_y', 'logo_size', 'hotspot_size']
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
         )
+        // Clamp the common hotspot arrow size (px), same range as the panel slider.
+        if (updates.hotspot_size != null)
+            updates.hotspot_size = Math.min(400, Math.max(40, parseInt(updates.hotspot_size, 10) || 90))
         if (Object.keys(updates).length === 0)
             return NextResponse.json({ error: 'No valid fields.' }, { status: 400 })
 

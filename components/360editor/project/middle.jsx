@@ -6,7 +6,7 @@ import ScenePanel       from '@/components/360editor/project/scene_panel'
 import HotspotPanel, { ARROWS } from '@/components/360editor/project/hotspot_panel'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml } from '@/components/360editor/project/export'
-import { PinCrosshair, HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
+import { HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
 
 // ─── Pannellum projection math ────────────────────────────────────────────────
 
@@ -254,6 +254,7 @@ export default function ProjectClient({ projectId }) {
     const onHotspotClickRef = useRef(null)
     const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging the logo
     const logoImgRef        = useRef(null)   // measures the rendered logo so it never leaves the frame
+    const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
 
     const [project, setProject]                 = useState(null)
     const [scenes, setScenes]                   = useState([])
@@ -274,6 +275,7 @@ export default function ProjectClient({ projectId }) {
     // Logo screen position (percent of viewer) + size (px) + drag state
     const [logoPos, setLogoPos]                 = useState({ x: 50, y: 50 })
     const [logoSize, setLogoSize]               = useState(160)
+    const [hotspotSize, setHotspotSize]         = useState(90)
     const [draggingLogo, setDraggingLogo]       = useState(false)
 
     // popupState modes: 'new' | 'confirm-edit' | 'edit-existing' | 'saved'
@@ -311,7 +313,8 @@ export default function ProjectClient({ projectId }) {
         if (!project) return
         setLogoPos({ x: project.logo_x ?? 50, y: project.logo_y ?? 50 })
         setLogoSize(project.logo_size ?? 160)
-    }, [project?.logo_x, project?.logo_y, project?.logo_size]) // eslint-disable-line
+        setHotspotSize(project.hotspot_size ?? 90)
+    }, [project?.logo_x, project?.logo_y, project?.logo_size, project?.hotspot_size]) // eslint-disable-line
 
     // ── Load Pannellum script ──────────────────────────────────────────────
     useEffect(() => {
@@ -342,7 +345,7 @@ export default function ProjectClient({ projectId }) {
 
     // ── makeTooltip — builds each arrow div for pannellum ─────────────────
     const makeTooltip = useCallback((div, args) => {
-        const S = 120
+        const S = args.size || 90
         div.style.cssText = `width:${S}px;height:${S}px;background:none;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;`
         const img = Object.assign(document.createElement('img'), { src: args.gif })
         img.style.cssText = `width:${S}px;height:${S}px;object-fit:contain;filter:drop-shadow(0 3px 12px rgba(0,0,0,.85));pointer-events:none;`
@@ -404,7 +407,8 @@ export default function ProjectClient({ projectId }) {
             const changed  = existing && (
                 existing.pitch !== h.pitch ||
                 existing.yaw   !== h.yaw   ||
-                existing.createTooltipArgs?.gif !== gif
+                existing.createTooltipArgs?.gif  !== gif ||
+                existing.createTooltipArgs?.size !== hotspotSize
             )
 
             if (changed) { try { viewer.removeHotSpot(hsId) } catch {} }
@@ -415,15 +419,19 @@ export default function ProjectClient({ projectId }) {
                         pitch: h.pitch, yaw: h.yaw,
                         type: 'custom', text: h.label || '', id: hsId,
                         createTooltipFunc: makeTooltip,
-                        createTooltipArgs: { gif, hotspotDbId: h.id },
+                        createTooltipArgs: { gif, hotspotDbId: h.id, size: hotspotSize },
                     })
                 } catch {}
             }
         }
-    }, [hotspots, activeScene, makeTooltip, editingId])
+    }, [hotspots, activeScene, makeTooltip, editingId, hotspotSize])
 
     // ── rAF — keeps pin projected on screen ───────────────────────────────
     const mainLoop = useCallback(() => {
+        // While the preview modal is open, stop projecting/setting state every
+        // frame — it would re-render the editor (and the modal) needlessly.
+        if (previewOpenRef.current) { rafRef.current = requestAnimationFrame(mainLoop); return }
+
         const viewer = pannellumRef.current, el = viewerRef.current
         const ps     = popupRef.current
 
@@ -610,6 +618,18 @@ export default function ProjectClient({ projectId }) {
         if (popupState?.hotspot?.id === id) setPopupState(null)
     }
 
+    // Common hotspot arrow size — saved on the project, exactly like logo size.
+    async function saveHotspotSize(size) {
+        if (!project) return
+        try {
+            const res = await fetch(`/api/projects/${project.id}`, {
+                method: 'PATCH', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ hotspot_size: Math.round(size) }),
+            })
+            if (res.ok) { const { project: updated } = await res.json(); setProject(updated) }
+        } catch {}
+    }
+
     async function deleteProject() {
         dispatchFlag('deleting')
         try {
@@ -635,6 +655,7 @@ export default function ProjectClient({ projectId }) {
 
     function openPreview() {
         if (!scenes.length || !project) return
+        previewOpenRef.current = true
         setPreviewHtml(buildTourHtml({ project, scenes, hotspots }))
     }
 
@@ -784,16 +805,17 @@ export default function ProjectClient({ projectId }) {
                                          onMouseLeave={() => setIsDraggingPin(false)}/>
                                 )}
 
-                                {hasPopup && (
-                                    <PinCrosshair
-                                        pos={pinPos}
-                                        pitch={isEditing ? popupState.pitch : popupState.hotspot?.pitch ?? 0}
-                                        yaw={isEditing   ? popupState.yaw   : popupState.hotspot?.yaw   ?? 0}
-                                        isDragging={isDraggingPin}
-                                        readonly={!isEditing}
-                                        onMouseDown={isEditing
-                                            ? e => { e.preventDefault(); e.stopPropagation(); setIsDraggingPin(true) }
-                                            : () => {}}
+                                {/* While editing/placing: the draggable handle IS the real
+                                    arrow image (same gif the exported tour uses) — WYSIWYG,
+                                    no crosshair/pointer. */}
+                                {hasPopup && isEditing && pinPos && (
+                                    <img
+                                        src={(ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
+                                        alt=""
+                                        draggable={false}
+                                        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingPin(true) }}
+                                        style={{ left: pinPos.x, top: pinPos.y, width: hotspotSize, height: hotspotSize, transform: 'translate(-50%,-50%)' }}
+                                        className={`absolute z-30 object-contain select-none drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)] ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
                                     />
                                 )}
 
@@ -813,7 +835,7 @@ export default function ProjectClient({ projectId }) {
 
                                 {isEditing && !isDraggingPin && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
-                                        Drag the pin to adjust · fill form in popup
+                                        Drag the arrow to adjust · fill form in popup
                                     </div>
                                 )}
                                 {isDraggingPin && (
@@ -836,6 +858,9 @@ export default function ProjectClient({ projectId }) {
                     <div className="w-[200px] shrink-0 relative overflow-hidden">
                         <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
                                       hotspots={hotspots} onDeleteHotspot={deleteHotspot}
+                                      hotspotSize={hotspotSize}
+                                      onHotspotSizeChange={setHotspotSize}
+                                      onHotspotSizeCommit={saveHotspotSize}
                                       logoUrl={project?.logo_url} logoSize={logoSize}
                                       onLogoSizeChange={setLogoSize}
                                       onLogoSizeCommit={saveLogoSize}/>
@@ -855,7 +880,7 @@ export default function ProjectClient({ projectId }) {
             )}
             {previewHtml && (
                 <TourPreviewModal html={previewHtml} projectName={project?.name}
-                                  onClose={() => setPreviewHtml(null)}/>
+                                  onClose={() => { previewOpenRef.current = false; setPreviewHtml(null) }}/>
             )}
         </>
     )
