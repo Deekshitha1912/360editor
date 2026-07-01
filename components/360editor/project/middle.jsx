@@ -351,8 +351,16 @@ export default function ProjectClient({ projectId }) {
         img.style.cssText = `width:${S}px;height:${S}px;object-fit:contain;filter:drop-shadow(0 3px 12px rgba(0,0,0,.85));pointer-events:none;`
         div.appendChild(img)
         const shadow = 'drop-shadow(0 3px 12px rgba(0,0,0,.85))'
-        div.addEventListener('mouseenter', () => { img.style.filter = shadow + ' brightness(1.2)' })
-        div.addEventListener('mouseleave', () => { img.style.filter = shadow })
+        // Hover label — shows the hotspot's description above the arrow.
+        let tip = null
+        if (args.label) {
+            tip = document.createElement('div')
+            tip.textContent = args.label
+            tip.style.cssText = 'position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:6px;white-space:nowrap;background:rgba(26,26,24,.92);color:#fff;font:600 12px/1.2 Inter,system-ui,sans-serif;padding:5px 9px;border-radius:8px;opacity:0;transition:opacity .15s;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.4);z-index:10;'
+            div.appendChild(tip)
+        }
+        div.addEventListener('mouseenter', () => { img.style.filter = shadow + ' brightness(1.2)'; if (tip) tip.style.opacity = '1' })
+        div.addEventListener('mouseleave', () => { img.style.filter = shadow;                     if (tip) tip.style.opacity = '0' })
         div.addEventListener('click',      () => { onHotspotClickRef.current?.(args.hotspotDbId) })
     }, []) // eslint-disable-line
 
@@ -408,7 +416,8 @@ export default function ProjectClient({ projectId }) {
                 existing.pitch !== h.pitch ||
                 existing.yaw   !== h.yaw   ||
                 existing.createTooltipArgs?.gif  !== gif ||
-                existing.createTooltipArgs?.size !== hotspotSize
+                existing.createTooltipArgs?.size  !== hotspotSize ||
+                existing.createTooltipArgs?.label !== (h.label || '')
             )
 
             if (changed) { try { viewer.removeHotSpot(hsId) } catch {} }
@@ -419,7 +428,7 @@ export default function ProjectClient({ projectId }) {
                         pitch: h.pitch, yaw: h.yaw,
                         type: 'custom', text: h.label || '', id: hsId,
                         createTooltipFunc: makeTooltip,
-                        createTooltipArgs: { gif, hotspotDbId: h.id, size: hotspotSize },
+                        createTooltipArgs: { gif, hotspotDbId: h.id, size: hotspotSize, label: h.label || '' },
                     })
                 } catch {}
             }
