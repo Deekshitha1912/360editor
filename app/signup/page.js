@@ -87,12 +87,12 @@ export default function SignupPage() {
                     {/* ── Email confirmation sent ── */}
                     {done ? (
                         <div className="bg-[#3730a3]/5 border border-[#3730a3]/20 rounded-xl p-5 text-center">
-                            <div className="text-3xl mb-3">📬</div>
-                            <p className="font-semibold text-[#1a1a18] mb-1.5">Check your inbox</p>
+                            <div className="text-3xl mb-3">✅</div>
+                            <p className="font-semibold text-[#1a1a18] mb-1.5">Account created</p>
                             <p className="text-[13px] text-[#6b6b60] leading-relaxed mb-4">
-                                We sent a confirmation link to{' '}
-                                <strong className="text-[#1a1a18]">{email}</strong>. Click it to activate your
-                                account, then log in.
+                                Your account for{' '}
+                                <strong className="text-[#1a1a18]">{email}</strong> is ready. You can log in
+                                right away.
                             </p>
                             <Button asChild className="bg-[#3730a3] hover:bg-[#312e81] text-white text-sm h-9 px-5">
                                 <Link href="/login">Go to login →</Link>

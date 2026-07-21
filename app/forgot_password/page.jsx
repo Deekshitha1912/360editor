@@ -1,5 +1,18 @@
-﻿'use client'
-// app/forgot_password/page.jsx
+﻿// app/forgot_password/page.jsx
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// FORGOT-PASSWORD PAGE TEMPORARILY DISABLED.
+// Visiting this route now redirects to /login. To restore the flow: delete the
+// redirect stub below and uncomment the original component underneath.
+// ─────────────────────────────────────────────────────────────────────────────
+import { redirect } from 'next/navigation'
+
+export default function ForgotPasswordPage() {
+    redirect('/login')
+}
+
+/* ── ORIGINAL IMPLEMENTATION (disabled) ──────────────────────────────────────
+'use client'
 import { useState } from 'react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -98,3 +111,4 @@ export default function ForgotPasswordPage() {
         </div>
     )
 }
+──────────────────────────────────────────────────────────────────────────── */

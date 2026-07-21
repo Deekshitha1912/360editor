@@ -1,6 +1,7 @@
 ﻿// app/api/signup/route.js — profile creation now handled by the DB trigger
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
+import { createAdminClient } from '@/lib/supabase-admin'
 
 export async function POST(req) {
     try {
@@ -15,16 +16,38 @@ export async function POST(req) {
         const trimmedFirst = firstName.trim()
         const trimmedLast  = (lastName ?? '').trim()
 
-        const supabase = await createClient()
+        // ─────────────────────────────────────────────────────────────────────
+        // EMAIL VERIFICATION — TEMPORARILY DISABLED
+        //
+        // Accounts are created pre-verified (email_confirm: true) via the admin
+        // client below, which sends NO confirmation email. To re-enable email
+        // verification: delete the admin `createUser` block below and uncomment
+        // this original `signUp` block (also make sure "Confirm email" is ON in
+        // the Supabase Auth settings).
+        //
+        // const supabase = await createClient()
+        //
+        // const { data: authData, error: authErr } = await supabase.auth.signUp({
+        //     email: trimmedEmail,
+        //     password,
+        //     options: { data: { first_name: trimmedFirst, last_name: trimmedLast } },
+        // })
+        // ─────────────────────────────────────────────────────────────────────
 
-        const { data: authData, error: authErr } = await supabase.auth.signUp({
+        // ── AUTO-VERIFY (no email) — remove this block when re-enabling above ──
+        const admin = createAdminClient()
+
+        const { data: authData, error: authErr } = await admin.auth.admin.createUser({
             email: trimmedEmail,
             password,
-            options: { data: { first_name: trimmedFirst, last_name: trimmedLast } },
+            email_confirm: true, // marks the email confirmed AND suppresses the email
+            user_metadata: { first_name: trimmedFirst, last_name: trimmedLast },
         })
+        // ──────────────────────────────────────────────────────────────────────
 
         if (authErr) {
-            if (authErr.message.toLowerCase().includes('already registered'))
+            const msg = authErr.message?.toLowerCase() ?? ''
+            if (authErr.code === 'email_exists' || msg.includes('already') || msg.includes('registered') || msg.includes('exists'))
                 return NextResponse.json({ error: 'already_exists' }, { status: 409 })
             return NextResponse.json({ error: authErr.message }, { status: 400 })
         }

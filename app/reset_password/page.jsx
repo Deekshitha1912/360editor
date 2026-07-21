@@ -1,5 +1,18 @@
-﻿'use client'
-// app/reset_password/page.jsx
+﻿// app/reset_password/page.jsx
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// RESET / UPDATE-PASSWORD PAGE TEMPORARILY DISABLED.
+// Visiting this route now redirects to /login. To restore the flow: delete the
+// redirect stub below and uncomment the original component underneath.
+// ─────────────────────────────────────────────────────────────────────────────
+import { redirect } from 'next/navigation'
+
+export default function ResetPasswordPage() {
+    redirect('/login')
+}
+
+/* ── ORIGINAL IMPLEMENTATION (disabled) ──────────────────────────────────────
+'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -93,3 +106,4 @@ export default function ResetPasswordPage() {
         </div>
     )
 }
+──────────────────────────────────────────────────────────────────────────── */
