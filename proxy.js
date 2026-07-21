@@ -16,6 +16,23 @@ export async function proxy(request) {
     // Not logged in on a protected route → send to the landing page.
     if (!user && isProtected) return redirectKeepingCookies('/', request, state)
 
+    // Logged in on a protected route → must have at least one available credit.
+    // (RLS lets a user read only their own credits row, so this session client
+    // is enough — no service role needed here.)
+    if (user && isProtected) {
+        const { data: credit } = await supabase
+            .from('credits')
+            .select('available_credits')
+            .eq('user_id', user.id)
+            .maybeSingle()
+
+        const available = credit?.available_credits ?? 0
+        if (available < 1) {
+            // No credits → bounce to the landing pricing section to buy.
+            return redirectKeepingCookies('/?nocredits=1#pricing', request, state)
+        }
+    }
+
     // Already logged in on a login/signup route → send to the dashboard.
     if (user && authRoutes.includes(pathname)) return redirectKeepingCookies('/360editor', request, state)
 

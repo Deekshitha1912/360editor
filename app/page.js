@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase-server'
 import Link from 'next/link'
 import Script from 'next/script'
 import { Button } from '@/components/ui/button'
+import Pricing_section from '@/components/360editor/project/payment/pricing_section'
 
 // ───────────────────────────────────────────────────────────────────────────
 // LIVE 360° TOUR DEMO — a real interactive tour (same Pannellum the editor uses),
@@ -145,9 +146,11 @@ const REVEAL_JS = `(function(){
   if(document.readyState!=='loading')run();else document.addEventListener('DOMContentLoaded',run);
 })();`
 
-export default async function Page() {
+export default async function Page({ searchParams }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  const sp = await searchParams
+  const showNoCredits = sp?.nocredits === '1'
 
   // Avatar initials come from the auth email — no profiles query needed here.
   const email = user?.email || ''
@@ -424,6 +427,13 @@ export default async function Page() {
           </div>
         </section>
 
+        {/* ── PRICING ── */}
+        <Pricing_section
+            isAuthenticated={!!user}
+            user={user ? { email: user.email } : null}
+            showNoCredits={showNoCredits}
+        />
+
         {/* ── CTA ── */}
         <section className="max-w-5xl mx-auto px-6 py-20">
           <div className="relative rounded-3xl overflow-hidden bg-[#3730a3] text-center px-6 py-14 glow-indigo grain" data-reveal>
@@ -460,6 +470,7 @@ export default async function Page() {
               <span className="text-[#1a1a18] font-bold text-[15px]">360<span className="text-[#3730a3]">Editor</span></span>
             </Link>
             <div className="flex items-center gap-6 text-[13px] text-[#6b6b60]">
+              <a href="#pricing" className="hover:text-[#3730a3]">Pricing</a>
               <a href="#steps" className="hover:text-[#3730a3]">How it works</a>
               <Link href="/privacy" className="hover:text-[#3730a3]">Privacy</Link>
               <Link href="/terms" className="hover:text-[#3730a3]">Terms</Link>

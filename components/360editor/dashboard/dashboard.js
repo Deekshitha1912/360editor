@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,} from '@/components/ui/dialog'
 import {DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,} from '@/components/ui/dropdown-menu'
+import Credits_badge from '@/components/360editor/project/payment/credits_badge'
 
 // Deterministic gradient + accent per project so each card thumbnail feels distinct
 const THUMBS = [
@@ -27,9 +28,10 @@ function thumbFor(id) {
     return THUMBS[h % THUMBS.length]
 }
 
-export default function DashboardClient({ user, projects: initialProjects }) {
+export default function DashboardClient({ user, projects: initialProjects, credits }) {
     const router = useRouter()
     const [projects, setProjects] = useState(initialProjects)
+    const [available, setAvailable] = useState(credits?.available_credits ?? 0)
     const [profile, setProfile] = useState(null)
     const [showNewProject, setShowNewProject] = useState(false)
     const [projectName, setProjectName] = useState('')
@@ -64,9 +66,14 @@ export default function DashboardClient({ user, projects: initialProjects }) {
                 body: JSON.stringify({ name: projectName.trim() }),
             })
             const json = await res.json()
+            if (res.status === 402) {
+                router.push('/?nocredits=1#pricing')
+                return
+            }
             if (!res.ok) { setError(json.error || 'Failed to create project.'); return }
 
             setProjects([json.project, ...projects])
+            setAvailable(a => Math.max(a - 1, 0))
             setProjectName('')
             setShowNewProject(false)
             router.push(`/360editor/project/${json.project.id}`)
@@ -126,26 +133,29 @@ export default function DashboardClient({ user, projects: initialProjects }) {
             </span>
                     </Link>
 
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <button className="w-9 h-9 rounded-full bg-[#3730a3] text-white text-sm font-bold flex items-center justify-center hover:bg-[#312e81] transition-colors focus:outline-none focus:ring-2 focus:ring-[#3730a3] focus:ring-offset-2">
-                                {initials}
-                            </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-52 shadow-lg border-[#E2E2DA]">
-                            <div className="px-3 py-2">
-                                <p className="text-xs font-medium text-[#1a1a18] truncate">{displayName || 'My Account'}</p>
-                                <p className="text-[11px] text-[#6b6b60] truncate">{email}</p>
-                            </div>
-                            <DropdownMenuSeparator className="bg-[#E2E2DA]" />
-                            <DropdownMenuItem
-                                onClick={handleLogout}
-                                className="text-red-600 focus:text-red-600 focus:bg-red-50 cursor-pointer text-[13px]"
-                            >
-                                Sign out
-                            </DropdownMenuItem>
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                    <div className="flex items-center gap-3">
+                        <Credits_badge credits={{ total_credits: credits?.total_credits ?? 0, used_credits: credits?.used_credits ?? 0, available_credits: available }} />
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <button className="w-9 h-9 rounded-full bg-[#3730a3] text-white text-sm font-bold flex items-center justify-center hover:bg-[#312e81] transition-colors focus:outline-none focus:ring-2 focus:ring-[#3730a3] focus:ring-offset-2">
+                                    {initials}
+                                </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-52 shadow-lg border-[#E2E2DA]">
+                                <div className="px-3 py-2">
+                                    <p className="text-xs font-medium text-[#1a1a18] truncate">{displayName || 'My Account'}</p>
+                                    <p className="text-[11px] text-[#6b6b60] truncate">{email}</p>
+                                </div>
+                                <DropdownMenuSeparator className="bg-[#E2E2DA]" />
+                                <DropdownMenuItem
+                                    onClick={handleLogout}
+                                    className="text-red-600 focus:text-red-600 focus:bg-red-50 cursor-pointer text-[13px]"
+                                >
+                                    Sign out
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </div>
                 </div>
             </nav>
 
@@ -177,15 +187,21 @@ export default function DashboardClient({ user, projects: initialProjects }) {
                     <h2 className="text-[17px] font-semibold text-[#1a1a18]">
                         Your tours
                     </h2>
-                    <Button
-                        onClick={() => setShowNewProject(true)}
-                        className="bg-[#3730a3] hover:bg-[#312e81] text-white h-9 px-4 text-[13px] font-semibold rounded-lg gap-1.5 shadow-sm"
-                    >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                            <path d="M12 5v14M5 12h14"/>
-                        </svg>
-                        New tour
-                    </Button>
+                    {available < 1 ? (
+                        <Button asChild className="bg-[#3730a3] hover:bg-[#312e81] text-white h-9 px-4 text-[13px] font-semibold rounded-lg gap-1.5 shadow-sm">
+                            <Link href="/?nocredits=1#pricing">Buy credits</Link>
+                        </Button>
+                    ) : (
+                        <Button
+                            onClick={() => setShowNewProject(true)}
+                            className="bg-[#3730a3] hover:bg-[#312e81] text-white h-9 px-4 text-[13px] font-semibold rounded-lg gap-1.5 shadow-sm"
+                        >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <path d="M12 5v14M5 12h14"/>
+                            </svg>
+                            New tour
+                        </Button>
+                    )}
                 </div>
 
                 {/* New project dialog */}
