@@ -158,6 +158,7 @@ export default async function Page({ searchParams }) {
 
   const primaryHref  = user ? '/360editor' : '/signup'
   const primaryLabel = user ? 'Go to your dashboard →' : 'Build your first tour →'
+  const pricing = user ? 'Buy Now' : 'Buy Now'
 
   return (
       <div className="min-h-screen bg-[#FAFAF7] overflow-x-hidden pt-[60px]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -254,6 +255,9 @@ export default async function Page({ searchParams }) {
               <div className="flex items-center gap-3 flex-wrap mb-8 fade-up" style={{ animationDelay:'.15s' }}>
                 <Button asChild className="bg-[#3730a3] hover:bg-[#4338ca] text-white h-12 px-7 text-[15px] font-semibold rounded-xl glow-indigo">
                   <Link href={primaryHref}>{primaryLabel}</Link>
+                </Button>
+                <Button asChild className="bg-white hover:bg-[#f3e8ff] text-[#3730a3] h-12 px-7 text-[15px] font-semibold rounded-xl glow-indigo">
+                  <Link href="#pricing">{pricing}</Link>
                 </Button>
               </div>
               <div className="flex items-center gap-5 text-[12.5px] text-[#9a9ab2] fade-up" style={{ animationDelay:'.2s' }}>

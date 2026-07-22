@@ -121,7 +121,7 @@ export default function DashboardClient({ user, projects: initialProjects, credi
             {/* NAV */}
             <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur-lg border-b border-[#E2E2DA]">
                 <div className="max-w-6xl mx-auto px-6 h-[60px] flex items-center justify-between">
-                    <Link href="/360editor" className="flex items-center gap-2.5 no-underline group">
+                    <Link href="/" className="flex items-center gap-2.5 no-underline group">
                         <div className="w-8 h-8 bg-[#3730a3] rounded-lg flex items-center justify-center transition-colors group-hover:bg-[#312e81]">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                                 <circle cx="12" cy="12" r="10"/>
