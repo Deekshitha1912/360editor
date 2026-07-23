@@ -41,6 +41,9 @@ export default function ProjectClient({ projectId }) {
     const [viewerSize, setViewerSize]           = useState({ w: 0, h: 0 })
     const [flags, dispatchFlag]                 = useReducer(flagsReducer, flagsInit)
     const [previewHtml, setPreviewHtml]         = useState(null)
+    const [publicUrl, setPublicUrl]             = useState(null)   // live tour URL — null until published
+    const [publishError, setPublishError]       = useState('')
+    const [copied, setCopied]                   = useState(false)
 
     // Logo screen position (percent of viewer) + size (px) + drag state
     const [logoPos, setLogoPos]                 = useState({ x: 50, y: 50 })
@@ -68,6 +71,7 @@ export default function ProjectClient({ projectId }) {
                 if (!res.ok)            { router.push('/360editor'); return }
                 const data = await res.json()
                 setProject(data.project)
+                setPublicUrl(data.public_url ?? null)
                 setScenes(data.scenes)
                 setHotspots(data.hotspots)
                 if (data.scenes.length > 0) setActiveScene(data.scenes[0])
@@ -452,7 +456,61 @@ export default function ProjectClient({ projectId }) {
         setPreviewHtml(buildTourHtml({ project, scenes, hotspots }))
     }
 
-    function exportToHtml() {
+    // ── Publish ────────────────────────────────────────────────────────────
+    // Freezes the tour as it stands and serves it from a permanent URL:
+    //   https://<site>/<user_id>/<project-slug>
+    // The URL is assigned on the first publish and never changes afterwards —
+    // publishing again overwrites what that same link serves, so a link already
+    // sent to a client keeps working and simply shows the newer tour.
+    async function publishTour() {
+        if (!scenes.length || !project) return
+        setPublishError('')
+        dispatchFlag('publishing')
+        try {
+            const res  = await fetch(`/api/projects/${project.id}/publish`, { method: 'POST' })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) { setPublishError(json.error || 'Publish failed. Try again.'); return }
+            setPublicUrl(json.url)
+            setProject(p => p ? { ...p, slug: json.slug, published_at: json.published_at } : p)
+        } catch {
+            setPublishError('Network error — the tour was not published.')
+        } finally { dispatchFlag('publishing') }
+    }
+
+    // Takes the tour offline. The slug is kept, so re-publishing later restores
+    // the exact same link.
+    async function unpublishTour() {
+        if (!project) return
+        setPublishError('')
+        dispatchFlag('unpublishing')
+        try {
+            const res = await fetch(`/api/projects/${project.id}/publish`, { method: 'DELETE' })
+            if (res.ok) {
+                setPublicUrl(null)
+                setProject(p => p ? { ...p, published_at: null } : p)
+            } else {
+                const json = await res.json().catch(() => ({}))
+                setPublishError(json.error || 'Could not unpublish.')
+            }
+        } catch {
+            setPublishError('Network error — the tour is still live.')
+        } finally { dispatchFlag('unpublishing') }
+    }
+
+    async function copyLink() {
+        if (!publicUrl) return
+        try { await navigator.clipboard.writeText(publicUrl) }
+        catch {
+            const ta = Object.assign(document.createElement('textarea'), { value: publicUrl })
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove()
+        }
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1800)
+    }
+
+    // Secondary option — the old behaviour, for clients who want an offline file
+    // to drop on their own server or hand over on a pen drive.
+    function downloadHtml() {
         if (!scenes.length || !project) return
         dispatchFlag('exporting')
         try {
@@ -531,14 +589,59 @@ export default function ProjectClient({ projectId }) {
                         Preview
                     </button>
 
-                    {/* Export */}
-                    <button onClick={exportToHtml} disabled={flags.exporting || !scenes.length}
-                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#3730a3] text-white text-[12px] font-semibold hover:bg-[#312e81] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                    {/* Download the standalone file (secondary — the hosted link is the main output) */}
+                    <button onClick={downloadHtml} disabled={flags.exporting || !scenes.length}
+                            title="Download a standalone .html file of this tour"
+                            className="flex items-center justify-center w-8 h-8 rounded-lg border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         {flags.exporting
-                            ? <><Spinner/>Exporting…</>
-                            : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export HTML</>}
+                            ? <Spinner size={13}/>
+                            : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>}
+                    </button>
+
+                    {/* Publish — creates (or refreshes) the permanent public link */}
+                    <button onClick={publishTour} disabled={flags.publishing || !scenes.length}
+                            title={publicUrl ? 'Push the current version to the live link' : 'Host this tour on a permanent public link'}
+                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#3730a3] text-white text-[12px] font-semibold hover:bg-[#312e81] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                        {flags.publishing
+                            ? <><Spinner/>{publicUrl ? 'Updating…' : 'Publishing…'}</>
+                            : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><polyline points="8 7 12 3 16 7"/><line x1="12" y1="3" x2="12" y2="15"/></svg>{publicUrl ? 'Update live tour' : 'Publish'}</>}
                     </button>
                 </header>
+
+                {/* ── Live link bar — appears once the tour has been published ── */}
+                {publicUrl && (
+                    <div className="h-9 flex items-center gap-2 px-5 border-b border-[#E2E2DA] bg-[#F4F4EF] shrink-0">
+                        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 shrink-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"/>Live
+                        </span>
+                        <a href={publicUrl} target="_blank" rel="noreferrer"
+                           className="text-[12px] text-[#3730a3] hover:underline truncate font-medium">
+                            {publicUrl.replace(/^https?:\/\//, '')}
+                        </a>
+                        <button onClick={copyLink}
+                                className="ml-auto flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:text-[#1a1a18] transition-colors shrink-0">
+                            {copied
+                                ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Copied</>
+                                : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy link</>}
+                        </button>
+                        <a href={publicUrl} target="_blank" rel="noreferrer"
+                           className="flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:text-[#1a1a18] transition-colors shrink-0">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>Open
+                        </a>
+                        <button onClick={unpublishTour} disabled={flags.unpublishing}
+                                title="Take the tour offline (the link is kept and can be restored)"
+                                className="flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:border-red-300 hover:text-red-500 disabled:opacity-40 transition-colors shrink-0">
+                            {flags.unpublishing ? <Spinner size={11}/> : 'Unpublish'}
+                        </button>
+                    </div>
+                )}
+
+                {publishError && (
+                    <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
+                        {publishError}
+                        <button onClick={() => setPublishError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
+                    </div>
+                )}
 
                 {/* ── Body ── */}
                 <div className="flex-1 flex overflow-hidden">

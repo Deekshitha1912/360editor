@@ -40,8 +40,8 @@ export function pitchYawToScreen(pitch, yaw, viewPitch, viewYaw, hfov, W, H) {
 export function roundTo2(n) { return parseFloat(n.toFixed(2)) }
 export function clampPct(n) { return Math.min(100, Math.max(0, n)) }
 
-// ─── Flags reducer (export/save/delete busy states) ───────────────────────────
-export const flagsInit = { exporting: false, savingSettings: false, deleting: false, savingHotspot: false }
+// ─── Flags reducer (publish/export/save/delete busy states) ──────────────────
+export const flagsInit = { exporting: false, publishing: false, unpublishing: false, savingSettings: false, deleting: false, savingHotspot: false }
 export function flagsReducer(state, action) { return { ...state, [action]: !state[action] } }
 
 // ─── Pannellum overrides injected into the viewer ─────────────────────────────

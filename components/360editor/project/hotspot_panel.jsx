@@ -3,14 +3,11 @@
 // RIGHT PANEL — arrow palette + hotspot size + logo size + saved hotspots list
 // The pending hotspot editor is a floating popup on the viewer (middle.jsx)
 
-const STORAGE = 'https://dtmbvliwbvnjnewkohcn.supabase.co/storage/v1/object/public/hotspots'
-
-export const ARROWS = [
-    { type: 'up',       jpg: `${STORAGE}/arrow_up.jpg`,       gif: `${STORAGE}/arrow_up.gif`,       label: 'Forward' },
-    { type: 'left',     jpg: `${STORAGE}/arrow_left.jpg`,     gif: `${STORAGE}/arrow_left.gif`,     label: 'Left'    },
-    { type: 'up-left',  jpg: `${STORAGE}/arrow_left_up.jpg`,  gif: `${STORAGE}/arrow_left_up.gif`,  label: 'Fwd-L'   },
-    { type: 'up-right', jpg: `${STORAGE}/arrow_right_up.jpg`, gif: `${STORAGE}/arrow_right_up.gif`, label: 'Fwd-R'   },
-]
+// ARROWS now lives in lib/arrows.js so the server-rendered public tour route
+// can import it too ('use client' exports can't be read from server code).
+// Re-exported here so `import HotspotPanel, { ARROWS }` keeps working.
+import { ARROWS } from '@/lib/arrows'
+export { ARROWS }
 
 export default function HotspotPanel({
                                          scenes,

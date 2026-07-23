@@ -6,10 +6,17 @@ const protectedRoutes = ['/360editor']
 // (/login and /signup still bounce logged-in users to the dashboard.)
 const authRoutes      = ['/login', '/signup']
 
+// Published tours live at /<user_id>/<project-slug> and must stay completely
+// public — no session lookup, no redirect, no cookie work on that path.
+const PUBLIC_TOUR = /^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[a-z0-9][a-z0-9-]*\/?$/i
+
 export async function proxy(request) {
+    const { pathname } = request.nextUrl
+
+    if (PUBLIC_TOUR.test(pathname)) return NextResponse.next()
+
     const { supabase, state } = createMiddlewareClient(request)
     const { data: { user } } = await supabase.auth.getUser()
-    const { pathname } = request.nextUrl
 
     const isProtected = protectedRoutes.some(r => pathname === r || pathname.startsWith(`${r}/`))
 

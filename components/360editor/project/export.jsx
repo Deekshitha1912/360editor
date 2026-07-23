@@ -3,7 +3,7 @@
 // Used by the editor for both Preview (iframe) and Export (download).
 // Pure JS — no React, no side effects.
 
-import { ARROWS } from '@/components/360editor/project/hotspot_panel'
+import { ARROWS } from '@/lib/arrows'
 
 export function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')

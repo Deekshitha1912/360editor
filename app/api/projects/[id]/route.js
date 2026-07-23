@@ -12,7 +12,7 @@ export async function GET(_req, { params }) {
         const [{ data: project }, { data: scenes }, { data: hotspots }] = await Promise.all([
             supabase
                 .from('projects')
-                .select('id, name, created_at, logo_url, show_intro, auto_rotate, logo_x, logo_y, logo_size, hotspot_size')
+                .select('id, name, created_at, logo_url, show_intro, auto_rotate, logo_x, logo_y, logo_size, hotspot_size, slug, published_at')
                 .eq('id', id)
                 .eq('user_id', user.id)
                 .single(),
@@ -27,7 +27,20 @@ export async function GET(_req, { params }) {
         ])
 
         if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
-        return NextResponse.json({ project, scenes: scenes ?? [], hotspots: hotspots ?? [] })
+
+        // Live tour link, built server-side so the browser never needs the user id.
+        // null while the project has never been published (or was unpublished).
+        const origin    = (process.env.NEXT_PUBLIC_SITE_URL || new URL(_req.url).origin).replace(/\/+$/, '')
+        const publicUrl = project.published_at && project.slug
+            ? `${origin}/${user.id}/${project.slug}`
+            : null
+
+        return NextResponse.json({
+            project,
+            scenes:     scenes ?? [],
+            hotspots:   hotspots ?? [],
+            public_url: publicUrl,
+        })
     } catch (err) {
         return NextResponse.json({ error: err.message || 'Unexpected error.' }, { status: 500 })
     }
