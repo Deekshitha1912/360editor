@@ -67,7 +67,7 @@ export default function DashboardClient({ user, projects: initialProjects, credi
             })
             const json = await res.json()
             if (res.status === 402) {
-                router.push('/?nocredits=1#pricing')
+                router.push('/pricing?nocredits=1')
                 return
             }
             if (!res.ok) { setError(json.error || 'Failed to create project.'); return }
@@ -121,7 +121,7 @@ export default function DashboardClient({ user, projects: initialProjects, credi
             {/* NAV */}
             <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur-lg border-b border-[#E2E2DA]">
                 <div className="max-w-6xl mx-auto px-6 h-[60px] flex items-center justify-between">
-                    <Link href="/" className="flex items-center gap-2.5 no-underline group">
+                    <Link href="/360editor" className="flex items-center gap-2.5 no-underline group">
                         <div className="w-8 h-8 bg-[#3730a3] rounded-lg flex items-center justify-center transition-colors group-hover:bg-[#312e81]">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                                 <circle cx="12" cy="12" r="10"/>
@@ -133,8 +133,26 @@ export default function DashboardClient({ user, projects: initialProjects, credi
             </span>
                     </Link>
 
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2.5">
                         <Credits_badge credits={{ total_credits: credits?.total_credits ?? 0, used_credits: credits?.used_credits ?? 0, available_credits: available }} />
+
+                        {/* Top up without leaving the dashboard first */}
+                        <Button
+                            asChild
+                            className={`h-9 px-4 text-[13px] font-semibold rounded-lg gap-1.5 shadow-sm ${
+                                available < 1
+                                    ? 'bg-red-600 hover:bg-red-700 text-white'
+                                    : 'bg-[#3730a3] hover:bg-[#312e81] text-white'
+                            }`}
+                        >
+                            <Link href="/pricing">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                    <path d="M12 5v14M5 12h14"/>
+                                </svg>
+                                Add credits
+                            </Link>
+                        </Button>
+
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                                 <button className="w-9 h-9 rounded-full bg-[#3730a3] text-white text-sm font-bold flex items-center justify-center hover:bg-[#312e81] transition-colors focus:outline-none focus:ring-2 focus:ring-[#3730a3] focus:ring-offset-2">
@@ -176,7 +194,7 @@ export default function DashboardClient({ user, projects: initialProjects, credi
                             {projects.length} {projects.length === 1 ? 'tour' : 'tours'}
                         </div>
                         <span className="text-white/20">·</span>
-                        <span className="text-[12.5px] text-[#9a9ab2]">Each one exports to a single file you can send anywhere</span>
+                        <span className="text-[12.5px] text-[#9a9ab2]">Each one publishes to a link you can send anywhere</span>
                     </div>
                 </div>
             </div>
@@ -189,7 +207,7 @@ export default function DashboardClient({ user, projects: initialProjects, credi
                     </h2>
                     {available < 1 ? (
                         <Button asChild className="bg-[#3730a3] hover:bg-[#312e81] text-white h-9 px-4 text-[13px] font-semibold rounded-lg gap-1.5 shadow-sm">
-                            <Link href="/?nocredits=1#pricing">Buy credits</Link>
+                            <Link href="/pricing?nocredits=1">Buy credits</Link>
                         </Button>
                     ) : (
                         <Button

@@ -35,8 +35,8 @@ export async function proxy(request) {
 
         const available = credit?.available_credits ?? 0
         if (available < 1) {
-            // No credits → bounce to the landing pricing section to buy.
-            return redirectKeepingCookies('/?nocredits=1#pricing', request, state)
+            // No credits → bounce to the pricing page to buy.
+            return redirectKeepingCookies('/pricing?nocredits=1', request, state)
         }
     }
 

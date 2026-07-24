@@ -26,25 +26,33 @@ const PLANS = [
 ];
 
 /**
- * Pricing block for the landing page.
+ * Plan cards + buy buttons.
  *   isAuthenticated=false -> CTA links to /signup
  *   isAuthenticated=true  -> live Razorpay buy button; on success -> /360editor
+ *
+ * `bare` drops the heading and section chrome — used on /pricing, where the page
+ * already has its own header. Without it the block renders as a self-contained
+ * section (the teaser use on any other page).
  */
-export default function Pricing_section({ isAuthenticated = false, user, showNoCredits = false }) {
+export default function Pricing_section({ isAuthenticated = false, user, showNoCredits = false, bare = false }) {
   const router = useRouter();
 
   return (
-      <section id="pricing" className="bg-[#FAFAF7] border-t border-[#E2E2DA]">
-        <div className="max-w-5xl mx-auto px-6 py-20">
-          <h2
-              className="serif text-[clamp(24px,3.4vw,34px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-2 text-center"
-              data-reveal
-          >
-            Pay per tour. No subscription.
-          </h2>
-          <p className="text-[15px] text-[#6b6b60] text-center max-w-[460px] mx-auto mb-4" data-reveal>
-            1 credit = 1 virtual tour. Buy what you need, whenever you need it.
-          </p>
+      <section id="pricing" className={bare ? "bg-[#FAFAF7]" : "bg-[#FAFAF7] border-t border-[#E2E2DA]"}>
+        <div className={`max-w-5xl mx-auto px-6 ${bare ? "pt-14 pb-6" : "py-20"}`}>
+          {!bare && (
+              <>
+                <h2
+                    className="serif text-[clamp(24px,3.4vw,34px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-2 text-center"
+                    data-reveal
+                >
+                  Pay per tour. No subscription.
+                </h2>
+                <p className="text-[15px] text-[#6b6b60] text-center max-w-[460px] mx-auto mb-4" data-reveal>
+                  1 credit = 1 virtual tour. Buy what you need, whenever you need it.
+                </p>
+              </>
+          )}
 
           {showNoCredits && (
               <p className="text-[13.5px] text-center text-[#3730a3] bg-[#eeecfb] border border-[#d9d5f5] rounded-lg px-4 py-2.5 max-w-[440px] mx-auto mb-8 font-medium">
@@ -52,7 +60,7 @@ export default function Pricing_section({ isAuthenticated = false, user, showNoC
               </p>
           )}
 
-          <div className="grid sm:grid-cols-2 gap-6 max-w-3xl mx-auto mt-10">
+          <div className={`grid sm:grid-cols-2 gap-6 max-w-3xl mx-auto ${bare ? "mt-2" : "mt-10"}`}>
             {PLANS.map((plan) => (
                 <div
                     key={plan.key}

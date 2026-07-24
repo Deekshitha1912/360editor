@@ -1,10 +1,11 @@
-// app/page.js  — public landing page
-// Lean + human: what it is, why you'd use it, the steps — plus a real live demo.
+// app/page.js — public landing page
+// Pricing and How-it-works now live at /pricing and /how-it-works. The landing
+// page keeps the hero + live demo and teases both, so nothing here is a dead end.
+import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase-server'
 import Link from 'next/link'
-import Script from 'next/script'
 import { Button } from '@/components/ui/button'
-import Pricing_section from '@/components/360editor/project/payment/pricing_section'
+import SiteShell from '@/components/360editor/site/site_shell'
 
 // ───────────────────────────────────────────────────────────────────────────
 // LIVE 360° TOUR DEMO — a real interactive tour (same Pannellum the editor uses),
@@ -126,116 +127,55 @@ var viewer=pannellum.viewer('pano',{
 viewer.on('scenechange',function(id){setChip(id);});
 </script></body></html>`
 
-// Scroll-reveal + avatar sign-out (progressive enhancement; safe in a server component)
-const REVEAL_JS = `(function(){
-  var io=new IntersectionObserver(function(es){es.forEach(function(e){
-    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:0.12});
-  function run(){
-    document.querySelectorAll('[data-reveal]').forEach(function(el){io.observe(el);});
-    var out=document.getElementById('landing-signout');
-    if(out){out.addEventListener('click',function(){
-      out.textContent='Signing out…';
-      fetch('/api/logout',{method:'POST'}).then(function(){location.href='/';})
-        .catch(function(){location.href='/';});
-    });}
-    document.addEventListener('click',function(ev){
-      var m=document.querySelector('.avatar-menu[open]');
-      if(m&&!m.contains(ev.target))m.removeAttribute('open');
-    });
-  }
-  if(document.readyState!=='loading')run();else document.addEventListener('DOMContentLoaded',run);
-})();`
+// Four steps, each with the one line that tells you what actually happens.
+// `icon` is the SVG path data — drawn at 24×24, stroked, never filled.
+const STEPS = [
+  {
+    n: '1',
+    title: 'Upload your panoramas',
+    sub: 'One 360° photo per room, up to 30 in a tour.',
+    icon: <><path d="M12 16V4"/><path d="M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></>,
+  },
+  {
+    n: '2',
+    title: 'Drag arrows onto doorways',
+    sub: 'Point each one at the room it opens into.',
+    icon: <><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></>,
+  },
+  {
+    n: '3',
+    title: 'Add your logo',
+    sub: 'Place it, size it, pick where the tour opens.',
+    icon: <><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></>,
+  },
+  {
+    n: '4',
+    title: 'Publish or download',
+    sub: 'A permanent link to send, or one file to keep.',
+    icon: <><path d="M10 13a5 5 0 0 0 7.07 0l2-2a5 5 0 0 0-7.07-7.07l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.07 0l-2 2a5 5 0 0 0 7.07 7.07l1.1-1.1"/></>,
+  },
+]
+
+const CREDIT_INCLUDES = [
+  'Up to 30 rooms in the tour',
+  'Unlimited edits and re-publishes',
+  'Your logo, your arrow labels, no watermark from us',
+]
 
 export default async function Page({ searchParams }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  const sp = await searchParams
-  const showNoCredits = sp?.nocredits === '1'
 
-  // Avatar initials come from the auth email — no profiles query needed here.
-  const email = user?.email || ''
-  const initials = (email[0] || '?').toUpperCase()
+  // Old links pointed here with ?nocredits=1 for the #pricing anchor.
+  // Pricing is its own page now, so forward them rather than 404 the intent.
+  const sp = await searchParams
+  if (sp?.nocredits === '1') redirect('/pricing?nocredits=1')
 
   const primaryHref  = user ? '/360editor' : '/signup'
   const primaryLabel = user ? 'Go to your dashboard →' : 'Build your first tour →'
-  const pricing = user ? 'Buy Now' : 'Buy Now'
 
   return (
-      <div className="min-h-screen bg-[#FAFAF7] overflow-x-hidden pt-[60px]" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-            href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap"
-            rel="stylesheet"
-        />
-        <style>{`
-          .serif{font-family:'Fraunces',Georgia,serif}
-          .fade-up{opacity:0;transform:translateY(18px);animation:fadeUp .8s cubic-bezier(.16,1,.3,1) forwards}
-          @keyframes fadeUp{to{opacity:1;transform:none}}
-          [data-reveal]{opacity:0;transform:translateY(24px);transition:opacity .7s cubic-bezier(.16,1,.3,1),transform .7s cubic-bezier(.16,1,.3,1)}
-          [data-reveal].in{opacity:1;transform:none}
-          .glow-indigo{box-shadow:0 30px 80px -28px rgba(55,48,163,.55)}
-          .grain:before{content:'';position:absolute;inset:0;pointer-events:none;opacity:.5;
-            background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px);background-size:3px 3px}
-          @keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
-          @keyframes dropIn{0%{opacity:0;transform:translateY(-14px) scale(.96)}100%{opacity:1;transform:none}}
-          @keyframes arrowPop{0%,40%{opacity:0;transform:scale(.4)}55%{opacity:1;transform:scale(1.15)}70%,100%{opacity:1;transform:scale(1)}}
-          @keyframes barFill{from{width:14%}to{width:100%}}
-          @keyframes glowPulse{0%,100%{opacity:.55}50%{opacity:1}}
-          .avatar-menu>summary{list-style:none}
-          .avatar-menu>summary::-webkit-details-marker{display:none}
-          .avatar-menu[open]>summary:before{content:'';position:fixed;inset:0;z-index:40;cursor:default}
-          @media (prefers-reduced-motion: reduce){
-            .fade-up,[data-reveal]{animation:none!important;transition:none!important;opacity:1!important;transform:none!important}
-          }
-          @media (scripting: none){[data-reveal]{opacity:1!important;transform:none!important}}
-        `}</style>
-
-        {/* ── NAV ── */}
-        <nav className="fixed top-0 left-0 right-0 z-50 bg-white/85 backdrop-blur-lg border-b border-[#E2E2DA]">
-          <div className="max-w-5xl mx-auto px-6 h-[60px] flex items-center justify-between">
-            <Link href="/" className="flex items-center gap-2.5 no-underline group">
-              <div className="w-8 h-8 bg-[#3730a3] rounded-lg flex items-center justify-center transition-colors group-hover:bg-[#312e81]">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                </svg>
-              </div>
-              <span className="text-[#1a1a18] font-bold text-[18px] tracking-tight">360<span className="text-[#3730a3]">Editor</span></span>
-            </Link>
-
-            {user ? (
-                <details className="avatar-menu relative">
-                  <summary className="list-none cursor-pointer w-9 h-9 rounded-full bg-[#3730a3] text-white text-sm font-bold flex items-center justify-center hover:bg-[#312e81] transition-colors select-none">
-                    {initials}
-                  </summary>
-                  <div className="absolute right-0 mt-2 w-56 bg-white border border-[#E2E2DA] rounded-xl shadow-xl overflow-hidden z-50">
-                    <div className="px-3.5 py-3 border-b border-[#E2E2DA]">
-                      <p className="text-[13px] font-semibold text-[#1a1a18] truncate">My Account</p>
-                      <p className="text-[11.5px] text-[#6b6b60] truncate">{email}</p>
-                    </div>
-                    <Link href="/360editor" className="flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-[#1a1a18] hover:bg-[#F4F4EF] no-underline">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-                      Your projects
-                    </Link>
-                    <button id="landing-signout" type="button" className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-red-600 hover:bg-red-50 bg-transparent border-none cursor-pointer text-left">
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-                      Sign out
-                    </button>
-                  </div>
-                </details>
-            ) : (
-                <div className="flex items-center gap-2.5">
-                  <Button asChild variant="ghost" className="text-[14px] text-[#1a1a18] hover:bg-[#F4F4EF] h-9">
-                    <Link href="/login">Log in</Link>
-                  </Button>
-                  <Button asChild className="bg-[#3730a3] hover:bg-[#312e81] text-white text-[14px] h-9 px-4 rounded-lg">
-                    <Link href="/signup">Sign up free</Link>
-                  </Button>
-                </div>
-            )}
-          </div>
-        </nav>
+      <SiteShell user={user ? { email: user.email } : null} active="/">
 
         {/* ── HERO: what it is + the demo ── */}
         <section className="relative grain overflow-hidden bg-[#0d0c14]">
@@ -249,20 +189,20 @@ export default async function Page({ searchParams }) {
               </h1>
               <p className="text-[17px] text-[#b9b9cc] max-w-[460px] leading-relaxed mb-8 fade-up" style={{ animationDelay:'.1s' }}>
                 Upload your panoramas, connect the rooms with arrows, drop your logo on top,
-                and download one file you can put on any website. No code. No plugins.
-                No monthly fee while it&apos;s in beta.
+                and publish a link you can send to a client — or download the whole tour as
+                one file. No code. No plugins. No monthly fee.
               </p>
               <div className="flex items-center gap-3 flex-wrap mb-8 fade-up" style={{ animationDelay:'.15s' }}>
                 <Button asChild className="bg-[#3730a3] hover:bg-[#4338ca] text-white h-12 px-7 text-[15px] font-semibold rounded-xl glow-indigo">
                   <Link href={primaryHref}>{primaryLabel}</Link>
                 </Button>
                 <Button asChild className="bg-white hover:bg-[#f3e8ff] text-[#3730a3] h-12 px-7 text-[15px] font-semibold rounded-xl glow-indigo">
-                  <Link href="#pricing">{pricing}</Link>
+                  <Link href="/pricing">{user ? 'Buy credits' : 'See pricing'}</Link>
                 </Button>
               </div>
               <div className="flex items-center gap-5 text-[12.5px] text-[#9a9ab2] fade-up" style={{ animationDelay:'.2s' }}>
                 <span className="flex items-center gap-1.5"><Check/> Up to 30 rooms</span>
-                <span className="flex items-center gap-1.5"><Check/> One-click export</span>
+                <span className="flex items-center gap-1.5"><Check/> Permanent share link</span>
                 <span className="flex items-center gap-1.5"><Check/> Yours to keep</span>
               </div>
             </div>
@@ -273,7 +213,7 @@ export default async function Page({ searchParams }) {
                   <span className="w-2.5 h-2.5 rounded-full bg-[#ff5f57]" />
                   <span className="w-2.5 h-2.5 rounded-full bg-[#febc2e]" />
                   <span className="w-2.5 h-2.5 rounded-full bg-[#28c840]" />
-                  <span className="ml-3 text-[11.5px] text-[#8a8aa6] font-medium">my-apartment-tour.html</span>
+                  <span className="ml-3 text-[11.5px] text-[#8a8aa6] font-medium">my-apartment-tour</span>
                 </div>
                 <iframe
                     title="Live 360° virtual tour demo"
@@ -291,200 +231,167 @@ export default async function Page({ searchParams }) {
           </div>
         </section>
 
-        {/* ── WHY: three honest reasons ── */}
-        <section className="max-w-5xl mx-auto px-6 py-20">
-          <h2 className="serif text-[clamp(24px,3.4vw,34px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-2 text-center" data-reveal>
-            Why people actually use it
-          </h2>
-          <p className="text-[15px] text-[#6b6b60] text-center max-w-[460px] mx-auto mb-12" data-reveal>
-            It&apos;s built to get a finished, shareable tour into your hands — not to lock you into a subscription.
-          </p>
-          <div className="grid md:grid-cols-3 gap-6">
-            {[
-              ['You own the result',
-                'Export gives you one self-contained HTML file. Put it on your site, email it to a client, or keep it on a USB stick — it keeps working with nothing tied back to us.'],
-              ['The hard part is just dragging',
-                'Drop an arrow where a doorway is, pick the room it leads to, done. If you can move a file on your desktop, you can build the navigation.'],
-              ['Made for client work',
-                'Add your logo as a watermark, choose where the tour opens, size your arrows, and it plays fine on a phone. Hand it over and it looks like yours.'],
-            ].map(([title, body]) => (
-                <div key={title} className="bg-white border border-[#E2E2DA] rounded-2xl p-6" data-reveal>
-                  <div className="w-9 h-9 rounded-xl bg-[#3730a3]/8 flex items-center justify-center mb-4">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3730a3" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                  </div>
-                  <h3 className="text-[16px] font-semibold text-[#1a1a18] mb-2">{title}</h3>
-                  <p className="text-[14px] text-[#6b6b60] leading-relaxed">{body}</p>
-                </div>
-            ))}
-          </div>
-        </section>
+        {/* ── HOW IT WORKS — teaser rail, full detail on its own page ── */}
+        <section className="bg-white border-y border-[#E2E2DA]">
+          <div className="max-w-5xl mx-auto px-6 py-16">
+            <div className="text-center mb-12" data-reveal>
+              <span className="inline-block text-[11px] font-bold tracking-widest text-[#3730a3] uppercase mb-3">How it works</span>
+              <h2 className="serif text-[clamp(24px,3.4vw,34px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-3">
+                From a folder of photos to a link you can send
+              </h2>
+              <p className="text-[15px] text-[#6b6b60] max-w-[440px] mx-auto leading-relaxed">
+                If you can drag a file across your desktop, you can build the navigation.
+                Most first tours take under twenty minutes.
+              </p>
+            </div>
 
-        {/* ── INSIDE THE EDITOR: how it looks + how it works ── */}
-        <section id="steps" className="bg-white border-y border-[#E2E2DA]">
-          <div className="max-w-5xl mx-auto px-6 py-20">
-            <h2 className="serif text-[clamp(24px,3.4vw,34px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-2 text-center" data-reveal>
-              Here&apos;s the editor you&apos;ll be working in
-            </h2>
-            <p className="text-[15px] text-[#6b6b60] text-center max-w-[500px] mx-auto mb-10" data-reveal>
-              Three panels, one screen. Scenes on the left, your live 360° view in the middle,
-              arrows and branding on the right.
-            </p>
+            <div className="relative">
+              {/* The thread running through the four icons — desktop only, where
+                            the steps sit in one row and the line actually means something. */}
+              <div
+                  className="hidden md:block absolute left-[12.5%] right-[12.5%] top-[54px] h-px"
+                  style={{ backgroundImage:'repeating-linear-gradient(90deg,#D8D8CE 0 6px,transparent 6px 12px)' }}
+                  aria-hidden="true"
+              />
 
-            {/* Editor mockup */}
-            <div className="rounded-2xl border border-[#E2E2DA] shadow-xl overflow-hidden mb-12" data-reveal>
-              <div className="flex items-center justify-between px-4 h-11 bg-[#F4F4EF] border-b border-[#E2E2DA]">
-                <div className="flex items-center gap-2 text-[13px] font-semibold text-[#1a1a18]">
-                  <span className="w-2 h-2 rounded-full bg-[#3730a3]" /> Apartment Tour
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] border border-[#E2E2DA] bg-white text-[#1a1a18] px-3 py-1 rounded-lg font-medium">Preview</span>
-                  <span className="text-[12px] bg-[#3730a3] text-white px-3 py-1 rounded-lg font-medium">Export HTML</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-[130px_1fr_150px] md:grid-cols-[190px_1fr_210px] h-[300px] md:h-[360px]">
-                {/* LEFT — scenes */}
-                <div className="border-r border-[#E2E2DA] bg-[#FAFAF7] p-3 overflow-hidden">
-                  <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase mb-2.5">Scenes</div>
-                  {[['Living Room','#4a4368','0s',true],['Hallway','#3a4566','.5s',false],['Balcony','#9fc6e8','1s',false]].map(([name,col,d,active]) => (
-                      <div key={name} className="flex items-center gap-2 mb-2 p-1.5 rounded-lg border border-[#E2E2DA] bg-white"
-                           style={{ animation:`dropIn .6s ease ${d} both`, boxShadow: active ? '0 0 0 2px #3730a3' : 'none' }}>
-                        <span className="w-9 h-7 rounded-md shrink-0" style={{ background:col }} />
-                        <span className="text-[11px] text-[#1a1a18] font-medium truncate">{name}</span>
+              <div className="relative grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                {STEPS.map(({ n, title, sub, icon }) => (
+                    <div
+                        key={n}
+                        className="group relative bg-[#FAFAF7] border border-[#E2E2DA] rounded-2xl px-5 pt-7 pb-6 text-center transition-all hover:border-[#3730a3]/35 hover:bg-white hover:shadow-[0_10px_30px_rgba(55,48,163,0.08)]"
+                        data-reveal
+                    >
+                      {/* Icon sits on the thread, so it needs an opaque backdrop */}
+                      <div className="relative mx-auto mb-4 w-14 h-14 rounded-2xl bg-white border border-[#E2E2DA] flex items-center justify-center transition-colors group-hover:border-[#3730a3]/30">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3730a3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          {icon}
+                        </svg>
+                        <span className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-[#3730a3] text-white text-[11px] font-bold flex items-center justify-center border-2 border-white">
+                                            {n}
+                                        </span>
                       </div>
-                  ))}
-                  <div className="mt-2 border-2 border-dashed border-[#cdcdc2] rounded-lg py-3 text-center text-[10px] text-[#9a9a8e]"
-                       style={{ animation:'glowPulse 2.4s ease-in-out infinite 1.4s' }}>
-                    + Upload panorama
-                  </div>
-                </div>
 
-                {/* MIDDLE — viewer */}
-                <div className="relative overflow-hidden" style={{ background:'radial-gradient(120% 90% at 50% 30%, #4a4368 0%, #2a2740 55%, #15131f 100%)' }}>
-                  <div className="absolute inset-x-0 bottom-0 h-1/2" style={{ backgroundImage:'repeating-linear-gradient(90deg,transparent 0 38px,rgba(184,155,115,.18) 38px 40px)' }} />
-                  {/* arrow with hover-style label */}
-                  <div className="absolute left-[30%] top-[52%] flex flex-col items-center" style={{ animation:'arrowPop 4s ease-in-out infinite' }}>
-                    <span className="mb-1 text-[10px] font-semibold text-white bg-black/60 px-2 py-0.5 rounded-md whitespace-nowrap">Go to Hallway</span>
-                    <div className="w-11 h-11 rounded-full flex items-center justify-center border-[1.5px] border-white/60" style={{ background:'rgba(55,48,163,.55)', backdropFilter:'blur(3px)' }}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                      <h3 className="text-[14px] font-semibold text-[#1a1a18] leading-snug mb-1.5">{title}</h3>
+                      <p className="text-[12.5px] text-[#6b6b60] leading-relaxed">{sub}</p>
                     </div>
-                  </div>
-                  <div className="absolute left-[60%] top-[40%]" style={{ animation:'arrowPop 4s ease-in-out infinite 1.3s' }}>
-                    <div className="w-11 h-11 rounded-full flex items-center justify-center border-[1.5px] border-white/60" style={{ background:'rgba(55,48,163,.55)', backdropFilter:'blur(3px)' }}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-                    </div>
-                  </div>
-                  <div className="absolute right-4 bottom-3 text-white/85 font-bold text-[12px] flex items-center gap-1.5" style={{ animation:'dropIn .7s ease 1.8s both' }}>
-                    <span className="w-4 h-4 rounded bg-[#a3e635]" /> YOUR LOGO
-                  </div>
-                  <div className="absolute left-1/2 -translate-x-1/2 top-3 text-[10.5px] text-white/80 bg-black/35 px-3 py-1 rounded-full backdrop-blur">
-                    Living Room · drag to look around
-                  </div>
-                </div>
-
-                {/* RIGHT — directions */}
-                <div className="border-l border-[#E2E2DA] bg-[#FAFAF7] p-3 overflow-hidden">
-                  <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase mb-2">Directions</div>
-                  <div className="grid grid-cols-2 gap-1.5 mb-3">
-                    {['M12 19V5M5 12l7-7 7 7','M19 12H5M12 19l-7-7 7-7','M7 17L17 7M7 7h10v10','M17 17L7 7M17 7H7v10'].map((d,i)=>(
-                        <div key={i} className="aspect-square rounded-lg border border-[#E2E2DA] bg-white flex items-center justify-center"
-                             style={{ animation:`dropIn .5s ease ${0.2*i}s both`, boxShadow:i===0?'0 0 0 2px #3730a3':'none' }}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3730a3" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>
-                        </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase">Hotspot size</span>
-                    <span className="text-[9px] text-[#9a9a8e] font-mono">90px</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[#E2E2DA] overflow-hidden mb-3">
-                    <div className="h-full bg-[#3730a3] rounded-full" style={{ animation:'barFill 2.6s ease-in-out infinite alternate' }} />
-                  </div>
-                  <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase mb-1.5">Placed</div>
-                  {['→ Hallway','↑ Balcony'].map((t,i)=>(
-                      <div key={t} className="text-[11px] text-[#1a1a18] bg-white border border-[#E2E2DA] rounded-md px-2 py-1.5 mb-1.5" style={{ animation:`dropIn .5s ease ${0.6+0.3*i}s both` }}>{t}</div>
-                  ))}
-                </div>
+                ))}
               </div>
             </div>
 
-            {/* Steps tied to the editor */}
-            <h3 className="serif text-[20px] font-semibold text-[#1a1a18] text-center mb-8" data-reveal>
-              And here&apos;s how you use it — four steps
-            </h3>
-            <div className="grid md:grid-cols-2 gap-5">
-              {[
-                ['1','Add your scenes','Upload a 360° photo for each room into the left panel — up to 30 in one tour. Click a scene to open it in the middle viewer.'],
-                ['2','Drop the arrows','Drag an arrow from the right panel onto a doorway in the view, then pick the room it leads to. That link is your navigation.'],
-                ['3','Brand and adjust','Add your logo and drag it where you want, set one size for all arrows, choose the auto-spin, and give each arrow a label.'],
-                ['4','Preview, then export','Hit Preview to walk the finished tour, then Export to download one HTML file you can host or send anywhere.'],
-              ].map(([n, title, body]) => (
-                  <div key={n} className="flex gap-4 bg-[#FAFAF7] border border-[#E2E2DA] rounded-2xl p-5" data-reveal>
-                    <div className="shrink-0 w-10 h-10 rounded-xl bg-[#3730a3] text-white flex items-center justify-center font-bold text-[15px]">{n}</div>
-                    <div>
-                      <h4 className="text-[15.5px] font-semibold text-[#1a1a18] mb-1">{title}</h4>
-                      <p className="text-[14px] text-[#6b6b60] leading-relaxed">{body}</p>
-                    </div>
-                  </div>
-              ))}
+            <div className="mt-11 flex flex-col sm:flex-row items-center justify-center gap-3" data-reveal>
+              <Link href="/how-it-works" className="inline-flex items-center gap-1.5 h-11 px-6 rounded-xl bg-[#1a1a18] text-white text-[14px] font-semibold no-underline hover:bg-[#33332e] transition-colors">
+                See the editor in detail
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              </Link>
+              <a href="#demo" className="inline-flex items-center gap-1.5 h-11 px-6 rounded-xl border border-[#E2E2DA] bg-white text-[#1a1a18] text-[14px] font-semibold no-underline hover:border-[#3730a3]/40 hover:text-[#3730a3] transition-colors">
+                Try the live demo
+              </a>
             </div>
           </div>
         </section>
 
-        {/* ── PRICING ── */}
-        <Pricing_section
-            isAuthenticated={!!user}
-            user={user ? { email: user.email } : null}
-            showNoCredits={showNoCredits}
-        />
+        {/* ── PRICING TEASER — the numbers, then straight to checkout ── */}
+        <section className="max-w-5xl mx-auto px-6 py-16">
+          <div className="rounded-3xl border border-[#E2E2DA] bg-white overflow-hidden" data-reveal>
+            <div className="grid md:grid-cols-[1fr_1fr]">
+
+              {/* Left — what a credit actually buys */}
+              <div className="p-8 md:p-10 flex flex-col">
+                <span className="inline-block text-[11px] font-bold tracking-widest text-[#3730a3] uppercase mb-3">Pricing</span>
+                <h2 className="serif text-[clamp(22px,3vw,30px)] font-semibold text-[#1a1a18] tracking-[-0.5px] mb-3 leading-tight">
+                  Pay per tour. Nothing monthly.
+                </h2>
+                <p className="text-[14.5px] text-[#6b6b60] leading-relaxed mb-6">
+                  One credit builds one tour. Spend it when you create the project, then edit and
+                  re-publish that tour as often as you like — the price never comes back.
+                </p>
+
+                <ul className="space-y-2.5 mb-8">
+                  {CREDIT_INCLUDES.map(item => (
+                      <li key={item} className="flex items-start gap-2.5 text-[13.5px] text-[#3a3a35]">
+                        <svg className="mt-[3px] shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3730a3" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                        {item}
+                      </li>
+                  ))}
+                </ul>
+
+                <div className="mt-auto flex items-center gap-3 flex-wrap">
+                  <Link href="/pricing" className="inline-flex items-center justify-center gap-1.5 h-11 px-6 rounded-xl bg-[#3730a3] text-white text-[14.5px] font-bold no-underline hover:bg-[#312e81] transition-colors">
+                    {user ? 'Buy credits' : 'See plans and buy'}
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  </Link>
+                  {!user && (
+                      <Link href="/signup" className="inline-flex items-center justify-center h-11 px-6 rounded-xl border border-[#E2E2DA] text-[#1a1a18] text-[14.5px] font-semibold no-underline hover:border-[#3730a3]/40 hover:text-[#3730a3] transition-colors">
+                        Create an account
+                      </Link>
+                  )}
+                </div>
+              </div>
+
+              {/* Right — the two plans, with the per-tour maths done for them */}
+              <div className="border-t md:border-t-0 md:border-l border-[#E2E2DA] bg-[#FAFAF7] p-6 md:p-8 flex flex-col justify-center gap-3">
+
+                <Link href="/pricing" className="group block rounded-2xl border border-[#E2E2DA] bg-white p-5 no-underline transition-all hover:border-[#3730a3]/40 hover:shadow-[0_8px_24px_rgba(55,48,163,0.08)]">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div>
+                      <div className="text-[13.5px] font-semibold text-[#1a1a18]">Single project</div>
+                      <div className="text-[12px] text-[#6b6b60] mt-0.5">1 credit · 1 tour</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="serif text-[27px] font-semibold text-[#1a1a18] leading-none">₹500</div>
+                      <div className="text-[11px] text-[#9a9a8e] mt-1">₹500 per tour</div>
+                    </div>
+                  </div>
+                </Link>
+
+                <Link href="/pricing" className="group relative block rounded-2xl border-2 border-[#3730a3] bg-white p-5 no-underline transition-all hover:shadow-[0_10px_30px_rgba(55,48,163,0.16)]">
+                                <span className="absolute -top-2.5 left-5 rounded-full bg-[#3730a3] px-2.5 py-0.5 text-[9.5px] font-bold tracking-wide text-white">
+                                    BEST VALUE
+                                </span>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div>
+                      <div className="text-[13.5px] font-semibold text-[#1a1a18]">3 projects</div>
+                      <div className="text-[12px] text-[#6b6b60] mt-0.5">3 credits · 3 tours</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="flex items-baseline justify-end gap-1.5">
+                        <span className="text-[13px] text-[#9a9a8e] line-through">₹1500</span>
+                        <span className="serif text-[27px] font-semibold text-[#1a1a18] leading-none">₹1000</span>
+                      </div>
+                      <div className="text-[11px] font-semibold text-[#3d8f4e] mt-1">₹333 per tour · save ₹500</div>
+                    </div>
+                  </div>
+                </Link>
+
+                <p className="text-center text-[11.5px] text-[#9a9a8e] mt-1">
+                  Credits never expire · Secure checkout via Razorpay
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
 
         {/* ── CTA ── */}
-        <section className="max-w-5xl mx-auto px-6 py-20">
+        <section className="max-w-5xl mx-auto px-6 pb-20">
           <div className="relative rounded-3xl overflow-hidden bg-[#3730a3] text-center px-6 py-14 glow-indigo grain" data-reveal>
             <div className="pointer-events-none absolute -top-24 -right-16 w-72 h-72 rounded-full blur-[90px]" style={{ background:'radial-gradient(circle,rgba(163,230,53,.28),transparent 70%)' }} />
             <h2 className="serif relative text-white text-[clamp(26px,4vw,40px)] font-semibold tracking-[-0.8px] mb-4 leading-[1.1]">
               Give it a try with your own photos.
             </h2>
             <p className="relative text-[16px] text-white/80 max-w-[420px] mx-auto mb-8">
-              Free while it&apos;s in beta. Upload a panorama and you&apos;ll have a shareable tour in minutes.
+              Upload a panorama and you&apos;ll have a shareable tour in minutes.
             </p>
             <div className="relative flex items-center justify-center gap-3 flex-wrap">
               <Button asChild className="bg-white hover:bg-[#f4f4ef] text-[#3730a3] h-12 px-8 text-[15px] font-bold rounded-xl">
                 <Link href={primaryHref}>{user ? 'Go to dashboard →' : 'Start for free →'}</Link>
               </Button>
-              {!user && (
-                  <Button asChild variant="outline" className="h-12 px-8 text-[15px] border-white/40 bg-transparent text-white hover:bg-white/12 rounded-xl">
-                    <Link href="/login">Log in</Link>
-                  </Button>
-              )}
+              <Button asChild variant="outline" className="h-12 px-8 text-[15px] border-white/40 bg-transparent text-white hover:bg-white/12 rounded-xl">
+                <Link href="/pricing">See pricing</Link>
+              </Button>
             </div>
           </div>
         </section>
-
-        {/* ── FOOTER ── */}
-        <footer className="border-t border-[#E2E2DA] bg-white">
-          <div className="max-w-5xl mx-auto px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <Link href="/" className="flex items-center gap-2.5 no-underline">
-              <div className="w-7 h-7 bg-[#3730a3] rounded-lg flex items-center justify-center">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                </svg>
-              </div>
-              <span className="text-[#1a1a18] font-bold text-[15px]">360<span className="text-[#3730a3]">Editor</span></span>
-            </Link>
-            <div className="flex items-center gap-6 text-[13px] text-[#6b6b60]">
-              <a href="#pricing" className="hover:text-[#3730a3]">Pricing</a>
-              <a href="#steps" className="hover:text-[#3730a3]">How it works</a>
-              <Link href="/privacy" className="hover:text-[#3730a3]">Privacy</Link>
-              <Link href="/terms" className="hover:text-[#3730a3]">Terms</Link>
-            </div>
-            <span className="text-[12.5px] text-[#9a9a8e]">© {new Date().getFullYear()} 360Editor</span>
-          </div>
-        </footer>
-
-        <Script id="landing-enhance" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: REVEAL_JS }} />
-      </div>
+      </SiteShell>
   )
 }
 
