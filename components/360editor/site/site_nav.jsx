@@ -1,7 +1,7 @@
 ﻿// components/360editor/site/site_nav.jsx
-// Shared top bar for the public pages (landing, /how-it-works, /pricing).
-// Server component — the avatar dropdown is a <details>, and sign-out is wired
-// up by the small script in site_shell.jsx.
+// Shared top bar for the public pages (landing, /how-it-works, /pricing,
+// /privacy, /terms). Server component; the avatar dropdown is the AccountMenu
+// client component, which owns its own open state and sign-out request.
 //
 // LAYOUT: the row has exactly TWO children — the logo, and one group holding
 // everything else. justify-between then does the whole job: logo hard left,
@@ -10,10 +10,10 @@
 // logo before.)
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
+import AccountMenu from '@/components/360editor/site/account_menu'
 
 export default function SiteNav({ user, active }) {
-    const email    = user?.email || ''
-    const initials = (email[0] || '?').toUpperCase()
+    const email = user?.email || ''
 
     const link = (href, label) => (
         <Link
@@ -59,25 +59,7 @@ export default function SiteNav({ user, active }) {
                                 </Link>
                             </Button>
 
-                            <details className="avatar-menu relative">
-                                <summary className="list-none cursor-pointer w-9 h-9 rounded-full bg-[#3730a3] text-white text-sm font-bold flex items-center justify-center hover:bg-[#312e81] transition-colors select-none">
-                                    {initials}
-                                </summary>
-                                <div className="absolute right-0 mt-2 w-56 bg-white border border-[#E2E2DA] rounded-xl shadow-xl overflow-hidden z-50">
-                                    <div className="px-3.5 py-3 border-b border-[#E2E2DA]">
-                                        <p className="text-[13px] font-semibold text-[#1a1a18] truncate">My Account</p>
-                                        <p className="text-[11.5px] text-[#6b6b60] truncate">{email}</p>
-                                    </div>
-                                    <Link href="/360editor" className="flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-[#1a1a18] hover:bg-[#F4F4EF] no-underline">
-                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-                                        Your projects
-                                    </Link>
-                                    <button id="landing-signout" type="button" className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[13px] text-red-600 hover:bg-red-50 bg-transparent border-none cursor-pointer text-left">
-                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
-                                        Sign out
-                                    </button>
-                                </div>
-                            </details>
+                            <AccountMenu email={email} />
                         </div>
                     ) : (
                         <div className="flex items-center gap-2.5">

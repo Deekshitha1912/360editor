@@ -1,32 +1,14 @@
 ﻿// components/360editor/site/site_shell.jsx
-// Fonts + shared page styles + nav + footer + the progressive-enhancement script,
-// in one wrapper so every public page (landing, /how-it-works, /pricing) looks
-// and behaves identically. Server component — no hooks, no 'use client'.
+// Fonts + shared page styles + nav + footer for every public page (landing,
+// /how-it-works, /pricing, /privacy, /terms). Server component — no hooks here.
 //
-// IMPORTANT: the reveal script must ship on every page that uses [data-reveal],
-// otherwise those blocks stay at opacity 0.
-import Script from 'next/script'
+// The old inline <Script> that drove [data-reveal] is gone. It ran once per full
+// page load, so after a soft navigation nothing installed the observer and every
+// revealed block stayed invisible until a manual reload. <Reveal /> is a client
+// component that re-runs on each navigation instead.
 import SiteNav from '@/components/360editor/site/site_nav'
 import SiteFooter from '@/components/360editor/site/site_footer'
-
-const SITE_JS = `(function(){
-  var io=new IntersectionObserver(function(es){es.forEach(function(e){
-    if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:0.12});
-  function run(){
-    document.querySelectorAll('[data-reveal]').forEach(function(el){io.observe(el);});
-    var out=document.getElementById('landing-signout');
-    if(out){out.addEventListener('click',function(){
-      out.textContent='Signing out…';
-      fetch('/api/logout',{method:'POST'}).then(function(){location.href='/';})
-        .catch(function(){location.href='/';});
-    });}
-    document.addEventListener('click',function(ev){
-      var m=document.querySelector('.avatar-menu[open]');
-      if(m&&!m.contains(ev.target))m.removeAttribute('open');
-    });
-  }
-  if(document.readyState!=='loading')run();else document.addEventListener('DOMContentLoaded',run);
-})();`
+import Reveal from '@/components/360editor/site/reveal'
 
 export default function SiteShell({ user, active, children }) {
     return (
@@ -51,9 +33,6 @@ export default function SiteShell({ user, active, children }) {
               @keyframes arrowPop{0%,40%{opacity:0;transform:scale(.4)}55%{opacity:1;transform:scale(1.15)}70%,100%{opacity:1;transform:scale(1)}}
               @keyframes barFill{from{width:14%}to{width:100%}}
               @keyframes glowPulse{0%,100%{opacity:.55}50%{opacity:1}}
-              .avatar-menu>summary{list-style:none}
-              .avatar-menu>summary::-webkit-details-marker{display:none}
-              .avatar-menu[open]>summary:before{content:'';position:fixed;inset:0;z-index:40;cursor:default}
               @media (prefers-reduced-motion: reduce){
                 .fade-up,[data-reveal]{animation:none!important;transition:none!important;opacity:1!important;transform:none!important}
               }
@@ -66,7 +45,7 @@ export default function SiteShell({ user, active, children }) {
 
             <SiteFooter />
 
-            <Script id="site-enhance" strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: SITE_JS }} />
+            <Reveal />
         </div>
     )
 }
