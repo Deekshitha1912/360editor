@@ -29,6 +29,7 @@ export default function SignupPage() {
                     lastName: lastName.trim(),
                     email: email.trim().toLowerCase(),
                     password,
+                    email_confirm: true,
                 }),
             })
 

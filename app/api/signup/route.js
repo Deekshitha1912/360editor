@@ -1,7 +1,20 @@
-﻿// app/api/signup/route.js — profile creation now handled by the DB trigger
+﻿// app/api/signup/route.js — profile creation handled by the DB trigger
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import { createAdminClient } from '@/lib/supabase-admin'
+
+// A key/config failure is not the user's fault and must not be shown to them as
+// a validation message. These fragments identify it.
+function isKeyProblem(message = '') {
+    const m = message.toLowerCase()
+    return (
+        m.includes('invalid jwt') ||
+        m.includes('unrecognized jwt kid') ||
+        m.includes('signing method') ||
+        m.includes('invalid api key') ||
+        m.includes('unable to parse or verify signature')
+    )
+}
 
 export async function POST(req) {
     try {
@@ -35,6 +48,9 @@ export async function POST(req) {
         // ─────────────────────────────────────────────────────────────────────
 
         // ── AUTO-VERIFY (no email) — remove this block when re-enabling above ──
+        // NOTE: admin.auth.admin.* is the strictest consumer of the secret key in
+        // the whole app. If the key is a revoked legacy service_role JWT, this is
+        // where it surfaces first — see lib/supabase-admin.js.
         const admin = createAdminClient()
 
         const { data: authData, error: authErr } = await admin.auth.admin.createUser({
@@ -47,16 +63,38 @@ export async function POST(req) {
 
         if (authErr) {
             const msg = authErr.message?.toLowerCase() ?? ''
+
             if (authErr.code === 'email_exists' || msg.includes('already') || msg.includes('registered') || msg.includes('exists'))
                 return NextResponse.json({ error: 'already_exists' }, { status: 409 })
+
+            // Server misconfiguration — log it loudly, tell the user nothing
+            // about our keys, and do NOT dress it up as a 400 validation error.
+            if (isKeyProblem(authErr.message)) {
+                console.error(
+                    '[signup] Supabase rejected the secret key:', authErr.message,
+                    '\n  → Dashboard → Settings → API Keys → copy the sb_secret_... value into',
+                    'SUPABASE_SECRET_KEY (.env.local AND the Vercel environment), then redeploy.'
+                )
+                return NextResponse.json(
+                    { error: 'Sign-up is temporarily unavailable. Please try again shortly.' },
+                    { status: 503 }
+                )
+            }
+
             return NextResponse.json({ error: authErr.message }, { status: 400 })
         }
+
         if (!authData?.user?.id)
             return NextResponse.json({ error: 'already_exists' }, { status: 409 })
 
         return NextResponse.json({ success: true }, { status: 200 })
     } catch (err) {
+        // createAdminClient() throws here when the key is absent entirely.
         console.error('[signup] unexpected error:', err)
-        return NextResponse.json({ error: err.message || 'Unexpected error.' }, { status: 500 })
+        const configIssue = /secret key missing|publishable key missing|NEXT_PUBLIC_SUPABASE_URL/.test(err.message || '')
+        return NextResponse.json(
+            { error: configIssue ? 'Sign-up is temporarily unavailable. Please try again shortly.' : (err.message || 'Unexpected error.') },
+            { status: configIssue ? 503 : 500 }
+        )
     }
 }
