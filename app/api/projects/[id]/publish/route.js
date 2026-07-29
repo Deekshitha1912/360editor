@@ -14,7 +14,7 @@ import { createClient } from '@/lib/supabase-server'
 import { uniqueSlug } from '@/lib/slug'
 
 // Fields the public renderer needs — nothing else is snapshotted.
-const PROJECT_FIELDS = 'id, name, logo_url, show_intro, auto_rotate, logo_x, logo_y, logo_size, hotspot_size'
+const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, overlays, coverups'
 
 function siteOrigin(req) {
     const configured = process.env.NEXT_PUBLIC_SITE_URL
@@ -62,13 +62,11 @@ export async function POST(req, { params }) {
             project: {
                 id:           project.id,
                 name:         project.name,
-                logo_url:     project.logo_url,
                 show_intro:   project.show_intro,
                 auto_rotate:  project.auto_rotate,
-                logo_x:       project.logo_x,
-                logo_y:       project.logo_y,
-                logo_size:    project.logo_size,
                 hotspot_size: project.hotspot_size,
+                overlays:     project.overlays ?? [],
+                coverups:     project.coverups ?? [],
             },
             scenes,
             hotspots: hotspots ?? [],

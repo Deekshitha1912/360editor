@@ -1,7 +1,6 @@
 ﻿'use client'
 // components/360editor/project/editor_modals.jsx
 // Small shared UI + modal dialogs used by the editor (middle.jsx).
-import { useState, useRef } from 'react'
 
 export function Spinner({ size = 12 }) {
     return (
@@ -33,99 +32,16 @@ export function CameraControls({ pannellumRef }) {
     )
 }
 
-export function SettingsModal({ draft, onChange, onSave, onClose, saving, projectId, onProjectChange }) {
-    const [uploading, setUploading] = useState(false)
-    const [uploadErr, setUploadErr] = useState('')
-    const fileRef = useRef(null)
-
-    // Upload goes through the server route — the client never touches storage.
-    async function handleFile(e) {
-        const file = e.target.files?.[0]
-        if (!file) return
-        setUploadErr(''); setUploading(true)
-        try {
-            const fd = new FormData()
-            fd.append('file', file)
-            if (draft.logo_url) fd.append('old_url', draft.logo_url)   // replace = delete old + add new
-            const res  = await fetch(`/api/projects/${projectId}/logo`, { method: 'POST', body: fd })
-            const data = await res.json().catch(() => ({}))
-            if (!res.ok) throw new Error(data?.error || 'Upload failed')
-            onChange({ ...draft, logo_url: data.url })
-        } catch (err) {
-            setUploadErr(err?.message || 'Upload failed')
-        } finally {
-            setUploading(false)
-            if (fileRef.current) fileRef.current.value = ''
-        }
-    }
-
-    // Remove from storage AND from the table (immediately, not on Save).
-    async function handleRemove() {
-        if (!draft.logo_url) return
-        setUploading(true)
-        try {
-            const res  = await fetch(`/api/projects/${projectId}/logo`, {
-                method: 'DELETE', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ url: draft.logo_url }),
-            })
-            const data = await res.json().catch(() => ({}))
-            if (res.ok && data?.project) onProjectChange?.(data.project)   // clears the logo from the live viewer
-            onChange({ ...draft, logo_url: '' })
-        } finally { setUploading(false) }
-    }
+// Logo upload used to live here, writing straight to projects.logo_url. That
+// column is gone — a project can carry several logos plus per-scene cover-ups
+// now, all managed in OverlayPanel. This modal is back to what its name says:
+// project settings.
+export function SettingsModal({ draft, onChange, onSave, onClose, saving }) {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
             <div className="bg-white rounded-2xl border border-[#E2E2DA] shadow-2xl p-6 w-[360px] space-y-4">
                 <p className="text-[14px] font-semibold text-[#1a1a18]">Project settings</p>
-
-                {/* ── Logo upload ── */}
-                <div className="space-y-1.5">
-                    <label className="text-[11px] text-[#6b6b60] uppercase tracking-wider">
-                        Logo <span className="normal-case opacity-60">(optional watermark)</span>
-                    </label>
-
-                    {draft.logo_url ? (
-                        <div className="flex items-center gap-2.5 p-2 border border-[#E2E2DA] rounded-lg">
-                            <div className="w-12 h-12 rounded-md bg-[#F4F4EF] border border-[#E2E2DA] flex items-center justify-center shrink-0 overflow-hidden">
-                                <img src={draft.logo_url} alt="logo" className="w-full h-full object-contain p-1"/>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <p className="text-[11px] font-medium text-[#1a1a18] truncate">Logo uploaded</p>
-                                <p className="text-[10px] text-[#6b6b60]">Drag it on the viewer to position it.</p>
-                            </div>
-                            <div className="flex flex-col gap-1 shrink-0">
-                                <button onClick={() => fileRef.current?.click()} disabled={uploading}
-                                        className="text-[10px] px-2 py-1 rounded-md border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] disabled:opacity-40 transition-colors">
-                                    Replace
-                                </button>
-                                <button onClick={handleRemove} disabled={uploading}
-                                        className="text-[10px] px-2 py-1 rounded-md border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-40 transition-colors">
-                                    Remove
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <button onClick={() => fileRef.current?.click()} disabled={uploading}
-                                className="w-full h-20 border-2 border-dashed border-[#E2E2DA] rounded-lg flex flex-col items-center justify-center gap-1 text-[#6b6b60] hover:border-[#3730a3]/40 hover:bg-[#3730a3]/5 disabled:opacity-50 transition-colors">
-                            {uploading
-                                ? <><Spinner/><span className="text-[11px]">Uploading…</span></>
-                                : <>
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                        <polyline points="17 8 12 3 7 8"/>
-                                        <line x1="12" y1="3" x2="12" y2="15"/>
-                                    </svg>
-                                    <span className="text-[11px] font-medium">Upload a logo image</span>
-                                    <span className="text-[10px] opacity-70">PNG with transparency works best</span>
-                                </>}
-                        </button>
-                    )}
-
-                    <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} className="hidden"/>
-                    {uploadErr && <p className="text-[10px] text-red-500">{uploadErr}</p>}
-                    <p className="text-[10px] text-[#6b6b60]">Stays fixed on screen while the panorama rotates. Drag it on the viewer to place it.</p>
-                </div>
 
                 <div className="space-y-1">
                     <label className="text-[11px] text-[#6b6b60] uppercase tracking-wider">Auto-rotate speed</label>
@@ -145,7 +61,7 @@ export function SettingsModal({ draft, onChange, onSave, onClose, saving, projec
                             className="flex-1 h-9 text-[12px] rounded-xl border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] transition-colors disabled:opacity-40">
                         Cancel
                     </button>
-                    <button onClick={onSave} disabled={saving || uploading}
+                    <button onClick={onSave} disabled={saving}
                             className="flex-1 h-9 text-[12px] rounded-xl bg-[#3730a3] text-white font-semibold hover:bg-[#312e81] disabled:opacity-50 flex items-center justify-center gap-1.5 transition-colors">
                         {saving ? <><Spinner/>Saving…</> : 'Save settings'}
                     </button>

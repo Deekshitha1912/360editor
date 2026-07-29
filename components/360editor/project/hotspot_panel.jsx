@@ -17,10 +17,6 @@ export default function HotspotPanel({
                                          hotspotSize = 90,
                                          onHotspotSizeChange,
                                          onHotspotSizeCommit,
-                                         logoUrl,
-                                         logoSize = 160,
-                                         onLogoSizeChange,
-                                         onLogoSizeCommit,
                                      }) {
     const sceneHotspots = hotspots.filter(h => h.scene_id === activeSceneId)
 
@@ -68,23 +64,9 @@ export default function HotspotPanel({
                 <p className="text-[9px] text-[#6b6b60] mt-1">Applies to every direction arrow in the tour.</p>
             </div>
 
-            {/* ── Logo size (only when a logo has been uploaded) ── */}
-            {logoUrl && (
-                <div className="px-3 py-3 border-b border-[#E2E2DA]">
-                    <div className="flex items-center justify-between mb-2">
-                        <p className="text-[10px] uppercase tracking-widest text-[#6b6b60]">Logo size</p>
-                        <span className="text-[10px] text-[#6b6b60] font-mono">{logoSize}px</span>
-                    </div>
-                    <input
-                        type="range" min="60" max="400" step="5" value={logoSize}
-                        onChange={e => onLogoSizeChange?.(parseInt(e.target.value, 10) || 160)}
-                        onMouseUp={e => onLogoSizeCommit?.(parseInt(e.target.value, 10) || 160)}
-                        onTouchEnd={e => onLogoSizeCommit?.(parseInt(e.target.value, 10) || 160)}
-                        className="w-full accent-[#3730a3] cursor-pointer"
-                    />
-                    <p className="text-[9px] text-[#6b6b60] mt-1">Drag the logo on the viewer to reposition it.</p>
-                </div>
-            )}
+            {/* Logo sizing moved to OverlayPanel — a project can carry several
+                logos now, plus scene-level cover-ups, so one shared slider here
+                no longer had anything unambiguous to control. */}
 
             {/* ── Saved hotspots list ── */}
             <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">

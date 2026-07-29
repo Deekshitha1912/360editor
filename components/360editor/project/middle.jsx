@@ -3,12 +3,163 @@ import React, { useEffect, useRef, useState, useCallback, useReducer } from 'rea
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import ScenePanel       from '@/components/360editor/project/scene_panel'
-import HotspotPanel, { ARROWS } from '@/components/360editor/project/hotspot_panel'
+import HotspotPanel from '@/components/360editor/project/hotspot_panel'
+import OverlayPanel from '@/components/360editor/project/overlay_panel'
+import { ARROWS } from '@/lib/arrows'
+import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml } from '@/components/360editor/project/export'
 import { HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
 import { screenToPitchYaw, pitchYawToScreen, roundTo2, flagsInit, flagsReducer, PANNELLUM_STYLES } from '@/components/360editor/project/editor_utils'
 import { Spinner, CameraControls, SettingsModal, DeleteModal, HotspotDeleteModal } from '@/components/360editor/project/editor_modals'
+
+// Overlay editing card — styled to match the hotspot popup (light card, indigo
+// header, right-of-target with edge fallback), so overlays and hotspots feel
+// like one system. Two modes:
+//   confirm — "Edit this logo/cover-up?" with No / Yes, edit
+//   edit    — scope switch + size/opacity(/rotate) sliders
+function OverlayRow({ label, value, min, max, step = 1, suffix = '', onChange }) {
+    return (
+        <div className="flex items-center gap-2">
+            <span className="w-12 shrink-0 text-[9px] font-bold tracking-wider text-[#6b6b60] uppercase">{label}</span>
+            <input type="range" min={min} max={max} step={step} value={value}
+                   onChange={e => onChange(Number(e.target.value))}
+                   onMouseDown={e => e.stopPropagation()}
+                   className="flex-1 accent-[#3730a3] h-1 cursor-pointer"/>
+            <span className="w-9 shrink-0 text-right text-[10px] font-mono tabular-nums text-[#1a1a18]">{value}{suffix}</span>
+        </div>
+    )
+}
+// screenPos = the overlay's {x,y} within the viewer (for edge decisions).
+// The popup itself is rendered inside the overlay's wrapper, so its own left/top
+// are offsets FROM the overlay, not absolute viewer coordinates.
+function OverlayPopup({ item, kind, editing, screenPos, halfW, halfH, viewerSize, activeSceneId, activeSceneName,
+                          onEdit, onPatch, onSetScope, onDelete, onClose }) {
+    const isLogo     = kind === 'logo'
+    const everyScene = item.scene_id == null
+    const W = 224
+    const H = editing ? (isLogo ? 190 : 214) : 120
+
+    const sx = screenPos?.x ?? 0, sy = screenPos?.y ?? 0
+    const vw = viewerSize?.w || 9999, vh = viewerSize?.h || 9999
+    const hw = halfW || 20, hh = halfH || 20   // overlay half-size on screen
+    const GAP = 16
+
+    // Decide a side that CLEARS THE IMAGE (offset from the overlay's edge, not its
+    // centre) and keeps the whole card in the viewer. Order: right, left, below,
+    // above. Whatever is chosen, the card never overlaps the overlay.
+    const roomRight = vw - (sx + hw) - 8
+    const roomLeft  = (sx - hw) - 8
+    const roomBelow = vh - (sy + hh) - 8
+    const roomAbove = (sy - hh) - 8
+
+    let offsetX, offsetY, side
+    if (roomRight >= W + GAP)      { side = 'right'; offsetX = hw + GAP;        offsetY = -(H/2) }
+    else if (roomLeft >= W + GAP)  { side = 'left';  offsetX = -(hw + GAP + W); offsetY = -(H/2) }
+    else if (roomBelow >= H + GAP) { side = 'below'; offsetY = hh + GAP;        offsetX = -(W/2) }
+    else                           { side = 'above'; offsetY = -(hh + GAP + H); offsetX = -(W/2) }
+
+    // Clamp along the free axis so the card stays fully on screen.
+    if (side === 'right' || side === 'left') {
+        if (sy + offsetY < 8)          offsetY = 8 - sy
+        if (sy + offsetY + H > vh - 8) offsetY = vh - 8 - H - sy
+    } else {
+        if (sx + offsetX < 8)          offsetX = 8 - sx
+        if (sx + offsetX + W > vw - 8) offsetX = vw - 8 - W - sx
+    }
+
+    return (
+        <div className="absolute z-40 pointer-events-auto"
+             style={{ left: offsetX, top: offsetY, width: W }}
+             onMouseDown={e => e.stopPropagation()}>
+
+            <div className="bg-white/95 backdrop-blur-md rounded-xl border border-[#E2E2DA] shadow-[0_8px_32px_rgba(0,0,0,0.18)] overflow-hidden">
+
+                {/* Header */}
+                <div className="flex items-center gap-2 px-3 py-2 bg-[#3730a3]/6 border-b border-[#E2E2DA]">
+                    <div className="w-5 h-5 rounded border border-[#E2E2DA] bg-white overflow-hidden flex items-center justify-center shrink-0">
+                        <img src={item.url} alt="" className="max-w-full max-h-full object-contain"/>
+                    </div>
+                    <span className="text-[11px] font-bold text-[#3730a3] flex-1">
+                        {editing ? `Edit ${isLogo ? 'logo' : 'cover-up'}` : `Edit ${isLogo ? 'logo' : 'cover-up'}?`}
+                    </span>
+                    <button onClick={onClose} className="text-[#9a9a8e] hover:text-[#1a1a18] transition-colors shrink-0">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                </div>
+
+                {/* Confirm */}
+                {!editing && (
+                    <div className="px-3 py-3 space-y-2.5">
+                        <div>
+                            <p className="text-[12px] font-semibold text-[#1a1a18]">
+                                {isLogo ? 'Logo' : 'Cover-up'}
+                            </p>
+                            <p className="text-[11px] text-[#6b6b60] mt-0.5 flex items-center gap-1">
+                                <span className={`w-1.5 h-1.5 rounded-full ${everyScene ? 'bg-emerald-400' : 'bg-[#3730a3]'}`}/>
+                                {everyScene ? 'Every scene' : (item.scene_id === activeSceneId ? 'This scene' : 'Another scene')}
+                            </p>
+                        </div>
+                        <p className="text-[11px] text-[#6b6b60]">Edit this {isLogo ? 'logo' : 'cover-up'}?</p>
+                        <div className="flex gap-1.5">
+                            <button onClick={onDelete}
+                                    className="flex-1 h-7 text-[11px] rounded-lg border border-[#E2E2DA] text-red-500 hover:bg-red-50 transition-colors">
+                                Delete
+                            </button>
+                            <button onClick={onEdit}
+                                    className="flex-1 h-7 text-[11px] rounded-lg bg-[#3730a3] text-white font-semibold hover:bg-[#312e81] transition-colors">
+                                Yes, edit
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Edit */}
+                {editing && (
+                    <div className="px-3 py-3 space-y-2.5">
+                        <div>
+                            <p className="text-[10px] text-[#6b6b60] uppercase tracking-wider font-medium mb-1">Show in</p>
+                            <div className="flex p-0.5 rounded-lg bg-[#F4F4EF] border border-[#E2E2DA]">
+                                <button onClick={() => onSetScope(item.id, null)}
+                                        className={`flex-1 h-6 rounded-md text-[10.5px] font-semibold transition-colors ${everyScene ? 'bg-white text-[#3730a3] shadow-sm' : 'text-[#9a9a8e] hover:text-[#6b6b60]'}`}>
+                                    Every scene
+                                </button>
+                                <button onClick={() => activeSceneId && onSetScope(item.id, activeSceneId)} disabled={!activeSceneId}
+                                        title={activeSceneName ? `Only ${activeSceneName}` : undefined}
+                                        className={`flex-1 h-6 rounded-md text-[10.5px] font-semibold transition-colors disabled:opacity-40 ${!everyScene ? 'bg-white text-[#3730a3] shadow-sm' : 'text-[#9a9a8e] hover:text-[#6b6b60]'}`}>
+                                    This scene
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <OverlayRow label="Size"    value={Math.round(item.size)}        min={24} max={isLogo ? 640 : 800} suffix=""  onChange={v => onPatch(item.id, { size: v })}/>
+                            <OverlayRow label="Opacity" value={Math.round(item.opacity*100)} min={5}  max={100}                 suffix="%" onChange={v => onPatch(item.id, { opacity: v/100 })}/>
+                            {!isLogo && (
+                                <OverlayRow label="Rotate" value={Math.round(item.rotation)} min={-180} max={180} suffix="°" onChange={v => onPatch(item.id, { rotation: v })}/>
+                            )}
+                        </div>
+
+                        <div className="flex gap-1.5">
+                            <button onClick={onDelete}
+                                    className="flex-1 h-7 text-[11px] rounded-lg border border-[#E2E2DA] text-red-500 hover:bg-red-50 transition-colors">
+                                Delete
+                            </button>
+                            <button onClick={onClose}
+                                    className="flex-1 h-7 text-[11px] rounded-lg bg-[#3730a3] text-white font-semibold hover:bg-[#312e81] transition-colors">
+                                Done
+                            </button>
+                        </div>
+                        <p className="text-[10px] text-[#9a9a8e] leading-snug">
+                            {isLogo ? 'Drag it in the tour to place it — it stays fixed on screen.'
+                                : 'Drag it onto what to hide — it sticks to the photo.'}
+                        </p>
+                    </div>
+                )}
+            </div>
+        </div>
+    )
+}
 
 
 // ─── Main editor component ────────────────────────────────────────────────────
@@ -22,8 +173,10 @@ export default function ProjectClient({ projectId }) {
     const scenesRef        = useRef([])
     const popupRef         = useRef(null)
     const onHotspotClickRef = useRef(null)
-    const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging the logo
-    const logoImgRef        = useRef(null)   // measures the rendered logo so it never leaves the frame
+    const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging a logo
+    const [logoAspect, setLogoAspect] = useState({}) // logo id -> naturalHeight/naturalWidth
+    const coverupsRef       = useRef([])     // visible cover-ups, read inside the rAF loop
+    const baseHfovRef       = useRef(120)    // scene's opening zoom — cover-ups scale against it
     const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
 
     const [project, setProject]                 = useState(null)
@@ -43,21 +196,45 @@ export default function ProjectClient({ projectId }) {
     const [previewHtml, setPreviewHtml]         = useState(null)
     const [publicUrl, setPublicUrl]             = useState(null)   // live tour URL — null until published
     const [publishError, setPublishError]       = useState('')
+    const [overlayError, setOverlayError]       = useState('')
+
+    // Overlays are edited freely and written once, on Save. Dragging used to
+    // PATCH on every drop, which meant a round trip mid-gesture — the pause you
+    // could see as the image reloading. Nothing touches the database now until
+    // the button is pressed.
+    const [dirtyLogos, setDirtyLogos]           = useState(false)
+    const [dirtyCoverups, setDirtyCoverups]     = useState(false)
+    const [savingOverlays, setSavingOverlays]   = useState(false)
+    const [savedTick, setSavedTick]             = useState(false)
+    const pendingDeletesRef = useRef([])   // storage URLs to remove once the save lands
     const [copied, setCopied]                   = useState(false)
 
-    // Logo screen position (percent of viewer) + size (px) + drag state
-    const [logoPos, setLogoPos]                 = useState({ x: 50, y: 50 })
-    const [logoSize, setLogoSize]               = useState(160)
+    // ── Overlays ───────────────────────────────────────────────────────────
+    // logos    — screen-anchored, each scoped to one scene or all
+    // coverups — sphere-anchored, each scoped to one scene or all
+    // Both hold the FULL project list; the viewer shows only what belongs to the
+    // active scene. Exactly one overlay is draggable at a time (the selected row).
+    const [logos, setLogos]                     = useState([])
+    const [coverups, setCoverups]               = useState([])
+    const [selectedOverlay, setSelectedOverlay] = useState(null)
+    const [editOverlay, setEditOverlay]         = useState(null)   // id in confirmed edit mode
+    const [draggingOverlay, setDraggingOverlay] = useState(null)   // id being dragged
+    const [coverScreen, setCoverScreen]         = useState({})     // id → {x,y,hfov}, recomputed each frame
+
     const [hotspotSize, setHotspotSize]         = useState(90)
     const [hotspotToDelete, setHotspotToDelete] = useState(null)
     const [deletingHotspot, setDeletingHotspot] = useState(false)
-    const [draggingLogo, setDraggingLogo]       = useState(false)
 
     // popupState modes: 'new' | 'confirm-edit' | 'edit-existing' | 'saved'
     const [popupState, setPopupState] = useState(null)
 
-    scenesRef.current = scenes
-    popupRef.current  = popupState
+    scenesRef.current    = scenes
+    popupRef.current     = popupState
+
+    // What the ACTIVE scene displays: every-scene overlays + those scoped here.
+    const visibleLogos    = overlaysForScene(logos,    activeScene?.id)
+    const visibleCoverups = overlaysForScene(coverups, activeScene?.id)
+    coverupsRef.current  = visibleCoverups
 
     // Id of the hotspot currently being edited (stable primitive for effect deps)
     const editingId = popupState?.mode === 'edit-existing' ? popupState.hotspot?.id : null
@@ -71,6 +248,8 @@ export default function ProjectClient({ projectId }) {
                 if (!res.ok)            { router.push('/360editor'); return }
                 const data = await res.json()
                 setProject(data.project)
+                setLogos(projectLogos(data.project))
+                setCoverups(projectCoverups(data.project))
                 setPublicUrl(data.public_url ?? null)
                 setScenes(data.scenes)
                 setHotspots(data.hotspots)
@@ -84,13 +263,29 @@ export default function ProjectClient({ projectId }) {
         load()
     }, [projectId]) // eslint-disable-line
 
-    // ── Sync logo position + size from project ─────────────────────────────
+    // ── Sync hotspot size from project ─────────────────────────────────────
     useEffect(() => {
         if (!project) return
-        setLogoPos({ x: project.logo_x ?? 50, y: project.logo_y ?? 50 })
-        setLogoSize(project.logo_size ?? 160)
         setHotspotSize(project.hotspot_size ?? 90)
-    }, [project?.logo_x, project?.logo_y, project?.logo_size, project?.hotspot_size]) // eslint-disable-line
+    }, [project?.hotspot_size]) // eslint-disable-line
+
+    // ── Cover-ups follow the active scene ──────────────────────────────────
+    // Switching rooms swaps the whole list, and drops any selection that
+    // belonged to the scene you just left.
+    // The cover-up is the same in every scene, so switching rooms only has to
+    // let go of any drag in progress.
+    useEffect(() => {
+        setDraggingOverlay(null)
+        setEditOverlay(null)
+    }, [activeScene?.id]) // eslint-disable-line
+
+    // Closing the tab with unsaved overlays should cost a confirmation, not the work.
+    useEffect(() => {
+        if (!dirtyLogos && !dirtyCoverups) return
+        const warn = e => { e.preventDefault(); e.returnValue = '' }
+        window.addEventListener('beforeunload', warn)
+        return () => window.removeEventListener('beforeunload', warn)
+    }, [dirtyLogos, dirtyCoverups])
 
     // ── Load Pannellum script ──────────────────────────────────────────────
     useEffect(() => {
@@ -158,6 +353,11 @@ export default function ProjectClient({ projectId }) {
             hfov:  activeScene.initial_hfov  ?? 120,
             hotSpots: [],
         })
+
+        // Pannellum's scale:true sizes a hotspot relative to the field of view
+        // it was FIRST rendered at. The editor mirrors that so what you drag is
+        // what gets published.
+        baseHfovRef.current = activeScene.initial_hfov ?? 120
 
         return () => {
             pannellumRef.current?.destroy?.()
@@ -230,6 +430,21 @@ export default function ProjectClient({ projectId }) {
         } else {
             setPinPos(null)
         }
+
+        // Cover-ups are sphere-anchored, so each visible one is re-projected
+        // every frame — same projection the hotspot pin uses.
+        const cvs = coverupsRef.current
+        if (viewer && el && cvs.length) {
+            const { clientWidth: W, clientHeight: H } = el
+            const vp = viewer.getPitch(), vy = viewer.getYaw(), vh = viewer.getHfov()
+            const next = {}
+            for (const c of cvs)
+                next[c.id] = { ...pitchYawToScreen(c.pitch, c.yaw, vp, vy, vh, W, H), hfov: vh }
+            setCoverScreen(next)
+        } else {
+            setCoverScreen({})
+        }
+
         rafRef.current = requestAnimationFrame(mainLoop)
     }, []) // eslint-disable-line
 
@@ -268,79 +483,251 @@ export default function ProjectClient({ projectId }) {
         )
     }, [isDraggingPin, sampleAt])
 
-    // ── Logo drag (screen-space, percent of viewer) ────────────────────────
-    function onLogoMouseDown(e) {
-        const el = viewerRef.current
-        if (!el) return
-        const rect = el.getBoundingClientRect()
-        const cx = rect.left + (logoPos.x / 100) * rect.width
-        const cy = rect.top  + (logoPos.y / 100) * rect.height
-        logoDragRef.current = { offX: e.clientX - cx, offY: e.clientY - cy }
-        setDraggingLogo(true)
+    // ── Overlay persistence ────────────────────────────────────────────────
+    // Logos live on the project, cover-ups on the scene. Both are saved as a
+    // whole array — they are small, and a partial write would let the client
+    // and the row disagree about ordering.
+    // Both of these used to fail silently — an `if (res.ok)` with no else. The
+    // overlay stayed on screen because local state had already been set, so the
+    // editor looked right while nothing had been written, and the overlay was
+    // simply absent from Preview and from the published tour. Say so instead.
+    //
+    // Logos and the cover-up both live on the project row, so one PATCH carries
+    // whichever of them changed.
+    async function saveOverlayFields(fields) {
+        if (!project) return false
+        setOverlayError('')
+        try {
+            const res  = await fetch(`/api/projects/${project.id}`, {
+                method: 'PATCH', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(fields),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) {
+                setOverlayError(json.error || `Overlays not saved (${res.status}).`)
+                return false
+            }
+            setProject(json.project)
+            setLogos(projectLogos(json.project))       // trust the server's normalised copy
+            setCoverups(projectCoverups(json.project))
+            return true
+        } catch {
+            setOverlayError('Network error — nothing was saved.')
+            return false
+        }
+    }
+
+    // ── Save ───────────────────────────────────────────────────────────────
+    // One button, one write. Files whose overlays were removed are deleted only
+    // after the row is safely updated — the reverse order would destroy an image
+    // the user could still get back by leaving without saving.
+    // Returns true on success (including "nothing to save"), false if the write
+    // failed — publishTour relies on this to know whether to proceed.
+    async function saveOverlays() {
+        if (!dirtyLogos && !dirtyCoverups) return true
+        setSavingOverlays(true)
+        setOverlayError('')
+        try {
+            const fields = {}
+            if (dirtyLogos)    fields.overlays = logos
+            if (dirtyCoverups) fields.coverups = coverups
+            if (!await saveOverlayFields(fields)) return false
+
+            setDirtyLogos(false)
+            setDirtyCoverups(false)
+
+            const urls = pendingDeletesRef.current
+            pendingDeletesRef.current = []
+            for (const url of urls) {
+                fetch(`/api/projects/${project.id}/overlay-image`, {
+                    method: 'DELETE', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ url }),
+                }).catch(() => {})
+            }
+
+            setSavedTick(true)
+            setTimeout(() => setSavedTick(false), 2000)
+            return true
+        } finally {
+            setSavingOverlays(false)
+        }
+    }
+
+    const patchLogo = (id, f) => {
+        setDirtyLogos(true); setSavedTick(false)
+        setLogos(prev => prev.map(l => l.id === id ? { ...l, ...f } : l))
+    }
+
+    // A panel row is just a pointer: clicking it selects the overlay AND opens
+    // its edit dialog on the overlay itself in the viewer. If the overlay is
+    // scoped to a scene you're not in, switch to that scene first so it's on
+    // screen. Clicking the row it's already editing closes the dialog.
+    function openOverlayEditor(id) {
+        if (editOverlay === id) { setEditOverlay(null); setSelectedOverlay(null); return }
+        const cv = coverups.find(c => c.id === id)
+        const lg = logos.find(l => l.id === id)
+        const target = cv || lg
+        if (target && target.scene_id != null && target.scene_id !== activeScene?.id) {
+            const sc = scenes.find(s => s.id === target.scene_id)
+            if (sc) setActiveScene(sc)   // viewer reads activeScene directly
+        }
+        setSelectedOverlay(id)
+        setEditOverlay(id)
+    }
+
+    // Flip an overlay between this-scene and every-scene. sceneId is either the
+    // active scene's id or null.
+    function setOverlayScope(id, sceneId) {
+        if (logos.some(l => l.id === id))    { patchLogo(id, { scene_id: sceneId }); return }
+        if (coverups.some(c => c.id === id)) { patchCoverup(id, { scene_id: sceneId }) }
+    }
+
+    const patchCoverup = (id, f) => {
+        setDirtyCoverups(true); setSavedTick(false)
+        setCoverups(prev => prev.map(c => c.id === id ? { ...c, ...f } : c))
+    }
+
+    // ── Adding ─────────────────────────────────────────────────────────────
+    // Upload first, then append. If the upload fails nothing is written, so the
+    // arrays never hold a URL that 404s.
+    async function uploadOverlayImage(file) {
+        const fd = new FormData()
+        fd.append('file', file)
+        const res  = await fetch(`/api/projects/${project.id}/overlay-image`, { method: 'POST', body: fd })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(json.error || 'Upload failed.')
+        return json.url
+    }
+
+    async function addLogo(file) {
+        if (!project) return 'No project loaded.'
+        try {
+            const url  = await uploadOverlayImage(file)
+            const item = { id: newOverlayId('lg'), url, ...LOGO_DEFAULTS, scene_id: activeScene?.id ?? null }
+            setLogos([...logos, item])
+            setSelectedOverlay(item.id)
+            setEditOverlay(item.id)
+            setDirtyLogos(true); setSavedTick(false)
+        } catch (e) { return e.message }
+    }
+
+    // A new cover-up starts at the nadir (over the tripod) and defaults to
+    // this scene — the common case is hiding something in the room you are in.
+    // Switch it to every-scene from the panel.
+    async function addCoverup(file) {
+        if (!project) return 'No project loaded.'
+        try {
+            const url = await uploadOverlayImage(file)
+            const item = { id: newOverlayId('cv'), url, ...COVERUP_DEFAULTS, scene_id: activeScene?.id ?? null }
+            setCoverups(prev => [...prev, item])
+            setSelectedOverlay(item.id)
+            setEditOverlay(item.id)
+            setDirtyCoverups(true); setSavedTick(false)
+        } catch (e) { return e.message }
+    }
+
+    function deleteLogo(id) {
+        const gone = logos.find(l => l.id === id)
+        if (gone) pendingDeletesRef.current.push(gone.url)
+        setLogos(logos.filter(l => l.id !== id))
+        if (selectedOverlay === id) setSelectedOverlay(null)
+        if (editOverlay === id) setEditOverlay(null)
+        setDirtyLogos(true); setSavedTick(false)
+    }
+
+    function deleteCoverup(id) {
+        const gone = coverups.find(c => c.id === id)
+        if (gone) pendingDeletesRef.current.push(gone.url)
+        setCoverups(coverups.filter(c => c.id !== id))
+        if (selectedOverlay === id) setSelectedOverlay(null)
+        if (editOverlay === id) setEditOverlay(null)
+        setDirtyCoverups(true); setSavedTick(false)
+    }
+
+    // ── Dragging ───────────────────────────────────────────────────────────
+    // Two coordinate systems, one gesture. A logo moves in screen percent; a
+    // cover-up is re-sampled into pitch/yaw exactly like a hotspot, so it stays
+    // welded to the wall it is hiding.
+    // Click an overlay → select it and show the "Edit?" bubble (like hotspots).
+    // Dragging is armed only once edit mode is confirmed, so a stray click can't
+    // nudge a placed logo or cover-up.
+    function onOverlayMouseDown(e, id) {
         e.preventDefault(); e.stopPropagation()
+        if (editOverlay !== id) {
+            // Not yet editing this one — select and ask, don't drag.
+            setSelectedOverlay(id)
+            setEditOverlay(null)
+            return
+        }
+        startOverlayDrag(e, id)
     }
 
-    // Keep the WHOLE logo inside the viewer (account for its half width/height,
-    // not just its center) so it can never spill off — and shrink — past an edge.
-    function clampLogoToFrame(xPct, yPct, rect) {
-        const w = logoImgRef.current?.offsetWidth  || logoSize
-        const h = logoImgRef.current?.offsetHeight || logoSize
-        const halfW = rect.width  ? (w / 2 / rect.width)  * 100 : 0
-        const halfH = rect.height ? (h / 2 / rect.height) * 100 : 0
-        // If the logo is wider/taller than the frame, just centre that axis.
-        const x = halfW * 2 >= 100 ? 50 : Math.min(100 - halfW, Math.max(halfW, xPct))
-        const y = halfH * 2 >= 100 ? 50 : Math.min(100 - halfH, Math.max(halfH, yPct))
-        return { x, y }
+    function startOverlayDrag(e, id) {
+        e.preventDefault(); e.stopPropagation()
+        setSelectedOverlay(id)
+        setDraggingOverlay(id)
+
+        const logo = logos.find(l => l.id === id)
+        const el   = viewerRef.current
+        if (logo && el) {
+            const rect = el.getBoundingClientRect()
+            const cx = rect.left + (logo.x / 100) * rect.width
+            const cy = rect.top  + (logo.y / 100) * rect.height
+            logoDragRef.current = { offX: e.clientX - cx, offY: e.clientY - cy }
+        }
     }
 
-    function onLogoMove(e) {
+    function onOverlayDragMove(e) {
+        if (!draggingOverlay) return
         const el = viewerRef.current
         if (!el) return
-        const rect = el.getBoundingClientRect()
-        const { offX, offY } = logoDragRef.current || { offX: 0, offY: 0 }
-        const rawX = ((e.clientX - offX - rect.left) / rect.width)  * 100
-        const rawY = ((e.clientY - offY - rect.top)  / rect.height) * 100
-        const { x, y } = clampLogoToFrame(rawX, rawY, rect)
-        setLogoPos({ x: roundTo2(x), y: roundTo2(y) })
+
+        const logo = logos.find(l => l.id === draggingOverlay)
+        if (logo) {
+            const rect = el.getBoundingClientRect()
+            const { offX, offY } = logoDragRef.current || { offX: 0, offY: 0 }
+            const x = ((e.clientX - offX - rect.left) / rect.width)  * 100
+            const y = ((e.clientY - offY - rect.top)  / rect.height) * 100
+            patchLogo(draggingOverlay, clampLogo({ ...logo, x, y }, rect))
+            return
+        }
+
+        // Re-sample into pitch/yaw so the patch stays welded to the same point
+        // on the sphere.
+        const coords = sampleAt(e.clientX, e.clientY)
+        if (coords) patchCoverup(draggingOverlay, { pitch: roundTo2(coords.pitch), yaw: roundTo2(coords.yaw) })
     }
 
-    function onLogoUp() {
-        setDraggingLogo(false)
-        saveLogoPos(logoPos)
+    // Keep the WHOLE logo inside the viewer on all four sides, ROTATION INCLUDED.
+    // The anchor is the logo's centre. A rotated rectangle's on-screen footprint
+    // (its axis-aligned bounding box) is w·|cos θ| + h·|sin θ| wide and
+    // w·|sin θ| + h·|cos θ| tall — bigger than the unrotated box — so we inset by
+    // HALF of that footprint on each axis. Logos don't rotate today, but this is
+    // correct if they ever do, and identical to the simple case when θ = 0.
+    function clampLogo(logo, rect) {
+        const vw = rect?.width  || viewerSize.w || 1
+        const vh = rect?.height || viewerSize.h || 1
+
+        const boxW = logo.size                                   // rendered width in px
+        const boxH = logo.size * (logoAspect[logo.id] || 1)      // height from aspect ratio
+        const rad  = ((logo.rotation || 0) * Math.PI) / 180
+        const c = Math.abs(Math.cos(rad)), s = Math.abs(Math.sin(rad))
+        const footW = boxW * c + boxH * s
+        const footH = boxW * s + boxH * c
+
+        const halfW = (footW / 2 / vw) * 100
+        const halfH = (footH / 2 / vh) * 100
+        // Too big for an axis → centre it there rather than jam a corner off-screen.
+        const x = halfW * 2 >= 100 ? 50 : Math.min(100 - halfW, Math.max(halfW, logo.x))
+        const y = halfH * 2 >= 100 ? 50 : Math.min(100 - halfH, Math.max(halfH, logo.y))
+        return { x: roundTo2(x), y: roundTo2(y) }
     }
 
-    // Style for the on-screen logo: fixed width (so it never shrink-to-fits near an
-    // edge) and a clamped position (so even previously-saved values stay visible).
-    function logoDisplayStyle() {
-        const w = logoImgRef.current?.offsetWidth  || logoSize
-        const h = logoImgRef.current?.offsetHeight || logoSize
-        const halfW = viewerSize.w ? (w / 2 / viewerSize.w) * 100 : 0
-        const halfH = viewerSize.h ? (h / 2 / viewerSize.h) * 100 : 0
-        const x = halfW * 2 >= 100 ? 50 : Math.min(100 - halfW, Math.max(halfW, logoPos.x))
-        const y = halfH * 2 >= 100 ? 50 : Math.min(100 - halfH, Math.max(halfH, logoPos.y))
-        return { left: `${x}%`, top: `${y}%`, width: `${logoSize}px`, transform: 'translate(-50%,-50%)' }
-    }
-
-    async function saveLogoPos(pos) {
-        if (!project) return
-        try {
-            const res = await fetch(`/api/projects/${project.id}`, {
-                method: 'PATCH', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ logo_x: roundTo2(pos.x), logo_y: roundTo2(pos.y) }),
-            })
-            if (res.ok) { const { project: updated } = await res.json(); setProject(updated) }
-        } catch {}
-    }
-
-    async function saveLogoSize(size) {
-        if (!project) return
-        try {
-            const res = await fetch(`/api/projects/${project.id}`, {
-                method: 'PATCH', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ logo_size: Math.round(size) }),
-            })
-            if (res.ok) { const { project: updated } = await res.json(); setProject(updated) }
-        } catch {}
+    function endOverlayDrag() {
+        if (!draggingOverlay) return
+        setDraggingOverlay(null)
+        // Position already lives in state from the drag itself; releasing just
+        // ends the gesture. Nothing is written until Save.
     }
 
     // ── API: create hotspot ────────────────────────────────────────────────
@@ -467,9 +854,24 @@ export default function ProjectClient({ projectId }) {
         setPublishError('')
         dispatchFlag('publishing')
         try {
+            // Publish snapshots what is IN THE DATABASE. Overlay edits live in
+            // local state until Save, so an unsaved change would silently not
+            // appear on the live tour — the exact "I updated but nothing changed"
+            // bug. Flush pending overlays before snapshotting.
+            if (dirtyLogos || dirtyCoverups) {
+                const ok = await saveOverlays()
+                if (!ok) {
+                    setPublishError('Your overlay changes could not be saved, so the tour was not published.')
+                    return
+                }
+            }
+
             const res  = await fetch(`/api/projects/${project.id}/publish`, { method: 'POST' })
             const json = await res.json().catch(() => ({}))
             if (!res.ok) { setPublishError(json.error || 'Publish failed. Try again.'); return }
+
+            // Store the CLEAN url — this is what gets shown and copied. The public
+            // route is already no-store, so the link itself needs no cache-buster.
             setPublicUrl(json.url)
             setProject(p => p ? { ...p, slug: json.slug, published_at: json.published_at } : p)
         } catch {
@@ -497,6 +899,11 @@ export default function ProjectClient({ projectId }) {
         } finally { dispatchFlag('unpublishing') }
     }
 
+    // Clean link for display and copy; freshly cache-busted only when opened, so
+    // the editor never shows a stale tour after re-publishing without polluting
+    // the link a client receives.
+    const openUrl = () => publicUrl ? `${publicUrl}?v=${Date.now().toString(36)}` : '#'
+
     async function copyLink() {
         if (!publicUrl) return
         try { await navigator.clipboard.writeText(publicUrl) }
@@ -506,22 +913,6 @@ export default function ProjectClient({ projectId }) {
         }
         setCopied(true)
         setTimeout(() => setCopied(false), 1800)
-    }
-
-    // Secondary option — the old behaviour, for clients who want an offline file
-    // to drop on their own server or hand over on a pen drive.
-    function downloadHtml() {
-        if (!scenes.length || !project) return
-        dispatchFlag('exporting')
-        try {
-            const html = buildTourHtml({ project, scenes, hotspots })
-            const a = Object.assign(document.createElement('a'), {
-                href:     URL.createObjectURL(new Blob([html], { type:'text/html;charset=utf-8' })),
-                download: `${project.name.replace(/[^a-z0-9]/gi,'_').toLowerCase()}_360tour.html`,
-            })
-            document.body.appendChild(a); a.click(); document.body.removeChild(a)
-            URL.revokeObjectURL(a.href)
-        } finally { dispatchFlag('exporting') }
     }
 
     if (loading) return (
@@ -558,7 +949,7 @@ export default function ProjectClient({ projectId }) {
 
                     {/* Settings */}
                     <button
-                        onClick={() => { setSettingsDraft({ logo_url: project?.logo_url||'', show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3 }); setShowSettings(true) }}
+                        onClick={() => { setSettingsDraft({ show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3 }); setShowSettings(true) }}
                         title="Project settings"
                         className="flex items-center justify-center w-8 h-8 rounded-lg border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] transition-colors shrink-0">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -589,15 +980,6 @@ export default function ProjectClient({ projectId }) {
                         Preview
                     </button>
 
-                    {/* Download the standalone file (secondary — the hosted link is the main output) */}
-                    <button onClick={downloadHtml} disabled={flags.exporting || !scenes.length}
-                            title="Download a standalone .html file of this tour"
-                            className="flex items-center justify-center w-8 h-8 rounded-lg border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
-                        {flags.exporting
-                            ? <Spinner size={13}/>
-                            : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>}
-                    </button>
-
                     {/* Publish — creates (or refreshes) the permanent public link */}
                     <button onClick={publishTour} disabled={flags.publishing || !scenes.length}
                             title={publicUrl ? 'Push the current version to the live link' : 'Host this tour on a permanent public link'}
@@ -614,7 +996,7 @@ export default function ProjectClient({ projectId }) {
                         <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 shrink-0">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"/>Live
                         </span>
-                        <a href={publicUrl} target="_blank" rel="noreferrer"
+                        <a href={openUrl()} target="_blank" rel="noreferrer"
                            className="text-[12px] text-[#3730a3] hover:underline truncate font-medium">
                             {publicUrl.replace(/^https?:\/\//, '')}
                         </a>
@@ -624,7 +1006,7 @@ export default function ProjectClient({ projectId }) {
                                 ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Copied</>
                                 : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy link</>}
                         </button>
-                        <a href={publicUrl} target="_blank" rel="noreferrer"
+                        <a href={openUrl()} target="_blank" rel="noreferrer"
                            className="flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:text-[#1a1a18] transition-colors shrink-0">
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>Open
                         </a>
@@ -640,6 +1022,13 @@ export default function ProjectClient({ projectId }) {
                     <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
                         {publishError}
                         <button onClick={() => setPublishError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
+                    </div>
+                )}
+
+                {overlayError && (
+                    <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
+                        {overlayError}
+                        <button onClick={() => setOverlayError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
                     </div>
                 )}
 
@@ -672,26 +1061,109 @@ export default function ProjectClient({ projectId }) {
                                      className={`absolute inset-0 ${isDragOver ? 'ring-2 ring-[#3730a3] ring-inset' : ''}`}
                                      onDragOver={onViewerDragOver} onDragLeave={() => setIsDragOver(false)} onDrop={onViewerDrop}/>
 
-                                {/* Logo watermark — fixed on screen, draggable + sizable.
-                                    Position stored as percent (logo_x/logo_y); width in px (logo_size). */}
-                                {project?.logo_url && (
-                                    <div className="absolute z-20 pointer-events-none"
-                                         style={logoDisplayStyle()}>
-                                        <img src={project.logo_url} alt="logo" draggable={false}
-                                             ref={logoImgRef}
-                                             onMouseDown={onLogoMouseDown}
-                                             onLoad={() => setLogoPos(p => ({ ...p }))}
-                                             style={{ pointerEvents: 'auto', width: '100%', height: 'auto', display: 'block' }}
-                                             className={`opacity-90 select-none drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)] ${draggingLogo ? 'cursor-grabbing' : 'cursor-grab'}`}/>
-                                    </div>
-                                )}
+                                {/* ── Cover-ups — anchored to the panorama ──
+                                    Drawn UNDER the logos and under the arrows, because a
+                                    cover-up hides part of the photo; it is scenery, not UI.
+                                    Its on-screen size tracks the zoom the same way
+                                    Pannellum's scale:true does in the exported tour. */}
+                                {visibleCoverups.map(c => {
+                                    const pos = coverScreen[c.id]
+                                    if (!pos) return null
+                                    const zoom = baseHfovRef.current / (pos.hfov || baseHfovRef.current)
+                                    const sel  = selectedOverlay === c.id
+                                    return (
+                                        <div key={c.id} className="absolute z-10" style={{ left: pos.x, top: pos.y, transform: 'translate(-50%,-50%)' }}>
+                                            <img
+                                                src={c.url}
+                                                alt=""
+                                                draggable={false}
+                                                onMouseDown={e => onOverlayMouseDown(e, c.id)}
+                                                style={{
+                                                    width: c.size * zoom,
+                                                    opacity: c.opacity,
+                                                    transform: `rotate(${c.rotation}deg)`,
+                                                    outline: sel ? `2px ${editOverlay === c.id ? 'solid' : 'dashed'} #3730a3` : 'none',
+                                                    outlineOffset: '2px',
+                                                    display: 'block',
+                                                }}
+                                                className={`select-none h-auto ${
+                                                    editOverlay === c.id
+                                                        ? (draggingOverlay === c.id ? 'cursor-grabbing' : 'cursor-grab')
+                                                        : 'cursor-pointer'
+                                                }`}
+                                            />
+                                            {sel && !draggingOverlay && (
+                                                <OverlayPopup item={c} kind="coverup"
+                                                              editing={editOverlay === c.id}
+                                                              screenPos={pos}
+                                                              halfW={(c.size * zoom) / 2} halfH={(c.size * zoom) / 2}
+                                                              viewerSize={viewerSize}
+                                                              activeSceneId={activeScene?.id} activeSceneName={activeScene?.name}
+                                                              onEdit={() => setEditOverlay(c.id)}
+                                                              onPatch={patchCoverup} onSetScope={setOverlayScope}
+                                                              onDelete={() => deleteCoverup(c.id)}
+                                                              onClose={() => { setEditOverlay(null); setSelectedOverlay(null) }}/>
+                                            )}
+                                        </div>
+                                    )
+                                })}
 
-                                {/* Capture surface while dragging the logo */}
-                                {draggingLogo && (
+                                {/* ── Logos — pinned to the screen ──
+                                    Percent of the viewer, so they hold their place while the
+                                    visitor looks around, on every scene. */}
+                                {visibleLogos.map(l => {
+                                    const sel = selectedOverlay === l.id
+                                    // Clamp the rendered position too, so a logo saved near an edge
+                                    // (or resized bigger than the frame) still shows fully.
+                                    const cp = clampLogo(l, null)
+                                    return (
+                                        <div key={l.id} className="absolute z-20" style={{ left: `${cp.x}%`, top: `${cp.y}%`, transform: 'translate(-50%,-50%)' }}>
+                                            <img
+                                                src={l.url}
+                                                alt=""
+                                                draggable={false}
+                                                onMouseDown={e => onOverlayMouseDown(e, l.id)}
+                                                onLoad={e => {
+                                                    // Remember the true aspect ratio so the clamp knows the
+                                                    // logo's real height, not just its width.
+                                                    const r = e.currentTarget.naturalHeight / (e.currentTarget.naturalWidth || 1)
+                                                    setLogoAspect(prev => prev[l.id] === r ? prev : { ...prev, [l.id]: r })
+                                                }}
+                                                style={{
+                                                    width: l.size,
+                                                    opacity: l.opacity,
+                                                    outline: sel ? `2px ${editOverlay === l.id ? 'solid' : 'dashed'} #3730a3` : 'none',
+                                                    outlineOffset: '2px',
+                                                    display: 'block',
+                                                }}
+                                                className={`select-none h-auto drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)] ${
+                                                    editOverlay === l.id
+                                                        ? (draggingOverlay === l.id ? 'cursor-grabbing' : 'cursor-grab')
+                                                        : 'cursor-pointer'
+                                                }`}
+                                            />
+                                            {sel && !draggingOverlay && (
+                                                <OverlayPopup item={l} kind="logo"
+                                                              editing={editOverlay === l.id}
+                                                              screenPos={{ x: (cp.x/100)*(viewerSize.w||0), y: (cp.y/100)*(viewerSize.h||0) }}
+                                                              halfW={l.size / 2} halfH={(l.size * (logoAspect[l.id] || 1)) / 2}
+                                                              viewerSize={viewerSize}
+                                                              activeSceneId={activeScene?.id} activeSceneName={activeScene?.name}
+                                                              onEdit={() => setEditOverlay(l.id)}
+                                                              onPatch={patchLogo} onSetScope={setOverlayScope}
+                                                              onDelete={() => deleteLogo(l.id)}
+                                                              onClose={() => { setEditOverlay(null); setSelectedOverlay(null) }}/>
+                                            )}
+                                        </div>
+                                    )
+                                })}
+
+                                {/* Capture surface while an overlay is being dragged */}
+                                {draggingOverlay && (
                                     <div className="absolute inset-0 z-40 cursor-grabbing"
-                                         onMouseMove={onLogoMove}
-                                         onMouseUp={onLogoUp}
-                                         onMouseLeave={onLogoUp}/>
+                                         onMouseMove={onOverlayDragMove}
+                                         onMouseUp={endOverlayDrag}
+                                         onMouseLeave={endOverlayDrag}/>
                                 )}
 
                                 {isDraggingPin && (
@@ -739,9 +1211,11 @@ export default function ProjectClient({ projectId }) {
                                         Release to place
                                     </div>
                                 )}
-                                {draggingLogo && (
+                                {draggingOverlay && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
-                                        Drag the logo · release to fix its place
+                                        {logos.some(l => l.id === draggingOverlay)
+                                            ? 'Drag the logo · it stays put on screen'
+                                            : 'Drag the cover-up · it moves in every scene at once'}
                                     </div>
                                 )}
 
@@ -750,16 +1224,32 @@ export default function ProjectClient({ projectId }) {
                         )}
                     </div>
 
-                    {/* Right — directions */}
-                    <div className="w-[200px] shrink-0 relative overflow-hidden">
-                        <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
-                                      hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}
-                                      hotspotSize={hotspotSize}
-                                      onHotspotSizeChange={setHotspotSize}
-                                      onHotspotSizeCommit={saveHotspotSize}
-                                      logoUrl={project?.logo_url} logoSize={logoSize}
-                                      onLogoSizeChange={setLogoSize}
-                                      onLogoSizeCommit={saveLogoSize}/>
+                    {/* Right — directions on top, overlays underneath */}
+                    <div className="w-[220px] shrink-0 relative overflow-hidden flex flex-col">
+                        <div className="flex-1 min-h-0 relative overflow-hidden">
+                            <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
+                                          hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}
+                                          hotspotSize={hotspotSize}
+                                          onHotspotSizeChange={setHotspotSize}
+                                          onHotspotSizeCommit={saveHotspotSize}/>
+                        </div>
+                        <div className="h-[300px] shrink-0 border-t border-[#E2E2DA]">
+                            <OverlayPanel
+                                logos={logos}
+                                coverups={coverups}
+                                selectedId={selectedOverlay}
+                                activeSceneId={activeScene?.id}
+                                hasActiveScene={!!activeScene}
+                                onSelect={openOverlayEditor}
+                                onAddLogo={addLogo}
+                                onAddCoverup={addCoverup}
+                                onDeleteLogo={deleteLogo}
+                                onDeleteCoverup={deleteCoverup}
+                                dirty={dirtyLogos || dirtyCoverups}
+                                saving={savingOverlays}
+                                saved={savedTick}
+                                onSave={saveOverlays}/>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -767,8 +1257,7 @@ export default function ProjectClient({ projectId }) {
             {showSettings && settingsDraft && (
                 <SettingsModal draft={settingsDraft} onChange={setSettingsDraft}
                                onSave={saveSettings} onClose={() => setShowSettings(false)}
-                               saving={flags.savingSettings} projectId={projectId}
-                               onProjectChange={setProject}/>
+                               saving={flags.savingSettings}/>
             )}
             {confirmDelete && (
                 <DeleteModal projectName={project?.name} onConfirm={deleteProject}
