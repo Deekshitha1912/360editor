@@ -10,7 +10,7 @@ export async function GET(_req, { params }) {
         if (authErr || !user) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
 
         const { id } = await params
-        const [projectRes, scenesRes, hotspotsRes] = await Promise.all([
+        const [projectRes, scenesRes, hotspotsRes, polygonsRes] = await Promise.all([
             supabase
                 .from('projects')
                 .select('id, name, created_at, show_intro, auto_rotate, hotspot_size, overlays, coverups, slug, published_at')
@@ -25,12 +25,19 @@ export async function GET(_req, { params }) {
             supabase.from('hotspots')
                 .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id')
                 .eq('project_id', id),
+            supabase.from('polygons')
+                .select('id, scene_id, project_id, points, status, label, detail')
+                .eq('project_id', id),
         ])
 
         // A missing column, a broken RLS policy and a genuinely absent project
         // all arrive here as `data: null`. Returning 404 for all three sent us
         // hunting for a deleted row when the real answer was an unmigrated
         // database — so separate them before answering.
+        // polygonsRes.error is deliberately NOT included here: the polygons
+        // table may not exist yet on a database that hasn't had
+        // db/001_create_polygons.sql applied, and a project should still load
+        // (with zero zones) rather than fail outright over a missing table.
         const dbError = projectRes.error || scenesRes.error || hotspotsRes.error
         if (dbError && dbError.code !== 'PGRST116') {   // PGRST116 = .single() found no row
             console.error('[projects GET] query failed:', dbError.code, dbError.message)
@@ -50,6 +57,7 @@ export async function GET(_req, { params }) {
         const project  = projectRes.data
         const scenes   = scenesRes.data
         const hotspots = hotspotsRes.data
+        const polygons = polygonsRes.error ? [] : polygonsRes.data
 
         if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
 
@@ -64,6 +72,7 @@ export async function GET(_req, { params }) {
             project,
             scenes:     scenes ?? [],
             hotspots:   hotspots ?? [],
+            polygons:   polygons ?? [],
             public_url: publicUrl,
         })
     } catch (err) {

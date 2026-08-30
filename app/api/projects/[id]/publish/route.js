@@ -39,7 +39,7 @@ export async function POST(req, { params }) {
             .single()
         if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
 
-        const [{ data: scenes }, { data: hotspots }] = await Promise.all([
+        const [{ data: scenes }, { data: hotspots }, polygonsRes] = await Promise.all([
             supabase
                 .from('scenes')
                 .select('id, project_id, name, url, initial_yaw, initial_pitch, initial_hfov, created_at')
@@ -49,7 +49,15 @@ export async function POST(req, { params }) {
                 .from('hotspots')
                 .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id')
                 .eq('project_id', id),
+            // Not destructured with the others: a database that hasn't had
+            // db/001_create_polygons.sql applied yet must still be able to
+            // publish (with zero zones), not fail the whole request.
+            supabase
+                .from('polygons')
+                .select('id, scene_id, project_id, points, status, label, detail')
+                .eq('project_id', id),
         ])
+        const polygons = polygonsRes.error ? [] : (polygonsRes.data ?? [])
 
         if (!scenes?.length)
             return NextResponse.json({ error: 'Add at least one scene before publishing.' }, { status: 400 })
@@ -58,7 +66,8 @@ export async function POST(req, { params }) {
         const slug = project.slug || await uniqueSlug(supabase, user.id, project.name, id)
 
         const published_payload = {
-            v: 1,
+            v: 2, // v2 adds `polygons` — readers must treat it as optional (?? [])
+                  // since a v1 snapshot published before this feature has no such key.
             project: {
                 id:           project.id,
                 name:         project.name,
@@ -70,6 +79,7 @@ export async function POST(req, { params }) {
             },
             scenes,
             hotspots: hotspots ?? [],
+            polygons,
         }
 
         const { data: updated, error } = await supabase

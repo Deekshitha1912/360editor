@@ -1,8 +1,8 @@
 # 360Editor
 
-Build, brand, and export interactive **360° virtual tours** entirely in the browser. Upload equirectangular panoramas, link rooms together with directional arrow hotspots, drop a logo watermark on top, then export a **single self-contained HTML file** that runs anywhere — no server, no plugins, no dependencies.
+Build, brand, and export interactive **360° virtual tours** entirely in the browser. Upload equirectangular panoramas, link rooms together with directional arrow hotspots, mark polygon zones (available/booked/etc, with a detail card), drop a logo watermark on top, then export a **single self-contained HTML file** that runs anywhere — no server, no plugins, just a CDN fetch for the viewer library.
 
-Built with **Next.js 16 (App Router)**, **React 19**, **Supabase** (Postgres + Auth + Storage), **Tailwind CSS v4**, **shadcn/ui**, and **[Pannellum 2.5.6](https://pannellum.org/)** as the WebGL panorama viewer.
+Built with **Next.js 16 (App Router)**, **React 19**, **Supabase** (Postgres + Auth + Storage), **Tailwind CSS v4**, **shadcn/ui**, and **[Photo Sphere Viewer](https://photo-sphere-viewer.js.org/) 5** (+ its Markers and Autorotate plugins) as the WebGL panorama viewer.
 
 ---
 
@@ -30,7 +30,7 @@ Built with **Next.js 16 (App Router)**, **React 19**, **Supabase** (Postgres + A
 | Framework | Next.js `^16.2.7` (App Router), React `^19.2` |
 | Language | JavaScript (JSX), path alias `@/*` → repo root |
 | Auth / DB / Storage | Supabase (`@supabase/ssr`, `@supabase/supabase-js`) |
-| Panorama viewer | Pannellum 2.5.6, loaded from jsDelivr CDN at runtime |
+| Panorama viewer | Photo Sphere Viewer 5 (`@photo-sphere-viewer/core` + `markers-plugin`, real npm deps) in the editor; same version loaded from jsDelivr CDN at runtime in the exported/published tour |
 | Styling | Tailwind CSS v4 (`@tailwindcss/postcss`), `tw-animate-css` |
 | UI primitives | shadcn/ui on top of Radix UI, `lucide-react` icons |
 | Utilities | `clsx` + `tailwind-merge` (`cn()`), `class-variance-authority` |
@@ -88,6 +88,8 @@ SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 ├── jsconfig.json                # Path alias "@/*" → repo root
 ├── postcss.config.mjs           # Tailwind v4 via @tailwindcss/postcss
 ├── components.json              # shadcn/ui config
+├── db/                          # SQL schema changes, applied by hand against Supabase (no migration
+│                                 # runner in this repo) — see "Database schema" below
 │
 ├── app/                         # App Router: pages + API routes
 │   ├── layout.js                # Root layout, <html>/<body>, global metadata
@@ -117,20 +119,24 @@ SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 │       ├── scenes/route.js              # POST create scene row (after upload)
 │       ├── scenes/[id]/route.js         # PATCH (initial view) / DELETE scene
 │       ├── scenes/upload-url/route.js   # POST → returns a signed upload URL (bypasses body limit)
-│       └── hotspots/route.js            # POST create hotspot
-│           hotspots/[id]/route.js       # PATCH / DELETE hotspot
+│       ├── hotspots/route.js            # POST create hotspot
+│       │   hotspots/[id]/route.js       # PATCH / DELETE hotspot
+│       └── polygons/route.js            # POST create polygon zone
+│           polygons/[id]/route.js       # PATCH (status/label/detail) / DELETE zone
 │
 ├── components/
 │   ├── 360editor/
 │   │   ├── dashboard/dashboard.js       # Dashboard client: project grid, create/delete, avatar menu
 │   │   └── project/                     # THE EDITOR (split across focused files)
 │   │       ├── middle.jsx               # Main editor component <ProjectClient> — the orchestrator
-│   │       ├── editor_utils.js          # Pure helpers: projection math, flags reducer, Pannellum CSS
+│   │       ├── editor_utils.js          # Pure helpers: roundTo2/clampPct, the flags reducer
 │   │       ├── editor_modals.jsx        # Spinner, CameraControls, Settings/Delete/HotspotDelete modals
 │   │       ├── scene_panel.jsx          # LEFT panel — scene list, upload, reorder, active scene
 │   │       ├── hotspot_panel.jsx        # RIGHT panel — arrow palette, hotspot size, logo size, list
 │   │       ├── hotspot_overlay.jsx      # Floating hotspot editor popup (HotspotPopup)
-│   │       ├── logo_overlay.jsx         # Draggable logo watermark overlay on the viewer
+│   │       ├── overlay_panel.jsx        # Logos + cover-ups list panel (OverlayPanel)
+│   │       ├── polygon_panel.jsx        # Polygon zones list panel + "Draw zone" (PolygonPanel)
+│   │       ├── polygon_overlay.jsx      # Floating zone popup — new/view/edit (PolygonPopup)
 │   │       ├── preview.jsx              # Full-screen live preview modal (TourPreviewModal)
 │   │       └── export.jsx               # buildTourHtml() — standalone HTML tour exporter
 │   │
@@ -140,6 +146,8 @@ SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 │   ├── supabase-server.js       # Session-bound server client (publishable key, RLS ON)
 │   ├── supabase-admin.js        # Service-role client (RLS BYPASSED — privileged ops only)
 │   ├── supabase-middleware.js   # Edge/proxy client used by proxy.js
+│   ├── overlays.js              # Validate/normalize logos + cover-ups (projects.overlays/coverups)
+│   ├── polygons.js              # Validate/normalize polygon zones; colorForStatus(), centroidOf()
 │   └── utils.js                 # cn() = clsx + tailwind-merge
 │
 ├── hooks/
@@ -155,8 +163,8 @@ The editor is a three-column layout, each column its own file:
 | Position | File | Responsibility |
 |---|---|---|
 | **Left** | `scene_panel.jsx` | The list of scenes (rooms). Upload panoramas, pick the active scene, delete. |
-| **Middle** | `middle.jsx` | The live Pannellum 360° viewer + all interaction: hotspot placement, logo drag, sync loop. |
-| **Right** | `hotspot_panel.jsx` | Arrow palette (drag to place), the common **Hotspot size** slider, **Logo size** slider, and the list of placed hotspots. |
+| **Middle** | `middle.jsx` | The live Photo Sphere Viewer 360° viewer + all interaction: hotspot placement, overlay drag, polygon drawing, sync loop. |
+| **Right** | `hotspot_panel.jsx` (directions), `overlay_panel.jsx` (logos/cover-ups), `polygon_panel.jsx` (zones) | Stacked panels: arrow palette + hotspot size, overlay list + save, and the polygon zone list + "Draw zone". |
 
 ---
 
@@ -202,9 +210,11 @@ Large panoramas would blow past the serverless request body limit, so uploads ne
 
 ### Export flow (`export.jsx`)
 
-`buildTourHtml(project, scenes, hotspots)` returns a **single HTML string** that boots Pannellum from CDN, embeds every scene + hotspot as inline config, renders arrow hotspots with hover labels at the project's common `hotspot_size`, and paints the logo watermark. The output is fully standalone — host it anywhere or email it as-is.
+`buildTourHtml({ project, scenes, hotspots, polygons })` returns a **single HTML string** that boots Photo Sphere Viewer and its Markers plugin from a CDN import map, embeds every scene's arrows/cover-ups/polygon zones as inline config, renders arrow hotspots with hover labels at the project's common `hotspot_size`, paints the logo watermark, and (if `auto_rotate` is non-zero) loads the Autorotate plugin too. The output is fully standalone — host it anywhere or email it as-is; it still needs a one-time internet fetch of the viewer library from jsDelivr.
 
-> JSON embedded into the inline `<script>` is escaped (`\u003c` / `\u003e`) so a scene name containing `</script>` can't break out — a stored-XSS guard.
+This same file also builds the marketing landing page's procedural demo tour (`app/page.js`), using the identical CDN import-map pattern.
+
+> JSON embedded into the inline `<script>` is escaped by `safeJson()` (`<` / `>`, plus the U+2028/U+2029 line/paragraph-separator control characters) so a scene name containing `</script>` -- or a raw line separator -- can not break the script out of its tag.
 
 ---
 
@@ -212,17 +222,18 @@ Large panoramas would blow past the serverless request body limit, so uploads ne
 
 `<ProjectClient projectId>` is the orchestrator. It was split for readability — pure logic and dialogs now live beside it:
 
-- **`editor_utils.js`** — `screenToPitchYaw` / `pitchYawToScreen` (Pannellum spherical projection), `roundTo2`, `clampPct`, the `flagsReducer` for busy states (`exporting`, `savingSettings`, `deleting`, `savingHotspot`), and the injected `PANNELLUM_STYLES`.
-- **`editor_modals.jsx`** — `Spinner`, `CameraControls`, `SettingsModal` (logo upload + auto-rotate + intro toggle), `DeleteModal` (project), `HotspotDeleteModal` (per-hotspot confirmation).
+- **`editor_utils.js`** — `roundTo2`, `clampPct`, the `flagsReducer` for busy states (`exporting`, `savingSettings`, `deleting`, `savingHotspot`). The spherical-projection math that used to live here (`screenToPitchYaw`/`pitchYawToScreen`) is gone — it only existed because Pannellum didn't expose that conversion; Photo Sphere Viewer does, via `viewer.dataHelper.viewerCoordsToSphericalCoords()` / `.sphericalCoordsToViewerCoords()`, called directly where `middle.jsx` needs them.
+- **`editor_modals.jsx`** — `Spinner`, `CameraControls`, `SettingsModal` (auto-rotate + intro toggle), `DeleteModal` (project), `HotspotDeleteModal` (per-hotspot confirmation).
 
 Key behaviours inside `middle.jsx`:
 
-- **Hotspot placement** uses correct spherical projection math so an arrow lands exactly where you drop it, at any view angle.
-- A **`requestAnimationFrame` loop** keeps the on-screen placement pin/arrow tracked to the sphere in real time; it's paused (`previewOpenRef`) while the preview modal is open.
-- Hotspots are synced to Pannellum **incrementally** (`addHotSpot`/`removeHotSpot`) rather than reinitialising the viewer; an arrow is re-rendered only when its size or label changes.
+- **Hotspot placement** uses PSV's own coordinate-conversion methods so an arrow lands exactly where you drop it, at any view angle.
+- A **`requestAnimationFrame` loop** keeps the on-screen placement pin, the selected cover-up, and any open polygon popup tracked to the sphere in real time; it's paused (`previewOpenRef`) while the preview modal is open.
+- Arrows and cover-ups are rendered as real PSV **Markers plugin** markers, diffed by `mp.setMarkers()` on every relevant state change — no manual add/remove bookkeeping. PSV has no native marker-dragging, so whichever one is actively being edited (a hotspot mid-edit, the selected cover-up) is excluded from the marker list and swapped for a plain draggable React element instead — the same interaction either way.
 - **Hotspot size** is one project-level value (`projects.hotspot_size`) applied to every arrow, adjusted like logo size (live drag → save on release).
-- Hovering an arrow reveals its **label tooltip**, both in the editor and in the exported tour.
+- Hovering an arrow reveals its **label tooltip** (PSV's native marker tooltip), both in the editor and in the exported tour.
 - Deleting a hotspot opens a **styled confirmation modal** (no more instant delete).
+- **Polygon zones** (`polygon_panel.jsx` / `polygon_overlay.jsx`): click "Draw zone", click 3+ points on the panorama (a live dashed preview line grows with each click, same interaction pattern validated end-to-end before the viewer migration), then Finish opens a form for label/status/detail. Points are immutable once saved — the popup only edits status/label/detail afterward. Status drives fill color (`lib/polygons.js`'s `colorForStatus`); hovering an existing zone brightens it via `enter-marker`/`leave-marker` + `updateMarker()`.
 
 ---
 
@@ -242,12 +253,14 @@ Postgres tables in Supabase (RLS on, keyed to `auth.users`):
 | `id` (uuid, PK) | |
 | `user_id` (uuid) | FK → `auth.users`, `on delete cascade` |
 | `name`, `created_at`, `updated_at` | `updated_at` via trigger |
-| `logo_url` | nullable |
-| `logo_x`, `logo_y` (real) | watermark position %, default 50 |
-| `logo_size` (int) | default 160 |
+| `overlays` (jsonb array) | logos — screen-anchored; see `lib/overlays.js`. The old flat `logo_url`/`logo_x`/`logo_y`/`logo_size` columns were dropped once this shipped — `projectLogos()` still reads that legacy shape as a fallback so tours published before the migration keep rendering. |
+| `coverups` (jsonb array) | sphere-anchored cover-ups; same file |
 | `hotspot_size` (int) | **common arrow size**, default 90 |
 | `auto_rotate` (float) | deg/sec, default −3 |
 | `show_intro` (bool) | default true |
+| `slug` (text, nullable) | public-tour URL segment; assigned once on first publish, frozen after |
+| `published_at` (timestamptz, nullable) | null = never published / currently unpublished |
+| `published_payload` (jsonb, nullable) | frozen snapshot (`{ v, project, scenes, hotspots, polygons }`) served by the public tour route (`app/[userId]/[slug]/route.js`), regenerated to HTML on every request rather than pre-baked. `v: 2` added `polygons`; readers treat it as `?? []` so tours published before this feature still render. |
 
 **`scenes`**
 | column | notes |
@@ -265,6 +278,17 @@ Postgres tables in Supabase (RLS on, keyed to `auth.users`):
 | `arrow_type` | `up` / `left` / `up-left` / `up-right` |
 | `label` | hover tooltip text |
 | `target_scene_id` | the room this arrow navigates to |
+
+**`polygons`** — added in `db/001_create_polygons.sql`
+| column | notes |
+|---|---|
+| `id`, `scene_id`, `project_id` | always scene-scoped — no "every scene" concept, unlike logos/cover-ups |
+| `points` (jsonb) | `[[yaw_deg, pitch_deg], ...]`, >= 3 pairs; immutable once created (reshaping isn't supported yet — delete and redraw) |
+| `status` (text) | free-form; drives fill color via `lib/polygons.js`'s `colorForStatus()` — unrecognized statuses fall back to a default color rather than being rejected |
+| `label`, `detail` (jsonb) | shown in the click-through detail card, in both the editor and the exported/published tour |
+| `created_at`, `updated_at` | |
+
+Own table rather than a `projects`-level JSON array (unlike logos/cover-ups) because status is expected to be toggled independently and often — a `PATCH /api/polygons/[id]` row update fits that far better than resaving a whole array on every status flip. Cascades on delete from both `scenes` and `projects` — stricter than `hotspots` (see "Known cleanup items"). **No migration runner exists in this repo** — apply `db/001_create_polygons.sql` (and any future numbered file in `db/`) by hand against Supabase, dev before production.
 
 ---
 
@@ -284,19 +308,25 @@ All routes live under `app/api/`. Unless noted, they use the session-bound clien
 | Route | Methods | Purpose |
 |---|---|---|
 | `/api/login` `/api/signup` `/api/logout` | POST | Email/password auth |
-| `/api/forgot-password` `/api/reset-password` | POST | Password reset flow |
+| `/api/forgot-password` `/api/reset-password` | POST | **Currently stubbed to 404** — the working implementation is commented out in each route file, ready to re-enable |
 | `/api/auth/callback` | GET | Exchange auth code for a session |
 | `/api/profile` | GET | Current user's profile (falls back to auth email) |
-| `/api/projects` | POST | Create a project |
-| `/api/projects/[id]` | GET / PATCH / DELETE | Full project (project + scenes + hotspots) / settings / delete |
-| `/api/projects/[id]/logo` | POST / DELETE | Upload / remove logo |
+| `/api/projects` | POST | Create a project (spends one credit) |
+| `/api/projects/[id]` | GET / PATCH / DELETE | Full project (project + scenes + hotspots + polygons) / settings+overlays / delete |
+| `/api/projects/[id]/logo` | POST / DELETE | Legacy single-logo upload path — current editor uses `overlay-image` instead |
+| `/api/projects/[id]/overlay-image` | POST / DELETE | Upload/remove the image file behind a logo or cover-up (doesn't touch the project row — the caller saves the URL into `overlays`/`coverups` separately) |
+| `/api/projects/[id]/publish` | POST / DELETE | Freeze the current tour into `published_payload` at its permanent link / take it offline (slug kept) |
 | `/api/scenes/upload-url` | POST | Signed direct-to-storage upload URL |
 | `/api/scenes` | POST | Create scene row |
 | `/api/scenes/[id]` | PATCH / DELETE | Update initial view / delete scene |
 | `/api/hotspots` | POST | Create hotspot |
 | `/api/hotspots/[id]` | PATCH / DELETE | Update / delete hotspot |
+| `/api/polygons` | POST | Create a polygon zone |
+| `/api/polygons/[id]` | PATCH / DELETE | Update status/label/detail (points are immutable) / delete zone |
+| `/api/payments/create-order` `/api/payments/verify` | POST | Razorpay checkout — server looks up the real amount by plan key, client never sends a price |
+| `/api/webhooks/razorpay` | POST | Server-to-server payment confirmation (credits are granted here even if the client never calls `/verify`) |
 
-`PATCH /api/projects/[id]` accepts and clamps: `name`, `logo_url`, `show_intro`, `auto_rotate`, `logo_x`, `logo_y`, `logo_size`, `hotspot_size` (40–400).
+`PATCH /api/projects/[id]` accepts and clamps: `name`, `show_intro`, `auto_rotate`, `hotspot_size` (40-400), `overlays`, `coverups`.
 
 ---
 
@@ -331,9 +361,10 @@ Deploys cleanly to **Vercel**:
 
 ## Known cleanup items
 
-- **Duplicate dashboard page:** both `app/360editor/page.js` (current — profile fetched via `/api/profile`) and `app/360editor/page.jsx` (older — fetches profiles inline) exist. Next.js treats these as a conflicting route; **delete `page.jsx`** and keep `page.js`.
-- **Scene deletion & dangling hotspots:** deleting a scene should cascade to hotspots whose `target_scene_id` points at it (dead nav arrows) — ensure a DB foreign-key `on delete` rule or clean them up server-side.
+- **Scene deletion & dangling hotspots:** deleting a scene should cascade to hotspots whose `target_scene_id` points at it (dead nav arrows) — ensure a DB foreign-key `on delete` rule or clean them up server-side. (`polygons` was deliberately built with `on delete cascade` from both `scenes` and `projects` from the start — don't loosen it to match this gap; fix `hotspots` instead.)
 - **Font fallbacks:** `login` / `signup` / `privacy` / `terms` reference the `Fraunces` display font without loading it on those pages; they fall back to Georgia. Add the Google Fonts `<link>` if you want consistent display type there.
+- **Polygon reshaping:** points are immutable once a zone is drawn — there's no drag-a-vertex editor yet. Delete and redraw is the only way to change a shape's outline today.
+- **Exported-tour zone card position is fixed**, not anchored to the clicked shape's screen position (unlike the editor's popup) — the exported tour has no per-frame projection loop, so it opens in a fixed corner instead. Fine for now; revisit if it feels wrong in practice.
 
 ---
 

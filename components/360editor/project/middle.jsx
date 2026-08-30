@@ -1,17 +1,32 @@
-﻿'use client'
+'use client'
 import React, { useEffect, useRef, useState, useCallback, useReducer } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { Viewer } from '@photo-sphere-viewer/core'
+import { MarkersPlugin } from '@photo-sphere-viewer/markers-plugin'
+import '@photo-sphere-viewer/core/index.css'
+import '@photo-sphere-viewer/markers-plugin/index.css'
 import ScenePanel       from '@/components/360editor/project/scene_panel'
 import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
+import PolygonPanel from '@/components/360editor/project/polygon_panel'
 import { ARROWS } from '@/lib/arrows'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
+import { colorForStatus, centroidOf } from '@/lib/polygons'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml } from '@/components/360editor/project/export'
 import { HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
-import { screenToPitchYaw, pitchYawToScreen, roundTo2, flagsInit, flagsReducer, PANNELLUM_STYLES } from '@/components/360editor/project/editor_utils'
+import { PolygonPopup } from '@/components/360editor/project/polygon_overlay'
+import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
 import { Spinner, CameraControls, SettingsModal, DeleteModal, HotspotDeleteModal } from '@/components/360editor/project/editor_modals'
+
+// Radians <-> degrees. Hotspot/overlay data is stored in degrees everywhere
+// (DB, API, React state) exactly as before the viewer swap — PSV's Position
+// type is radians, so conversion happens only at the two dataHelper boundary
+// calls (sampleAt, mainLoop) and nowhere else. Marker *configs* skip this
+// entirely by using PSV's degree-suffixed string form ("12.3deg").
+const RAD = Math.PI / 180
+const DEG = 180 / Math.PI
 
 // Overlay editing card — styled to match the hotspot popup (light card, indigo
 // header, right-of-target with edge fallback), so overlays and hotspots feel
@@ -167,16 +182,24 @@ function OverlayPopup({ item, kind, editing, screenPos, halfW, halfH, viewerSize
 export default function ProjectClient({ projectId }) {
     const router           = useRouter()
     const viewerRef        = useRef(null)
-    const pannellumRef     = useRef(null)
+    const psvRef           = useRef(null)   // Photo Sphere Viewer instance (was pannellumRef)
+    const markersPluginRef = useRef(null)
     const viewerSceneIdRef = useRef(null)
     const rafRef           = useRef(null)
     const scenesRef        = useRef([])
     const popupRef         = useRef(null)
     const onHotspotClickRef = useRef(null)
+    const onCoverupClickRef = useRef(null)
+    const onPolygonClickRef = useRef(null)
+    const lastVertexRef     = useRef(null)   // { yaw, pitch, t } — guards against a click double-firing
     const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging a logo
     const [logoAspect, setLogoAspect] = useState({}) // logo id -> naturalHeight/naturalWidth
-    const coverupsRef       = useRef([])     // visible cover-ups, read inside the rAF loop
-    const baseHfovRef       = useRef(120)    // scene's opening zoom — cover-ups scale against it
+    const [coverupAspect, setCoverupAspect] = useState({}) // coverup id -> naturalHeight/naturalWidth
+    const coverupsRef       = useRef([])     // full coverups list, read inside the rAF loop by id
+    const selectedOverlayRef = useRef(null)  // mirrors selectedOverlay, read inside the rAF loop
+    const polygonsRef        = useRef([])    // full polygons list, read inside the marker click/hover handlers
+    const drawingPolygonRef  = useRef(null)  // mirrors drawingPolygon, read inside the PSV click handler
+    const polygonPopupRef    = useRef(null)  // mirrors polygonPopup, read inside the rAF loop
     const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
 
     const [project, setProject]                 = useState(null)
@@ -185,7 +208,6 @@ export default function ProjectClient({ projectId }) {
     const [activeScene, setActiveScene]         = useState(null)
     const [loading, setLoading]                 = useState(true)
     const [isDragOver, setIsDragOver]           = useState(false)
-    const [pannellumLoaded, setPannellumLoaded] = useState(false)
     const [isDraggingPin, setIsDraggingPin]     = useState(false)
     const [showSettings, setShowSettings]       = useState(false)
     const [settingsDraft, setSettingsDraft]     = useState(null)
@@ -219,22 +241,43 @@ export default function ProjectClient({ projectId }) {
     const [selectedOverlay, setSelectedOverlay] = useState(null)
     const [editOverlay, setEditOverlay]         = useState(null)   // id in confirmed edit mode
     const [draggingOverlay, setDraggingOverlay] = useState(null)   // id being dragged
-    const [coverScreen, setCoverScreen]         = useState({})     // id → {x,y,hfov}, recomputed each frame
+    const [coverupPopupScreen, setCoverupPopupScreen] = useState(null) // {x,y,hfov} of the SELECTED cover-up only, recomputed each frame
 
     const [hotspotSize, setHotspotSize]         = useState(90)
     const [hotspotToDelete, setHotspotToDelete] = useState(null)
     const [deletingHotspot, setDeletingHotspot] = useState(false)
 
+    // ── Polygon zones ──────────────────────────────────────────────────────
+    // Always scene-scoped (no "every scene" concept — a zone marks a specific
+    // room). Points are immutable once drawn; the popup only edits
+    // status/label/detail. drawingPolygon holds points while placing vertices
+    // (click-to-place, same interaction as the validated spike); polygonPopup
+    // is 'new' (just-finished draw, not yet saved) | 'view' (existing zone,
+    // read-only card) | 'edit' (existing zone, metadata form).
+    const [polygons, setPolygons]               = useState([])
+    const [drawingPolygon, setDrawingPolygon]   = useState(null)
+    const [polygonPopup, setPolygonPopup]       = useState(null)
+    const [polygonPopupScreen, setPolygonPopupScreen] = useState(null)
+    const [savingPolygon, setSavingPolygon]     = useState(false)
+    const [deletingPolygon, setDeletingPolygon] = useState(false)
+    const [polygonError, setPolygonError]       = useState('')
+
     // popupState modes: 'new' | 'confirm-edit' | 'edit-existing' | 'saved'
     const [popupState, setPopupState] = useState(null)
 
-    scenesRef.current    = scenes
-    popupRef.current     = popupState
+    scenesRef.current         = scenes
+    popupRef.current          = popupState
+    coverupsRef.current       = coverups
+    selectedOverlayRef.current = selectedOverlay
+    polygonsRef.current       = polygons
+    drawingPolygonRef.current = drawingPolygon
+    polygonPopupRef.current   = polygonPopup
 
     // What the ACTIVE scene displays: every-scene overlays + those scoped here.
     const visibleLogos    = overlaysForScene(logos,    activeScene?.id)
     const visibleCoverups = overlaysForScene(coverups, activeScene?.id)
-    coverupsRef.current  = visibleCoverups
+    // Zones are always scene-scoped — no "every scene" concept.
+    const visiblePolygons = polygons.filter(p => p.scene_id === activeScene?.id)
 
     // Id of the hotspot currently being edited (stable primitive for effect deps)
     const editingId = popupState?.mode === 'edit-existing' ? popupState.hotspot?.id : null
@@ -253,6 +296,7 @@ export default function ProjectClient({ projectId }) {
                 setPublicUrl(data.public_url ?? null)
                 setScenes(data.scenes)
                 setHotspots(data.hotspots)
+                setPolygons(data.polygons ?? [])
                 if (data.scenes.length > 0) setActiveScene(data.scenes[0])
             } catch {
                 router.push('/360editor')
@@ -277,6 +321,10 @@ export default function ProjectClient({ projectId }) {
     useEffect(() => {
         setDraggingOverlay(null)
         setEditOverlay(null)
+        // A zone belongs to a specific room — switching away mid-draw or
+        // mid-view would be drawing/looking at the wrong scene's shape.
+        setDrawingPolygon(null)
+        setPolygonPopup(null)
     }, [activeScene?.id]) // eslint-disable-line
 
     // Closing the tab with unsaved overlays should cost a confirmation, not the work.
@@ -287,13 +335,21 @@ export default function ProjectClient({ projectId }) {
         return () => window.removeEventListener('beforeunload', warn)
     }, [dirtyLogos, dirtyCoverups])
 
-    // ── Load Pannellum script ──────────────────────────────────────────────
+    // ── Load natural aspect ratio for each cover-up ─────────────────────────
+    // PSV image markers need an explicit {width,height} (unlike a plain <img>,
+    // which can leave height:auto) — so the natural ratio has to be known up
+    // front, the same way logoAspect already tracks it for logos.
     useEffect(() => {
-        if (window.pannellum) { setPannellumLoaded(true); return }
-        const link   = Object.assign(document.createElement('link'),   { rel:'stylesheet', href:'https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css' })
-        const script = Object.assign(document.createElement('script'), { src:'https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js', onload:() => setPannellumLoaded(true) })
-        document.head.append(link, script)
-    }, [])
+        for (const c of coverups) {
+            if (coverupAspect[c.id] != null) continue
+            const img = new Image()
+            img.onload = () => {
+                const r = img.naturalHeight / (img.naturalWidth || 1)
+                setCoverupAspect(prev => (prev[c.id] != null ? prev : { ...prev, [c.id]: r }))
+            }
+            img.src = c.url
+        }
+    }, [coverups]) // eslint-disable-line
 
     // ── Track viewer size (for popup edge-clamping) ────────────────────────
     useEffect(() => {
@@ -307,142 +363,274 @@ export default function ProjectClient({ projectId }) {
         return () => ro.disconnect()
     }, [activeScene])
 
-    // ── Hotspot click handler (via stable ref so pannellum closures stay fresh)
+    // ── Marker click handlers (via stable refs so the PSV listener, registered
+    // once per viewer instance, always calls the current closure) ──────────
     onHotspotClickRef.current = (hotspotId) => {
         const h = hotspots.find(x => x.id === hotspotId)
         if (!h) return
         setPopupState({ mode: 'confirm-edit', hotspot: h })
     }
-
-    // ── makeTooltip — builds each arrow div for pannellum ─────────────────
-    const makeTooltip = useCallback((div, args) => {
-        const S = args.size || 90
-        div.style.cssText = `width:${S}px;height:${S}px;background:none;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;`
-        const img = Object.assign(document.createElement('img'), { src: args.gif })
-        img.style.cssText = `width:${S}px;height:${S}px;object-fit:contain;filter:drop-shadow(0 3px 12px rgba(0,0,0,.85));pointer-events:none;`
-        div.appendChild(img)
-        const shadow = 'drop-shadow(0 3px 12px rgba(0,0,0,.85))'
-        // Hover label — shows the hotspot's description above the arrow.
-        let tip = null
-        if (args.label) {
-            tip = document.createElement('div')
-            tip.textContent = args.label
-            tip.style.cssText = 'position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:6px;white-space:nowrap;background:rgba(26,26,24,.92);color:#fff;font:600 12px/1.2 Inter,system-ui,sans-serif;padding:5px 9px;border-radius:8px;opacity:0;transition:opacity .15s;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.4);z-index:10;'
-            div.appendChild(tip)
-        }
-        div.addEventListener('mouseenter', () => { img.style.filter = shadow + ' brightness(1.2)'; if (tip) tip.style.opacity = '1' })
-        div.addEventListener('mouseleave', () => { img.style.filter = shadow;                     if (tip) tip.style.opacity = '0' })
-        div.addEventListener('click',      () => { onHotspotClickRef.current?.(args.hotspotDbId) })
-    }, []) // eslint-disable-line
+    onCoverupClickRef.current = (coverupId) => {
+        if (!coverupId) return
+        setSelectedOverlay(coverupId)
+        setEditOverlay(null)
+    }
+    onPolygonClickRef.current = (polygonId) => {
+        const p = polygons.find(x => x.id === polygonId)
+        if (!p) return
+        setPolygonPopup({ mode: 'view', polygon: p })
+    }
 
     // ── Viewer init ────────────────────────────────────────────────────────
     useEffect(() => {
-        if (!pannellumLoaded || !activeScene || !viewerRef.current) return
-        if (viewerSceneIdRef.current === activeScene.id && pannellumRef.current) return
+        if (!activeScene || !viewerRef.current) return
+        if (viewerSceneIdRef.current === activeScene.id && psvRef.current) return
 
-        pannellumRef.current?.destroy?.()
-        pannellumRef.current     = null
+        psvRef.current?.destroy()
+        psvRef.current           = null
+        markersPluginRef.current = null
         viewerSceneIdRef.current = activeScene.id
         setPopupState(null)
 
-        pannellumRef.current = window.pannellum.viewer(viewerRef.current, {
-            type: 'equirectangular', panorama: activeScene.url,
-            autoLoad: true, showControls: false, autoRotate: 0, mouseZoom: true,
-            yaw:   activeScene.initial_yaw   ?? 0,
-            pitch: activeScene.initial_pitch ?? -5,
-            hfov:  activeScene.initial_hfov  ?? 120,
-            hotSpots: [],
+        const viewer = new Viewer({
+            container: viewerRef.current,
+            panorama: activeScene.url,
+            defaultYaw:   `${activeScene.initial_yaw   ?? 0}deg`,
+            defaultPitch: `${activeScene.initial_pitch ?? -5}deg`,
+            minFov: 30,
+            maxFov: 130,
+            navbar: false,
+            plugins: [[MarkersPlugin, {}]],
         })
 
-        // Pannellum's scale:true sizes a hotspot relative to the field of view
-        // it was FIRST rendered at. The editor mirrors that so what you drag is
-        // what gets published.
-        baseHfovRef.current = activeScene.initial_hfov ?? 120
+        // PSV's zoom axis (0-100) isn't the same as Pannellum's hfov degrees —
+        // convert once the instance is ready so the opening view matches what
+        // was saved.
+        viewer.addEventListener('ready', () => {
+            try { viewer.zoom(viewer.dataHelper.fovToZoomLevel(activeScene.initial_hfov ?? 120)) } catch {}
+        }, { once: true })
 
-        return () => {
-            pannellumRef.current?.destroy?.()
-            pannellumRef.current     = null
-            viewerSceneIdRef.current = null
-        }
-    }, [pannellumLoaded, activeScene]) // eslint-disable-line
+        const mp = viewer.getPlugin(MarkersPlugin)
+        mp.addEventListener('select-marker', ({ marker }) => {
+            // Drawing a zone takes priority — a vertex click landing on an
+            // existing arrow/cover-up/zone must place a point, not also open
+            // that marker's own popup.
+            if (drawingPolygonRef.current) return
+            if (marker.id.startsWith('hs_'))        onHotspotClickRef.current?.(marker.data?.hotspotDbId)
+            else if (marker.id.startsWith('cv_'))   onCoverupClickRef.current?.(marker.data?.coverupId)
+            else if (marker.id.startsWith('poly_')) onPolygonClickRef.current?.(marker.data?.polygonId)
+        })
+        mp.addEventListener('enter-marker', ({ marker }) => {
+            if (!marker.id.startsWith('poly_')) return
+            const p = polygonsRef.current.find(x => x.id === marker.data?.polygonId)
+            if (!p) return
+            const c = colorForStatus(p.status)
+            mp.updateMarker({ id: marker.id, svgStyle: { fill: c + '99', stroke: c, strokeWidth: '3' } })
+        })
+        mp.addEventListener('leave-marker', ({ marker }) => {
+            if (!marker.id.startsWith('poly_')) return
+            const p = polygonsRef.current.find(x => x.id === marker.data?.polygonId)
+            if (!p) return
+            const c = colorForStatus(p.status)
+            mp.updateMarker({ id: marker.id, svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' } })
+        })
+        // Click-to-place-vertex while drawing a zone. A raw viewer click (not
+        // a marker select), fired regardless of what's under the cursor.
+        //
+        // The shape auto-closes on its own (the last point connects straight
+        // back to the first) — clicking the starting corner again is NOT
+        // needed to close it, and doing so used to add a near-duplicate
+        // vertex sitting almost on top of point 1, which barely shows in the
+        // OPEN preview line but throws off which region the CLOSED filled
+        // polygon fills once it auto-closes, producing a collapsed/twisted
+        // shape. So: a click landing back near the first point FINISHES the
+        // shape (using the points already placed) instead of adding one —
+        // matching how most polygon tools treat "click back at the start".
+        //
+        // Also guarded against firing twice for what the user experiences as
+        // one click (a tight time+distance check on the immediately-previous
+        // point) — belt and suspenders against React Strict Mode's
+        // double-invoked effects in dev possibly overlapping two Viewer
+        // instances for a moment, each registering its own listener against
+        // the same shared setDrawingPolygon.
+        viewer.addEventListener('click', ({ data }) => {
+            if (!drawingPolygonRef.current) return
+            // Straight off the click event, same as the standalone spike that
+            // validated this whole drawing flow — that comparison is what
+            // proved the real bug was server-side (normalizePoints clamping
+            // yaw instead of wrapping it, see lib/polygons.js), not here.
+            const yaw   = data.yaw   * DEG
+            const pitch = data.pitch * DEG
 
-    // ── Hotspot sync — diffs state vs pannellum, handles edits too ─────────
-    // While a hotspot is being edited ('edit-existing'), its static arrow is
-    // hidden so only the draggable crosshair represents it. It re-appears once
-    // we leave edit mode (mode === 'saved' / popup closed).
-    useEffect(() => {
-        const viewer = pannellumRef.current
-        if (!viewer || !activeScene) return
+            const last = lastVertexRef.current
+            const now  = Date.now()
+            if (last && now - last.t < 250 && Math.abs(yaw - last.yaw) < 0.05 && Math.abs(pitch - last.pitch) < 0.05) {
+                return
+            }
 
-        const renderedMap = new Map()
-        try { for (const h of viewer.getConfig()?.hotSpots ?? []) renderedMap.set(h.id, h) } catch {}
-
-        const desired    = hotspots.filter(h => h.scene_id === activeScene.id && h.id !== editingId)
-        const desiredIds = new Set(desired.map(h => `hs_${h.id}`))
-
-        for (const id of renderedMap.keys())
-            if (!desiredIds.has(id)) { try { viewer.removeHotSpot(id) } catch {} }
-
-        for (const h of desired) {
-            const hsId     = `hs_${h.id}`
-            const arrow    = ARROWS.find(a => a.type === h.arrow_type)
-            const gif      = arrow?.gif || ARROWS[0].gif
-            const existing = renderedMap.get(hsId)
-            const changed  = existing && (
-                existing.pitch !== h.pitch ||
-                existing.yaw   !== h.yaw   ||
-                existing.createTooltipArgs?.gif  !== gif ||
-                existing.createTooltipArgs?.size  !== hotspotSize ||
-                existing.createTooltipArgs?.label !== (h.label || '')
-            )
-
-            if (changed) { try { viewer.removeHotSpot(hsId) } catch {} }
-
-            if (!existing || changed) {
+            const pts = drawingPolygonRef.current.points
+            if (pts.length >= 3) {
                 try {
-                    viewer.addHotSpot({
-                        pitch: h.pitch, yaw: h.yaw,
-                        type: 'custom', text: h.label || '', id: hsId,
-                        createTooltipFunc: makeTooltip,
-                        createTooltipArgs: { gif, hotspotDbId: h.id, size: hotspotSize, label: h.label || '' },
-                    })
+                    const first = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: pts[0][0] * RAD, pitch: pts[0][1] * RAD })
+                    if (first) {
+                        const dx = data.viewerX - first.x, dy = data.viewerY - first.y
+                        if (Math.sqrt(dx * dx + dy * dy) < 24) {
+                            lastVertexRef.current = { yaw, pitch, t: now }
+                            setPolygonPopup({ mode: 'new', points: pts, status: 'available', label: '', detail: {} })
+                            setDrawingPolygon(null)
+                            return
+                        }
+                    }
                 } catch {}
             }
-        }
-    }, [hotspots, activeScene, makeTooltip, editingId, hotspotSize])
 
-    // ── rAF — keeps pin projected on screen ───────────────────────────────
+            lastVertexRef.current = { yaw, pitch, t: now }
+            setDrawingPolygon(prev => prev ? { points: [...prev.points, [yaw, pitch]] } : prev)
+        })
+
+        psvRef.current           = viewer
+        markersPluginRef.current = mp
+
+        return () => {
+            viewer.destroy()
+            psvRef.current           = null
+            markersPluginRef.current = null
+            viewerSceneIdRef.current = null
+        }
+    }, [activeScene]) // eslint-disable-line
+
+    // ── Marker sync — arrows + cover-ups, diffed by PSV itself ──────────────
+    // While a hotspot/cover-up is being edited, it's excluded from this list and
+    // rendered instead as a plain draggable React element — PSV markers have no
+    // native drag-to-reposition, so the item being pointed at swaps to DOM, the
+    // same pattern this app already used for hotspot placement.
+    useEffect(() => {
+        const mp     = markersPluginRef.current
+        const viewer = psvRef.current
+        if (!mp || !viewer || !activeScene) return
+
+        const arrowMarkers = hotspots
+            .filter(h => h.scene_id === activeScene.id && h.id !== editingId)
+            .map(h => {
+                const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
+                return {
+                    id: `hs_${h.id}`,
+                    type: 'image',
+                    image: arrow.gif,
+                    size: { width: hotspotSize, height: hotspotSize },
+                    position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
+                    tooltip: h.label || undefined,
+                    data: { hotspotDbId: h.id },
+                }
+            })
+
+        const baseHfov = activeScene.initial_hfov ?? 120
+        const coverupMarkers = visibleCoverups
+            .filter(c => c.id !== selectedOverlay) // the selected one is rendered as plain DOM instead
+            .map(c => {
+                const aspect = coverupAspect[c.id] ?? 1
+                return {
+                    id: `cv_${c.id}`,
+                    type: 'image',
+                    image: c.url,
+                    size: { width: c.size, height: c.size * aspect },
+                    position: { yaw: `${c.yaw}deg`, pitch: `${c.pitch}deg` },
+                    opacity: c.opacity,
+                    rotation: `${c.rotation}deg`,
+                    // Grows/shrinks with zoom so it keeps covering the same
+                    // physical spot on the photo — the same intent as
+                    // Pannellum's old scale:true.
+                    scale: (zoomLevel) => {
+                        try { return baseHfov / viewer.dataHelper.zoomLevelToFov(zoomLevel) }
+                        catch { return 1 }
+                    },
+                    data: { coverupId: c.id },
+                }
+            })
+
+        // Zones. Points are immutable once drawn, so — unlike hotspots/cover-ups
+        // — the one open in the popup never needs excluding here; only its
+        // fill color changes, via the hover handlers registered at init.
+        const polygonMarkers = visiblePolygons.map(p => {
+            const c = colorForStatus(p.status)
+            return {
+                id: `poly_${p.id}`,
+                type: 'polygon',
+                polygon: p.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
+                svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' },
+                data: { polygonId: p.id },
+            }
+        })
+
+        // Live preview while placing vertices — a growing dashed line, same
+        // pattern already validated in the polygon spike.
+        const previewMarkers = (drawingPolygon && drawingPolygon.points.length >= 2)
+            ? [{
+                id: 'poly_preview',
+                type: 'polyline',
+                polyline: drawingPolygon.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
+                svgStyle: { stroke: '#a3e635', strokeWidth: '2', strokeDasharray: '6,4', fill: 'none' },
+            }]
+            : []
+
+        const next = [...coverupMarkers, ...polygonMarkers, ...previewMarkers, ...arrowMarkers]
+        try {
+            mp.setMarkers(next)
+        } catch {
+            // Fallback if this PSV version lacks the bulk-replace method.
+            mp.clearMarkers()
+            for (const m of next) { try { mp.addMarker(m) } catch {} }
+        }
+    }, [hotspots, visibleCoverups, visiblePolygons, drawingPolygon, activeScene, hotspotSize, editingId, selectedOverlay, coverupAspect])
+
+    // ── rAF — keeps the placement pin + selected cover-up projected on screen
     const mainLoop = useCallback(() => {
         // While the preview modal is open, stop projecting/setting state every
         // frame — it would re-render the editor (and the modal) needlessly.
         if (previewOpenRef.current) { rafRef.current = requestAnimationFrame(mainLoop); return }
 
-        const viewer = pannellumRef.current, el = viewerRef.current
+        const viewer = psvRef.current
         const ps     = popupRef.current
 
         let pitch, yaw
-        if      (ps?.mode === 'new' || ps?.mode === 'edit-existing')  { pitch = ps.pitch;          yaw = ps.yaw          }
+        if      (ps?.mode === 'new' || ps?.mode === 'edit-existing')  { pitch = ps.pitch;          yaw = ps.yaw }
         else if (ps?.mode === 'confirm-edit' || ps?.mode === 'saved') { pitch = ps.hotspot?.pitch;  yaw = ps.hotspot?.yaw }
 
-        if (viewer && el && pitch != null && yaw != null) {
-            const { clientWidth: W, clientHeight: H } = el
-            setPinPos(pitchYawToScreen(pitch, yaw, viewer.getPitch(), viewer.getYaw(), viewer.getHfov(), W, H))
+        if (viewer && pitch != null && yaw != null) {
+            try {
+                const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD })
+                setPinPos(pt || null)
+            } catch { setPinPos(null) }
         } else {
             setPinPos(null)
         }
 
-        // Cover-ups are sphere-anchored, so each visible one is re-projected
-        // every frame — same projection the hotspot pin uses.
-        const cvs = coverupsRef.current
-        if (viewer && el && cvs.length) {
-            const { clientWidth: W, clientHeight: H } = el
-            const vp = viewer.getPitch(), vy = viewer.getYaw(), vh = viewer.getHfov()
-            const next = {}
-            for (const c of cvs)
-                next[c.id] = { ...pitchYawToScreen(c.pitch, c.yaw, vp, vy, vh, W, H), hfov: vh }
-            setCoverScreen(next)
+        // The selected cover-up (confirm bubble or edit form) is world-anchored,
+        // so — same as the pin — it needs a live projected position.
+        const selId = selectedOverlayRef.current
+        const cov   = selId ? coverupsRef.current.find(c => c.id === selId) : null
+        if (viewer && cov) {
+            try {
+                const pt   = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: cov.yaw * RAD, pitch: cov.pitch * RAD })
+                const hfov = viewer.dataHelper.zoomLevelToFov(viewer.getZoomLevel())
+                setCoverupPopupScreen(pt ? { x: pt.x, y: pt.y, hfov } : null)
+            } catch { setCoverupPopupScreen(null) }
         } else {
-            setCoverScreen({})
+            setCoverupPopupScreen(null)
+        }
+
+        // Polygon popup ('new' before it's saved, or 'view'/'edit' on an
+        // existing zone) is anchored to the shape's centroid.
+        const pp  = polygonPopupRef.current
+        const pts = pp ? (pp.mode === 'new' ? pp.points : pp.polygon?.points) : null
+        if (viewer && pts?.length) {
+            try {
+                const c  = centroidOf(pts)
+                const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: c.yaw * RAD, pitch: c.pitch * RAD })
+                setPolygonPopupScreen(pt || null)
+            } catch { setPolygonPopupScreen(null) }
+        } else {
+            setPolygonPopupScreen(null)
         }
 
         rafRef.current = requestAnimationFrame(mainLoop)
@@ -455,10 +643,14 @@ export default function ProjectClient({ projectId }) {
 
     // ── sampleAt — screen → sphere coords ─────────────────────────────────
     const sampleAt = useCallback((clientX, clientY) => {
-        const viewer = pannellumRef.current, el = viewerRef.current
+        const viewer = psvRef.current, el = viewerRef.current
         if (!viewer || !el) return null
-        const { left, top, width, height } = el.getBoundingClientRect()
-        return screenToPitchYaw(clientX - left, clientY - top, viewer.getPitch(), viewer.getYaw(), viewer.getHfov(), width, height)
+        const { left, top } = el.getBoundingClientRect()
+        try {
+            const sph = viewer.dataHelper.viewerCoordsToSphericalCoords({ x: clientX - left, y: clientY - top })
+            if (!sph) return null
+            return { pitch: sph.pitch * DEG, yaw: sph.yaw * DEG }
+        } catch { return null }
     }, [])
 
     // ── Drag / drop ────────────────────────────────────────────────────────
@@ -469,11 +661,12 @@ export default function ProjectClient({ projectId }) {
         const hotspotType = e.dataTransfer.getData('hotspot-type')
         if (sceneData) { setActiveScene(JSON.parse(sceneData)); return }
         if (hotspotType) {
+            if (drawingPolygon) return // drawing a zone takes priority over placing a new arrow
             const coords = sampleAt(e.clientX, e.clientY)
             if (!coords) return
             setPopupState({ mode: 'new', arrow_type: hotspotType, ...coords, label: '', target_scene_id: '' })
         }
-    }, [sampleAt])
+    }, [sampleAt, drawingPolygon])
 
     const onOverlayMouseMove = useCallback(e => {
         if (!isDraggingPin) return
@@ -802,6 +995,101 @@ export default function ProjectClient({ projectId }) {
         }
     }
 
+    // ── Polygon zones ──────────────────────────────────────────────────────
+    function startDrawingPolygon() {
+        if (!activeScene) return
+        setPolygonPopup(null)
+        setPolygonError('')
+        lastVertexRef.current = null
+        setDrawingPolygon({ points: [] })
+    }
+
+    function cancelDrawingPolygon() {
+        setDrawingPolygon(null)
+    }
+
+    function finishDrawingPolygon() {
+        if (!drawingPolygon || drawingPolygon.points.length < 3) return
+        setPolygonPopup({ mode: 'new', points: drawingPolygon.points, status: 'available', label: '', detail: {} })
+        setDrawingPolygon(null)
+    }
+
+    async function savePolygon() {
+        if (polygonPopup?.mode !== 'new' || !project || !activeScene) return
+        setSavingPolygon(true)
+        setPolygonError('')
+        try {
+            const res = await fetch('/api/polygons', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    project_id: project.id, scene_id: activeScene.id,
+                    points: polygonPopup.points,
+                    status: polygonPopup.status, label: polygonPopup.label, detail: polygonPopup.detail,
+                }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) { setPolygonError(json.error || 'Could not save the zone.'); return }
+            setPolygons(prev => [...prev, json.polygon])
+            setPolygonPopup(null)
+        } catch {
+            setPolygonError('Network error — the zone was not saved.')
+        } finally {
+            setSavingPolygon(false)
+        }
+    }
+
+    async function updatePolygon() {
+        if (polygonPopup?.mode !== 'edit' || !polygonPopup.polygon) return
+        setSavingPolygon(true)
+        setPolygonError('')
+        try {
+            const res = await fetch(`/api/polygons/${polygonPopup.polygon.id}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: polygonPopup.status, label: polygonPopup.label, detail: polygonPopup.detail }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) { setPolygonError(json.error || 'Could not save the zone.'); return }
+            setPolygons(prev => prev.map(p => p.id === json.polygon.id ? json.polygon : p))
+            setPolygonPopup(null)
+        } catch {
+            setPolygonError('Network error — the zone was not saved.')
+        } finally {
+            setSavingPolygon(false)
+        }
+    }
+
+    function handlePolygonSave() {
+        if (polygonPopup?.mode === 'new')  savePolygon()
+        if (polygonPopup?.mode === 'edit') updatePolygon()
+    }
+
+    // Panel row click / re-click toggles the view card, same affordance as the
+    // overlay panel's rows.
+    function selectPolygon(id) {
+        if (polygonPopup?.polygon?.id === id && polygonPopup.mode === 'view') { setPolygonPopup(null); return }
+        const p = polygons.find(x => x.id === id)
+        if (!p) return
+        setPolygonPopup({ mode: 'view', polygon: p })
+    }
+
+    function editPolygon() {
+        setPolygonPopup(prev => prev?.polygon ? {
+            mode: 'edit', polygon: prev.polygon,
+            status: prev.polygon.status, label: prev.polygon.label, detail: prev.polygon.detail,
+        } : prev)
+    }
+
+    async function deletePolygon(id) {
+        setDeletingPolygon(true)
+        try {
+            await fetch(`/api/polygons/${id}`, { method: 'DELETE' })
+            setPolygons(prev => prev.filter(p => p.id !== id))
+            if (polygonPopup?.polygon?.id === id) setPolygonPopup(null)
+        } finally {
+            setDeletingPolygon(false)
+        }
+    }
+
     // Common hotspot arrow size — saved on the project, exactly like logo size.
     async function saveHotspotSize(size) {
         if (!project) return
@@ -840,7 +1128,7 @@ export default function ProjectClient({ projectId }) {
     function openPreview() {
         if (!scenes.length || !project) return
         previewOpenRef.current = true
-        setPreviewHtml(buildTourHtml({ project, scenes, hotspots }))
+        setPreviewHtml(buildTourHtml({ project, scenes, hotspots, polygons }))
     }
 
     // ── Publish ────────────────────────────────────────────────────────────
@@ -924,9 +1212,12 @@ export default function ProjectClient({ projectId }) {
     const hasPopup  = popupState !== null
     const isEditing = popupState?.mode === 'new' || popupState?.mode === 'edit-existing'
 
+    // The one selected cover-up, if any — rendered as plain DOM (see the marker
+    // sync effect for why: PSV markers can't be dragged natively).
+    const selectedCoverup = coverups.find(c => c.id === selectedOverlay)
+
     return (
         <>
-            <style>{PANNELLUM_STYLES}</style>
             <div className="h-screen flex flex-col bg-[#FAFAF7] overflow-hidden">
 
                 {/* ── Top bar ── */}
@@ -1032,6 +1323,13 @@ export default function ProjectClient({ projectId }) {
                     </div>
                 )}
 
+                {polygonError && (
+                    <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
+                        {polygonError}
+                        <button onClick={() => setPolygonError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
+                    </div>
+                )}
+
                 {/* ── Body ── */}
                 <div className="flex-1 flex overflow-hidden">
 
@@ -1061,42 +1359,38 @@ export default function ProjectClient({ projectId }) {
                                      className={`absolute inset-0 ${isDragOver ? 'ring-2 ring-[#3730a3] ring-inset' : ''}`}
                                      onDragOver={onViewerDragOver} onDragLeave={() => setIsDragOver(false)} onDrop={onViewerDrop}/>
 
-                                {/* ── Cover-ups — anchored to the panorama ──
-                                    Drawn UNDER the logos and under the arrows, because a
-                                    cover-up hides part of the photo; it is scenery, not UI.
-                                    Its on-screen size tracks the zoom the same way
-                                    Pannellum's scale:true does in the exported tour. */}
-                                {visibleCoverups.map(c => {
-                                    const pos = coverScreen[c.id]
-                                    if (!pos) return null
-                                    const zoom = baseHfovRef.current / (pos.hfov || baseHfovRef.current)
-                                    const sel  = selectedOverlay === c.id
+                                {/* ── Selected cover-up — the only one rendered as plain DOM.
+                                    Every other cover-up is a PSV marker (see the marker-sync
+                                    effect); PSV has no native marker-dragging, so the one being
+                                    pointed at swaps to a draggable element, exactly the pattern
+                                    already used for hotspot placement below. */}
+                                {selectedCoverup && coverupPopupScreen && (() => {
+                                    const c = selectedCoverup
+                                    const zoom = (activeScene.initial_hfov ?? 120) / (coverupPopupScreen.hfov || activeScene.initial_hfov || 120)
+                                    const editing = editOverlay === c.id
+                                    const w = c.size * zoom
                                     return (
-                                        <div key={c.id} className="absolute z-10" style={{ left: pos.x, top: pos.y, transform: 'translate(-50%,-50%)' }}>
+                                        <div className="absolute z-10" style={{ left: coverupPopupScreen.x, top: coverupPopupScreen.y, transform: 'translate(-50%,-50%)' }}>
                                             <img
                                                 src={c.url}
                                                 alt=""
                                                 draggable={false}
-                                                onMouseDown={e => onOverlayMouseDown(e, c.id)}
+                                                onMouseDown={e => { if (editing) startOverlayDrag(e, c.id) }}
                                                 style={{
-                                                    width: c.size * zoom,
+                                                    width: w,
                                                     opacity: c.opacity,
                                                     transform: `rotate(${c.rotation}deg)`,
-                                                    outline: sel ? `2px ${editOverlay === c.id ? 'solid' : 'dashed'} #3730a3` : 'none',
+                                                    outline: `2px ${editing ? 'solid' : 'dashed'} #3730a3`,
                                                     outlineOffset: '2px',
                                                     display: 'block',
                                                 }}
-                                                className={`select-none h-auto ${
-                                                    editOverlay === c.id
-                                                        ? (draggingOverlay === c.id ? 'cursor-grabbing' : 'cursor-grab')
-                                                        : 'cursor-pointer'
-                                                }`}
+                                                className={`select-none h-auto ${editing ? (draggingOverlay === c.id ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}`}
                                             />
-                                            {sel && !draggingOverlay && (
+                                            {!draggingOverlay && (
                                                 <OverlayPopup item={c} kind="coverup"
-                                                              editing={editOverlay === c.id}
-                                                              screenPos={pos}
-                                                              halfW={(c.size * zoom) / 2} halfH={(c.size * zoom) / 2}
+                                                              editing={editing}
+                                                              screenPos={coverupPopupScreen}
+                                                              halfW={w / 2} halfH={w / 2}
                                                               viewerSize={viewerSize}
                                                               activeSceneId={activeScene?.id} activeSceneName={activeScene?.name}
                                                               onEdit={() => setEditOverlay(c.id)}
@@ -1106,7 +1400,7 @@ export default function ProjectClient({ projectId }) {
                                             )}
                                         </div>
                                     )
-                                })}
+                                })()}
 
                                 {/* ── Logos — pinned to the screen ──
                                     Percent of the viewer, so they hold their place while the
@@ -1201,6 +1495,21 @@ export default function ProjectClient({ projectId }) {
                                     />
                                 )}
 
+                                {polygonPopup && (
+                                    <PolygonPopup
+                                        pos={polygonPopupScreen}
+                                        viewerSize={viewerSize}
+                                        state={polygonPopup}
+                                        onUpdate={setPolygonPopup}
+                                        onSave={handlePolygonSave}
+                                        onEdit={editPolygon}
+                                        onDelete={() => deletePolygon(polygonPopup.polygon.id)}
+                                        onCancel={() => setPolygonPopup(null)}
+                                        saving={savingPolygon}
+                                        deleting={deletingPolygon}
+                                    />
+                                )}
+
                                 {isEditing && !isDraggingPin && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
                                         Drag the arrow to adjust · fill form in popup
@@ -1218,8 +1527,24 @@ export default function ProjectClient({ projectId }) {
                                             : 'Drag the cover-up · it moves in every scene at once'}
                                     </div>
                                 )}
+                                {drawingPolygon && (
+                                    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-black/70 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
+                                        <span>
+                                            {drawingPolygon.points.length} point{drawingPolygon.points.length === 1 ? '' : 's'}
+                                            {' · '}{drawingPolygon.points.length < 3 ? 'need 3+ to finish' : 'click Finish, or click back on your first point'}
+                                        </span>
+                                        <button onClick={finishDrawingPolygon} disabled={drawingPolygon.points.length < 3}
+                                                className="h-6 px-2.5 rounded-full bg-[#3730a3] text-white font-semibold disabled:opacity-40 transition-colors">
+                                            Finish
+                                        </button>
+                                        <button onClick={cancelDrawingPolygon}
+                                                className="h-6 px-2.5 rounded-full bg-white/15 hover:bg-white/25 text-white font-semibold transition-colors">
+                                            Cancel
+                                        </button>
+                                    </div>
+                                )}
 
-                                <CameraControls pannellumRef={pannellumRef}/>
+                                <CameraControls psvRef={psvRef}/>
                             </>
                         )}
                     </div>
@@ -1233,7 +1558,7 @@ export default function ProjectClient({ projectId }) {
                                           onHotspotSizeChange={setHotspotSize}
                                           onHotspotSizeCommit={saveHotspotSize}/>
                         </div>
-                        <div className="h-[300px] shrink-0 border-t border-[#E2E2DA]">
+                        <div className="h-[220px] shrink-0 border-t border-[#E2E2DA]">
                             <OverlayPanel
                                 logos={logos}
                                 coverups={coverups}
@@ -1249,6 +1574,16 @@ export default function ProjectClient({ projectId }) {
                                 saving={savingOverlays}
                                 saved={savedTick}
                                 onSave={saveOverlays}/>
+                        </div>
+                        <div className="h-[220px] shrink-0 border-t border-[#E2E2DA]">
+                            <PolygonPanel
+                                polygons={visiblePolygons}
+                                selectedId={polygonPopup?.polygon?.id ?? null}
+                                activeSceneId={activeScene?.id}
+                                drawing={!!drawingPolygon}
+                                onStartDraw={startDrawingPolygon}
+                                onSelect={selectPolygon}
+                                onDelete={deletePolygon}/>
                         </div>
                     </div>
                 </div>

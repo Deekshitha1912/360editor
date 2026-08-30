@@ -11,19 +11,21 @@ export function Spinner({ size = 12 }) {
     )
 }
 
-export function CameraControls({ pannellumRef }) {
+const ROT_STEP = (10 * Math.PI) / 180
+
+export function CameraControls({ psvRef }) {
     const controls = [
-        { label: '▲', fn: v => v.setPitch(v.getPitch() + 10) },
-        { label: '▼', fn: v => v.setPitch(v.getPitch() - 10) },
-        { label: '◀', fn: v => v.setYaw(v.getYaw() - 10)    },
-        { label: '▶', fn: v => v.setYaw(v.getYaw() + 10)    },
-        { label: '+', fn: v => v.setHfov(v.getHfov() - 10)  },
-        { label: '−', fn: v => v.setHfov(v.getHfov() + 10)  },
+        { label: '▲', fn: v => { const p = v.getPosition(); v.rotate({ yaw: p.yaw, pitch: p.pitch + ROT_STEP }) } },
+        { label: '▼', fn: v => { const p = v.getPosition(); v.rotate({ yaw: p.yaw, pitch: p.pitch - ROT_STEP }) } },
+        { label: '◀', fn: v => { const p = v.getPosition(); v.rotate({ yaw: p.yaw - ROT_STEP, pitch: p.pitch }) } },
+        { label: '▶', fn: v => { const p = v.getPosition(); v.rotate({ yaw: p.yaw + ROT_STEP, pitch: p.pitch }) } },
+        { label: '+', fn: v => v.zoomIn(10)  },
+        { label: '−', fn: v => v.zoomOut(10) },
     ]
     return (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex gap-1.5">
             {controls.map((c, i) => (
-                <button key={i} onClick={() => pannellumRef.current && c.fn(pannellumRef.current)}
+                <button key={i} onClick={() => psvRef.current && c.fn(psvRef.current)}
                         className="w-8 h-8 rounded-lg bg-white/90 backdrop-blur text-[#1a1a18] text-[13px] font-bold hover:bg-white shadow-sm border border-[#E2E2DA] transition-colors">
                     {c.label}
                 </button>

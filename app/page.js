@@ -8,12 +8,14 @@ import { Button } from '@/components/ui/button'
 import SiteShell from '@/components/360editor/site/site_shell'
 
 // ───────────────────────────────────────────────────────────────────────────
-// LIVE 360° TOUR DEMO — a real interactive tour (same Pannellum the editor uses),
-// with procedurally-painted rooms + arrow hotspots. Fully self-contained iframe.
+// LIVE 360° TOUR DEMO — a real interactive tour (same Photo Sphere Viewer the
+// editor uses), with procedurally-painted rooms + arrow hotspots. Fully
+// self-contained iframe.
 // ───────────────────────────────────────────────────────────────────────────
 const TOUR_DEMO_HTML = `<!doctype html><html><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5.15.1/index.min.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@5.15.1/index.min.css"/>
 <style>
   html,body{margin:0;height:100%;background:#0d0c14;overflow:hidden;font-family:Inter,system-ui,sans-serif}
   #pano{position:absolute;inset:0}
@@ -45,8 +47,17 @@ const TOUR_DEMO_HTML = `<!doctype html><html><head><meta charset="utf-8"/>
 <div class="scenechip" id="chip"><span class="dot"></span><span id="chiptxt">Living Room</span></div>
 <div class="badge360">360°</div>
 <div class="hint"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>Drag to look around &middot; click an arrow to walk through</div>
-<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.6/build/pannellum.js"></script>
-<script>
+<script type="importmap">
+{"imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+  "@photo-sphere-viewer/core": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5.15.1/index.module.min.js"
+}}
+</script>
+<script type="module">
+import { Viewer } from 'https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5.15.1/index.module.min.js';
+import { MarkersPlugin } from 'https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@5.15.1/index.module.min.js';
+import { AutorotatePlugin } from 'https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/autorotate-plugin@5.15.1/index.module.min.js';
+
 function makeRoom(opt){
   var W=2048,H=1024,c=document.createElement('canvas');c.width=W;c.height=H;
   var x=c.getContext('2d');var hz=H*0.52;
@@ -93,38 +104,56 @@ var balcony={ceil1:'#3a5a7a',ceil2:'#9fc6e8',floor1:'#7a6a52',floor2:'#4a4030',g
   glow:'rgba(255,221,150,.22)',panelA:'#5b769280',panelB:'#7fa2c080',accent:'#ffe6a8',
   furnCol:'#2e2820',furn:2,panels:5};
 
-var SC={
-  living:{title:'Living Room',panorama:makeRoom(living),autoLoad:true,autoRotate:-2.5,
-    hotSpots:[mk(2,-118,'hallway','left','Hallway'),mk(0,42,'balcony','up','Balcony')]},
-  hallway:{title:'Hallway',panorama:makeRoom(hallway),autoRotate:-2.5,
-    hotSpots:[mk(0,8,'living','up','Living Room'),mk(2,150,'balcony','up-right','Balcony')]},
-  balcony:{title:'Balcony',panorama:makeRoom(balcony),autoRotate:-2.5,
-    hotSpots:[mk(2,178,'living','left','Back inside')]}
-};
-function mk(pitch,yaw,target,dir,label){
-  return {pitch:pitch,yaw:yaw,type:'custom',cssClass:'nav',
-    createTooltipFunc:arrowTip,createTooltipArgs:{target:target,dir:dir,label:label}};
-}
 var DIRS={
   up:'M12 19V5M5 12l7-7 7 7',
   left:'M19 12H5M12 19l-7-7 7-7',
   'up-right':'M7 17L17 7M7 7h10v10',
   'up-left':'M17 17L7 7M17 7H7v10'
 };
-function arrowTip(div,args){
-  div.classList.add('navarrow');
-  div.innerHTML='<svg viewBox="0 0 24 24"><path d="'+(DIRS[args.dir]||DIRS.up)+'"/></svg>'+
-                '<span class="navlabel">'+args.label+'</span>';
-  div.addEventListener('click',function(){viewer.loadScene(args.target);setChip(args.target);});
+function mk(id,pitch,yaw,target,dir,label){
+  var html='<svg viewBox="0 0 24 24"><path d="'+(DIRS[dir]||DIRS.up)+'"/></svg>'+
+            '<span class="navlabel">'+label+'</span>';
+  return {id:id,type:'html',html:html,className:'navarrow',size:{width:62,height:62},
+    position:{pitch:pitch+'deg',yaw:yaw+'deg'},data:{target:target}};
 }
+
+var SC={
+  living:{title:'Living Room',panorama:makeRoom(living),
+    markers:[mk('m1',2,-118,'hallway','left','Hallway'),mk('m2',0,42,'balcony','up','Balcony')]},
+  hallway:{title:'Hallway',panorama:makeRoom(hallway),
+    markers:[mk('m1',0,8,'living','up','Living Room'),mk('m2',2,150,'balcony','up-right','Balcony')]},
+  balcony:{title:'Balcony',panorama:makeRoom(balcony),
+    markers:[mk('m1',2,178,'living','left','Back inside')]}
+};
+
 function setChip(id){document.getElementById('chiptxt').textContent=SC[id].title;}
 
-var viewer=pannellum.viewer('pano',{
-  "default":{firstScene:'living',sceneFadeDuration:900,autoLoad:true,
-    showControls:false,compass:false,hfov:100,minHfov:62,maxHfov:118,friction:0.16},
-  scenes:SC
+var first='living';
+var viewer=new Viewer({
+  container: document.getElementById('pano'),
+  panorama: SC[first].panorama,
+  minFov:62, maxFov:118,
+  navbar:false,
+  plugins:[[MarkersPlugin,{}],[AutorotatePlugin,{autorotateSpeed:'-0.4167rpm'}]],
 });
-viewer.on('scenechange',function(id){setChip(id);});
+var mp=viewer.getPlugin(MarkersPlugin);
+
+viewer.addEventListener('ready',function(){
+  try{viewer.zoom(viewer.dataHelper.fovToZoomLevel(100));}catch(e){}
+  mp.setMarkers(SC[first].markers);
+  setChip(first);
+},{once:true});
+
+function loadScene(id){
+  viewer.setPanorama(SC[id].panorama,{transition:true}).then(function(){
+    mp.setMarkers(SC[id].markers);
+    setChip(id);
+  });
+}
+mp.addEventListener('select-marker',function(ev){
+  var t=ev.marker.data&&ev.marker.data.target;
+  if(t) loadScene(t);
+});
 </script></body></html>`
 
 // Four steps, each with the one line that tells you what actually happens.

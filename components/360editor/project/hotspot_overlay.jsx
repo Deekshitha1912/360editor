@@ -1,8 +1,7 @@
 ﻿'use client'
 // components/360editor/project/hotspot_overlay.jsx
-// Two components rendered on top of the Pannellum canvas in the editor:
-//   PinCrosshair  — draggable placement marker
-//   HotspotPopup  — floating form/confirm/saved card next to the pin
+// HotspotPopup — the floating form/confirm/saved card rendered next to the
+// placement pin on top of the PSV canvas in the editor.
 
 import { ARROWS } from '@/components/360editor/project/hotspot_panel'
 
@@ -12,60 +11,6 @@ function Spinner({ size = 10 }) {
              fill="none" stroke="currentColor" strokeWidth="2.5">
             <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
         </svg>
-    )
-}
-
-// ─── PinCrosshair ─────────────────────────────────────────────────────────────
-// pos      — { x, y } screen position (from pitchYawToScreen)
-// readonly — disables the drag handle (confirm / saved modes)
-
-export function PinCrosshair({ pos, pitch, yaw, isDragging, onMouseDown, readonly }) {
-    if (!pos) return null
-    return (
-        <div className="absolute z-30 pointer-events-none"
-             style={{ left: pos.x, top: pos.y, transform: 'translate(-50%,-50%)' }}>
-
-            <svg width="48" height="48" viewBox="0 0 48 48"
-                 className="absolute pointer-events-none" style={{ left:-24, top:-24 }}>
-                <circle cx="24" cy="24" r="16" fill="none" stroke="rgba(0,0,0,.55)" strokeWidth="4"/>
-                <circle cx="24" cy="24" r="16" fill="none" stroke="white"           strokeWidth="2.5"/>
-                <circle cx="24" cy="24" r="16" fill="none" stroke="#3730a3"         strokeWidth="2" strokeDasharray="6 3"/>
-                {/* vertical crosshair */}
-                <line x1="24" y1="2"  x2="24" y2="13" stroke="rgba(0,0,0,.5)" strokeWidth="3.5"/>
-                <line x1="24" y1="2"  x2="24" y2="13" stroke="white"          strokeWidth="2.5"/>
-                <line x1="24" y1="2"  x2="24" y2="13" stroke="#3730a3"        strokeWidth="1.5"/>
-                <line x1="24" y1="35" x2="24" y2="46" stroke="rgba(0,0,0,.5)" strokeWidth="3.5"/>
-                <line x1="24" y1="35" x2="24" y2="46" stroke="white"          strokeWidth="2.5"/>
-                <line x1="24" y1="35" x2="24" y2="46" stroke="#3730a3"        strokeWidth="1.5"/>
-                {/* horizontal crosshair */}
-                <line x1="2"  y1="24" x2="13" y2="24" stroke="rgba(0,0,0,.5)" strokeWidth="3.5"/>
-                <line x1="2"  y1="24" x2="13" y2="24" stroke="white"          strokeWidth="2.5"/>
-                <line x1="2"  y1="24" x2="13" y2="24" stroke="#3730a3"        strokeWidth="1.5"/>
-                <line x1="35" y1="24" x2="46" y2="24" stroke="rgba(0,0,0,.5)" strokeWidth="3.5"/>
-                <line x1="35" y1="24" x2="46" y2="24" stroke="white"          strokeWidth="2.5"/>
-                <line x1="35" y1="24" x2="46" y2="24" stroke="#3730a3"        strokeWidth="1.5"/>
-                {/* centre dot */}
-                <circle cx="24" cy="24" r="4.5" fill="rgba(0,0,0,.35)"/>
-                <circle cx="24" cy="24" r="4"   fill="#3730a3"/>
-                <circle cx="24" cy="24" r="4"   fill="none" stroke="white" strokeWidth="1.5"/>
-            </svg>
-
-            {/* drag handle — pointer events enabled only when editable */}
-            {!readonly && (
-                <div className="absolute z-10"
-                     style={{ width:48, height:48, left:-24, top:-24, pointerEvents:'auto',
-                         cursor: isDragging ? 'crosshair' : 'grab' }}
-                     onMouseDown={onMouseDown}/>
-            )}
-
-            {/* coords badge above pin */}
-            <div className="absolute pointer-events-none whitespace-nowrap font-mono text-[10px]
-                            font-semibold bg-[#1a1a18]/85 backdrop-blur text-white px-2 py-0.5
-                            rounded-full border border-white/10"
-                 style={{ bottom:'100%', left:'50%', transform:'translateX(-50%)', marginBottom:36 }}>
-                p:{pitch.toFixed(1)}°&nbsp; y:{yaw.toFixed(1)}°
-            </div>
-        </div>
     )
 }
 

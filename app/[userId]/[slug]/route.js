@@ -54,10 +54,12 @@ export async function GET(_req, { params }) {
 
         if (error || !data?.published_payload) return notFound()
 
-        const { project, scenes, hotspots } = data.published_payload
+        // `polygons` is only present on v2+ snapshots — a v1 snapshot published
+        // before this feature existed has no such key, and must still render.
+        const { project, scenes, hotspots, polygons } = data.published_payload
         if (!project || !scenes?.length) return notFound()
 
-        const html = buildTourHtml({ project, scenes, hotspots: hotspots ?? [] })
+        const html = buildTourHtml({ project, scenes, hotspots: hotspots ?? [], polygons: polygons ?? [] })
 
         return new Response(html, {
             status: 200,
