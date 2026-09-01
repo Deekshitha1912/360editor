@@ -19,28 +19,28 @@ function Row({ item, kind, selected, offScene, activeSceneId, onSelect, onDelete
         <div
             onClick={() => onSelect(item.id)}
             className={`group flex items-center gap-2.5 p-2 rounded-xl border cursor-pointer transition-colors ${
-                selected ? 'border-[#3730a3] bg-[#3730a3]/[0.04]' : 'border-[#E2E2DA] bg-white hover:border-[#3730a3]/40'
+                selected ? 'border-editor-primary bg-editor-primary/[0.04]' : 'border-editor-border bg-white hover:border-editor-primary/40'
             } ${offScene && !selected ? 'opacity-60' : ''}`}
         >
-            <div className="w-10 h-10 rounded-lg border border-[#E2E2DA] shrink-0 overflow-hidden flex items-center justify-center"
+            <div className="w-10 h-10 rounded-lg border border-editor-border shrink-0 overflow-hidden flex items-center justify-center"
                  style={{ backgroundImage: 'linear-gradient(45deg,#eee 25%,transparent 25%,transparent 75%,#eee 75%),linear-gradient(45deg,#eee 25%,transparent 25%,transparent 75%,#eee 75%)', backgroundSize: '10px 10px', backgroundPosition: '0 0,5px 5px' }}>
                 <img src={item.url} alt="" className="max-w-full max-h-full object-contain" />
             </div>
             <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-semibold text-[#1a1a18] leading-tight">
+                <div className="text-[12px] font-semibold text-editor-ink leading-tight">
                     {kind === 'logo' ? 'Logo' : 'Cover-up'}
                 </div>
-                <div className="flex items-center gap-1 text-[10px] text-[#9a9a8e] leading-tight mt-0.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${everyScene ? 'bg-emerald-400' : 'bg-[#3730a3]'}`}/>
+                <div className="flex items-center gap-1 text-[10px] text-editor-ink-dim leading-tight mt-0.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${everyScene ? 'bg-emerald-400' : 'bg-editor-primary'}`}/>
                     {scope}
                 </div>
             </div>
             {/* Affordance: a row opens the editor on the overlay */}
-            <svg className="opacity-0 group-hover:opacity-100 transition-opacity text-[#c4c4b8] shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
+            <svg className="opacity-0 group-hover:opacity-100 transition-opacity text-editor-icon-idle shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
             <button
                 onClick={e => { e.stopPropagation(); onDelete(item.id) }}
                 title="Remove"
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-[#c4c4b8] hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-editor-icon-idle hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
             >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
@@ -54,7 +54,7 @@ function AddTile({ label, busy, disabled, hint, onClick }) {
             <button
                 onClick={onClick}
                 disabled={busy || disabled}
-                className="w-full flex items-center justify-center gap-1.5 border-2 border-dashed border-[#d8d8ce] rounded-xl py-2.5 text-[11px] font-semibold text-[#9a9a8e] hover:border-[#3730a3]/50 hover:text-[#3730a3] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-[#d8d8ce] disabled:hover:text-[#9a9a8e] transition-colors"
+                className="w-full flex items-center justify-center gap-1.5 border-2 border-dashed border-editor-border-dashed rounded-xl py-2.5 text-[11px] font-semibold text-editor-ink-dim hover:border-editor-primary/50 hover:text-editor-primary disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-editor-border-dashed disabled:hover:text-editor-ink-dim transition-colors"
             >
                 {busy ? 'Uploading…' : (
                     <>
@@ -63,7 +63,7 @@ function AddTile({ label, busy, disabled, hint, onClick }) {
                     </>
                 )}
             </button>
-            {hint && !busy && <p className="mt-1 text-[9.5px] text-[#9a9a8e] text-center leading-snug">{hint}</p>}
+            {hint && !busy && <p className="mt-1 text-[9.5px] text-editor-ink-dim text-center leading-snug">{hint}</p>}
         </>
     )
 }
@@ -94,19 +94,19 @@ export default function OverlayPanel({
     const off = item => item.scene_id != null && item.scene_id !== activeSceneId
 
     return (
-        <div className="flex flex-col h-full bg-[#FAFAF7] border-l border-[#E2E2DA] overflow-hidden">
+        <div className="flex flex-col h-full bg-editor-panel border-l border-editor-border overflow-hidden">
 
-            <div className="px-3 pt-3 pb-1.5 shrink-0">
-                <div className="text-[10px] font-bold tracking-widest text-[#9a9a8e] uppercase">Overlays</div>
-                <p className="text-[10px] text-[#9a9a8e] mt-0.5">Click one to edit it on the tour.</p>
+            <div className="px-3 py-3 shrink-0">
+                <div className="text-[11px] font-bold uppercase tracking-widest text-editor-ink-muted">Overlays</div>
+                <p className="text-[10px] text-editor-ink-dim mt-0.5">Click one to edit it on the tour.</p>
             </div>
 
             <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-4">
 
                 <section>
                     <div className="flex items-baseline gap-2 mb-2">
-                        <span className="text-[11px] font-bold text-[#1a1a18]">Logos</span>
-                        <span className="text-[9.5px] text-[#9a9a8e]">fixed on screen</span>
+                        <span className="text-[11px] font-bold text-editor-ink">Logos</span>
+                        <span className="text-[9.5px] text-editor-ink-dim">fixed on screen</span>
                     </div>
                     <div className="space-y-2">
                         {logos.map(l => (
@@ -129,10 +129,10 @@ export default function OverlayPanel({
                            onChange={e => { pick('logo', e.target.files?.[0]); e.target.value = '' }}/>
                 </section>
 
-                <section className="pt-3 border-t border-[#E2E2DA]">
+                <section className="pt-3 border-t border-editor-border">
                     <div className="flex items-baseline gap-2 mb-2">
-                        <span className="text-[11px] font-bold text-[#1a1a18]">Cover-ups</span>
-                        <span className="text-[9.5px] text-[#9a9a8e]">stuck to the photo</span>
+                        <span className="text-[11px] font-bold text-editor-ink">Cover-ups</span>
+                        <span className="text-[9.5px] text-editor-ink-dim">stuck to the photo</span>
                     </div>
                     <div className="space-y-2">
                         {coverups.map(c => (
@@ -158,14 +158,14 @@ export default function OverlayPanel({
                 {error && <p className="text-[10px] text-red-600 leading-snug">{error}</p>}
             </div>
 
-            <div className="shrink-0 border-t border-[#E2E2DA] bg-white px-3 py-2.5">
+            <div className="shrink-0 border-t border-editor-border bg-white px-3 py-2.5">
                 <button
                     onClick={onSave}
                     disabled={!dirty || saving}
                     className={`w-full h-9 rounded-lg text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
                         dirty && !saving
-                            ? 'bg-[#3730a3] text-white hover:bg-[#312e81]'
-                            : 'bg-[#F4F4EF] text-[#9a9a8e] cursor-not-allowed'
+                            ? 'bg-editor-primary text-white hover:bg-editor-primary-hover'
+                            : 'bg-editor-subtle text-editor-ink-dim cursor-not-allowed'
                     }`}
                 >
                     {saving
@@ -175,7 +175,7 @@ export default function OverlayPanel({
                             : dirty ? 'Save overlays' : 'No changes'}
                 </button>
                 {dirty && !saving && (
-                    <p className="mt-1.5 text-[9.5px] text-[#9a9a8e] text-center leading-snug">
+                    <p className="mt-1.5 text-[9.5px] text-editor-ink-dim text-center leading-snug">
                         Unsaved changes won&apos;t show in Preview or on the live link.
                     </p>
                 )}

@@ -1,6 +1,7 @@
 ﻿// app/api/hotspots/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
+import { clampHotspotSize, clampHotspotRotation } from '@/lib/hotspots'
 
 export async function POST(req) {
     try {
@@ -9,7 +10,7 @@ export async function POST(req) {
         if (authErr || !user) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
 
         const body = await req.json()
-        const { project_id, scene_id, pitch, yaw, arrow_type, label, target_scene_id } = body
+        const { project_id, scene_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation } = body
 
         if (!project_id || !scene_id || pitch == null || yaw == null)
             return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 })
@@ -34,7 +35,10 @@ export async function POST(req) {
 
         const { data: hotspot, error } = await supabase
             .from('hotspots')
-            .insert({ project_id, scene_id, pitch, yaw, arrow_type, label: label || '', target_scene_id })
+            .insert({
+                project_id, scene_id, pitch, yaw, arrow_type, label: label || '', target_scene_id,
+                size: clampHotspotSize(size), rotation: clampHotspotRotation(rotation),
+            })
             .select().single()
 
         if (error) return NextResponse.json({ error: error.message }, { status: 500 })

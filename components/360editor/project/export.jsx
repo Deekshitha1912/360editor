@@ -10,6 +10,12 @@ import { colorForStatus } from '@/lib/polygons'
 const PSV_VERSION = '5.15.1'
 const THREE_VERSION = '0.185.1'
 
+// Fallback opening horizontal FOV — must match middle.jsx's DEFAULT_HFOV so a
+// published tour's opening view matches what the editor showed. 90deg reads
+// as a normal, true-to-scale view; the old 120deg default read as too wide /
+// zoomed out to judge a room's real dimensions by.
+const DEFAULT_HFOV = 90
+
 export function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
 }
@@ -52,7 +58,8 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                 return {
                     id: h.id, yaw: h.yaw, pitch: h.pitch,
                     gif: arrow.gif, label: h.label || '',
-                    size: project.hotspot_size ?? 90,
+                    size: h.size ?? project.hotspot_size ?? 90,
+                    rotation: h.rotation ?? 0,
                     target: h.target_scene_id,
                 }
             })
@@ -83,7 +90,7 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
             panorama: scene.url,
             yaw:   scene.initial_yaw   ?? 0,
             pitch: scene.initial_pitch ?? -5,
-            hfov:  scene.initial_hfov  ?? 120,
+            hfov:  scene.initial_hfov  ?? DEFAULT_HFOV,
             arrows, covers, zones: sceneZones,
         }
         sceneList.push({ id: scene.id, name: scene.name, url: scene.url })
@@ -180,7 +187,7 @@ ${autorotateImport}
 
 var TOURS=${toursJson};var SM=${sceneListJson};
 
-function arrowMarker(h){return {id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},tooltip:h.label||undefined,data:{target:h.target}};}
+function arrowMarker(h){return {id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:{target:h.target}};}
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
 function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+'55',stroke:z.color,strokeWidth:'2'},data:z};}
 function markersFor(id){var s=TOURS[id];return s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker)).concat(s.arrows.map(arrowMarker));}
@@ -209,9 +216,14 @@ viewer.addEventListener('ready',function(){
 
 function loadScene(id){
   var s=TOURS[id];
-  viewer.setPanorama(s.panorama,{transition:false}).then(function(){
-    viewer.rotate({yaw:s.yaw+'deg',pitch:s.pitch+'deg'});
-    try{viewer.zoom(viewer.dataHelper.fovToZoomLevel(s.hfov));}catch(e){}
+  // Position/zoom go IN the setPanorama call, not as a manual rotate()/zoom()
+  // snap afterward -- PSV's default transition (fade + smooth rotation toward
+  // the target, ~1.5s) animates both together as one motion. Doing it as two
+  // steps meant a fade-in at whatever angle, then a sudden jump-cut rotate,
+  // which reads as janky rather than smooth.
+  var opts={position:{yaw:s.yaw+'deg',pitch:s.pitch+'deg'}};
+  try{opts.zoom=viewer.dataHelper.fovToZoomLevel(s.hfov);}catch(e){}
+  viewer.setPanorama(s.panorama,opts).then(function(){
     mp.setMarkers(markersFor(id));
     _onScene(id);
   });
@@ -263,7 +275,7 @@ ${introCode}
 // attributes on the control buttons need them on window explicitly.
 function move(d){var s=10*Math.PI/180;var p=viewer.getPosition();if(d==='up')viewer.rotate({yaw:p.yaw,pitch:p.pitch+s});if(d==='dn')viewer.rotate({yaw:p.yaw,pitch:p.pitch-s});if(d==='lt')viewer.rotate({yaw:p.yaw-s,pitch:p.pitch});if(d==='rt')viewer.rotate({yaw:p.yaw+s,pitch:p.pitch});if(d==='zi')viewer.zoomIn(10);if(d==='zo')viewer.zoomOut(10);}
 window.move=move;
-function toggleFS(){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(){});}else{document.exitFullscreen();}}
+function toggleFS(){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(e){console.warn('Fullscreen request was blocked:',e&&e.message);});}else{document.exitFullscreen();}}
 window.toggleFS=toggleFS;
 document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zc=document.getElementById('zoneCard');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zc&&!fs.contains(zc))fs.appendChild(zc);}else{if(sb)document.body.appendChild(sb);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zc)document.body.appendChild(zc);}});
 function _chk(){var l=window.innerWidth>window.innerHeight;document.getElementById('rotateOverlay').style.display=l?'none':'flex';}

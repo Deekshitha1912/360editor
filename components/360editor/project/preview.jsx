@@ -1,19 +1,28 @@
-﻿'use client'
+'use client'
 // components/360editor/project/preview.jsx
 // Full-screen preview modal — renders the exact same HTML the export produces,
 // but inside an iframe so the user can test navigation before downloading.
+import { useEffect, useState } from 'react'
 
 export default function TourPreviewModal({ html, projectName, onClose }) {
-    if (!html) return null
+    // The blob URL is created in an effect keyed on `html`, NOT inline in the
+    // render body. Creating it inline meant a fresh URL — and a fresh
+    // iframe.src — on every re-render of this component for ANY reason, which
+    // reloads the whole tour (back to scene 1, intro popup and all) even
+    // though nothing about the tour itself changed. Fullscreen's resize event
+    // was triggering exactly that: an unrelated re-render, mistaken for "the
+    // preview needs to reload".
+    const [src, setSrc] = useState(null)
 
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-    const src  = URL.createObjectURL(blob)
+    useEffect(() => {
+        if (!html) { setSrc(null); return }
+        const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+        const url  = URL.createObjectURL(blob)
+        setSrc(url)
+        return () => URL.revokeObjectURL(url)
+    }, [html])
 
-    // Revoke the object URL when the modal unmounts
-    function handleClose() {
-        URL.revokeObjectURL(src)
-        onClose()
-    }
+    if (!html || !src) return null
 
     return (
         <div className="fixed inset-0 z-[200] flex flex-col bg-black">
@@ -21,7 +30,7 @@ export default function TourPreviewModal({ html, projectName, onClose }) {
             {/* ── Top bar ── */}
             <div className="h-10 flex items-center px-4 gap-3 bg-[#0f0f0e] border-b border-white/10 shrink-0">
                 {/* Globe icon */}
-                <div className="w-5 h-5 bg-[#3730a3] rounded flex items-center justify-center shrink-0">
+                <div className="w-5 h-5 bg-editor-primary rounded flex items-center justify-center shrink-0">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                         <circle cx="12" cy="12" r="10"/>
                         <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
@@ -39,7 +48,7 @@ export default function TourPreviewModal({ html, projectName, onClose }) {
 
                 {/* Close */}
                 <button
-                    onClick={handleClose}
+                    onClick={onClose}
                     className="flex items-center justify-center w-7 h-7 rounded-lg text-white/50
                                hover:text-white hover:bg-white/10 transition-colors shrink-0"
                     title="Close preview"
@@ -50,12 +59,17 @@ export default function TourPreviewModal({ html, projectName, onClose }) {
                 </button>
             </div>
 
-            {/* ── iframe ── */}
+            {/* ── iframe ──
+                Fullscreen from inside an iframe needs explicit opt-in from the
+                PARENT frame — allow="fullscreen" is the modern Permissions
+                Policy form, allowFullScreen is the legacy boolean some browsers
+                still key off. Both, to be safe. */}
             <iframe
                 src={src}
                 className="flex-1 w-full border-0"
                 title={`Preview — ${projectName}`}
                 allow="fullscreen"
+                allowFullScreen
             />
         </div>
     )

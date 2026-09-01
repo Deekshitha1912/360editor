@@ -157,3 +157,56 @@
     transition: transform .04s ease;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+   Editor design tokens — the 360° tour editor's own warm/cream
+   palette, formalized. Values match what was already hardcoded as
+   raw hex across every editor component; this only names them, it
+   doesn't repaint anything. Kept separate from the shadcn tokens
+   above (--background, --primary, etc.) because those are consumed
+   exclusively by marketing/dashboard/auth pages built on
+   components/ui/*, which the editor never imports from.
+   ────────────────────────────────────────────────────────────── */
+:root {
+  --editor-cream-50:   #FAFAF7;
+  --editor-cream-100:  #F4F4EF;
+  --editor-cream-200:  #E2E2DA;
+  --editor-cream-300:  #DDDDD3;
+  --editor-cream-400:  #d8d8ce;
+  --editor-cream-500:  #c4c4b8;
+  --editor-ink-900:    #1a1a18;
+  --editor-ink-600:    #6b6b60;
+  --editor-ink-400:    #9a9a8e;
+  --editor-indigo-700: #3730a3;
+  --editor-indigo-800: #312e81;
+  --editor-lime-400:   #a3e635;
+}
+
+@theme inline {
+  --color-editor-canvas:        var(--editor-cream-50);
+  --color-editor-surface:       var(--editor-cream-50);
+  --color-editor-subtle:        var(--editor-cream-100);
+  --color-editor-border:        var(--editor-cream-200);
+  --color-editor-border-dashed: var(--editor-cream-400);
+  --color-editor-panel:         var(--editor-cream-300);
+  --color-editor-icon-idle:     var(--editor-cream-500);
+  --color-editor-ink:           var(--editor-ink-900);
+  --color-editor-ink-muted:     var(--editor-ink-600);
+  --color-editor-ink-dim:       var(--editor-ink-400);
+  --color-editor-primary:       var(--editor-indigo-700);
+  --color-editor-primary-hover: var(--editor-indigo-800);
+  --color-editor-accent:        var(--editor-lime-400);
+
+  /* Type scale — none existed before; the editor previously hand-picked
+     one-off px sizes (9, 9.5, 10, 10.5, 11, 12, 13, 14) per component. */
+  --text-editor-micro: 0.5625rem; /* 9px  */
+  --text-editor-xs:    0.625rem;  /* 10px */
+  --text-editor-sm:    0.6875rem; /* 11px */
+  --text-editor-base:  0.75rem;   /* 12px */
+  --text-editor-md:    0.8125rem; /* 13px */
+  --text-editor-lg:    0.875rem;  /* 14px */
+
+  /* Was copy-pasted verbatim as an inline style/arbitrary value in three
+     floating popups (HotspotPopup, PolygonPopup, OverlayPopup). */
+  --shadow-editor-popup: 0 8px 32px rgba(0,0,0,.18);
+}

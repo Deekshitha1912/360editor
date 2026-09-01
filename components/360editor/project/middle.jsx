@@ -10,6 +10,7 @@ import ScenePanel       from '@/components/360editor/project/scene_panel'
 import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
 import PolygonPanel from '@/components/360editor/project/polygon_panel'
+import PanelTabs from '@/components/360editor/project/panel_tabs'
 import { ARROWS } from '@/lib/arrows'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
 import { colorForStatus, centroidOf } from '@/lib/polygons'
@@ -18,7 +19,7 @@ import { buildTourHtml } from '@/components/360editor/project/export'
 import { HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
 import { PolygonPopup } from '@/components/360editor/project/polygon_overlay'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
-import { Spinner, CameraControls, SettingsModal, DeleteModal, HotspotDeleteModal } from '@/components/360editor/project/editor_modals'
+import { Spinner, CameraControls, SettingsModal, ConfirmDeleteModal, ErrorBanner, OverlayRow } from '@/components/360editor/project/editor_modals'
 
 // Radians <-> degrees. Hotspot/overlay data is stored in degrees everywhere
 // (DB, API, React state) exactly as before the viewer swap — PSV's Position
@@ -28,23 +29,35 @@ import { Spinner, CameraControls, SettingsModal, DeleteModal, HotspotDeleteModal
 const RAD = Math.PI / 180
 const DEG = 180 / Math.PI
 
+// Fallback opening horizontal FOV when a scene has no saved initial_hfov —
+// there's no UI yet to set/save a custom one per scene (the column and
+// PATCH /api/scenes/[id] support it, nothing calls it), so every scene opens
+// at this value. 90deg reads as a normal, true-to-scale view; the old 120deg
+// default was wide enough to make rooms look smaller/more distant than they
+// really are. Kept as one constant since it has to stay consistent with the
+// cover-up scale-with-zoom math, which anchors to the same "opening FOV".
+const DEFAULT_HFOV = 90
+
+// Rotate-handle cursor — a curved arrow, the near-universal convention for a
+// rotate control (Figma, Canva, PowerPoint, Photoshop's free-transform all
+// use this shape). No native CSS cursor keyword for "rotate" exists, so this
+// is a small inline SVG (white fill, dark outline for contrast against any
+// part of the photo) used as a custom cursor image; "grab" is the fallback
+// if the browser can't load a custom cursor. The "10 10" hotspot centers the
+// cursor's pointer on the icon rather than its top-left corner.
+const ROTATE_CURSOR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">'
+    + '<circle cx="10" cy="10" r="7" fill="none" stroke="black" stroke-width="2.5" stroke-dasharray="34 8" stroke-linecap="round"/>'
+    + '<circle cx="10" cy="10" r="7" fill="none" stroke="white" stroke-width="1.1" stroke-dasharray="34 8" stroke-linecap="round"/>'
+    + '<polygon points="15.2,3.6 19.4,6.4 13.6,8.2" fill="black"/>'
+    + '<polygon points="15.5,4.4 18.3,6.3 14.6,7.5" fill="white"/>'
+    + '</svg>'
+const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(ROTATE_CURSOR_SVG)}") 10 10, grab`
+
 // Overlay editing card — styled to match the hotspot popup (light card, indigo
 // header, right-of-target with edge fallback), so overlays and hotspots feel
 // like one system. Two modes:
 //   confirm — "Edit this logo/cover-up?" with No / Yes, edit
 //   edit    — scope switch + size/opacity(/rotate) sliders
-function OverlayRow({ label, value, min, max, step = 1, suffix = '', onChange }) {
-    return (
-        <div className="flex items-center gap-2">
-            <span className="w-12 shrink-0 text-[9px] font-bold tracking-wider text-[#6b6b60] uppercase">{label}</span>
-            <input type="range" min={min} max={max} step={step} value={value}
-                   onChange={e => onChange(Number(e.target.value))}
-                   onMouseDown={e => e.stopPropagation()}
-                   className="flex-1 accent-[#3730a3] h-1 cursor-pointer"/>
-            <span className="w-9 shrink-0 text-right text-[10px] font-mono tabular-nums text-[#1a1a18]">{value}{suffix}</span>
-        </div>
-    )
-}
 // screenPos = the overlay's {x,y} within the viewer (for edge decisions).
 // The popup itself is rendered inside the overlay's wrapper, so its own left/top
 // are offsets FROM the overlay, not absolute viewer coordinates.
@@ -88,17 +101,17 @@ function OverlayPopup({ item, kind, editing, screenPos, halfW, halfH, viewerSize
              style={{ left: offsetX, top: offsetY, width: W }}
              onMouseDown={e => e.stopPropagation()}>
 
-            <div className="bg-white/95 backdrop-blur-md rounded-xl border border-[#E2E2DA] shadow-[0_8px_32px_rgba(0,0,0,0.18)] overflow-hidden">
+            <div className="bg-white/95 backdrop-blur-md rounded-xl border border-editor-border shadow-editor-popup overflow-hidden">
 
                 {/* Header */}
-                <div className="flex items-center gap-2 px-3 py-2 bg-[#3730a3]/6 border-b border-[#E2E2DA]">
-                    <div className="w-5 h-5 rounded border border-[#E2E2DA] bg-white overflow-hidden flex items-center justify-center shrink-0">
+                <div className="flex items-center gap-2 px-3 py-2 bg-editor-primary/6 border-b border-editor-border">
+                    <div className="w-5 h-5 rounded border border-editor-border bg-white overflow-hidden flex items-center justify-center shrink-0">
                         <img src={item.url} alt="" className="max-w-full max-h-full object-contain"/>
                     </div>
-                    <span className="text-[11px] font-bold text-[#3730a3] flex-1">
+                    <span className="text-[11px] font-bold text-editor-primary flex-1">
                         {editing ? `Edit ${isLogo ? 'logo' : 'cover-up'}` : `Edit ${isLogo ? 'logo' : 'cover-up'}?`}
                     </span>
-                    <button onClick={onClose} className="text-[#9a9a8e] hover:text-[#1a1a18] transition-colors shrink-0">
+                    <button onClick={onClose} className="text-editor-ink-dim hover:text-editor-ink transition-colors shrink-0">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>
                 </div>
@@ -107,22 +120,22 @@ function OverlayPopup({ item, kind, editing, screenPos, halfW, halfH, viewerSize
                 {!editing && (
                     <div className="px-3 py-3 space-y-2.5">
                         <div>
-                            <p className="text-[12px] font-semibold text-[#1a1a18]">
+                            <p className="text-[12px] font-semibold text-editor-ink">
                                 {isLogo ? 'Logo' : 'Cover-up'}
                             </p>
-                            <p className="text-[11px] text-[#6b6b60] mt-0.5 flex items-center gap-1">
-                                <span className={`w-1.5 h-1.5 rounded-full ${everyScene ? 'bg-emerald-400' : 'bg-[#3730a3]'}`}/>
+                            <p className="text-[11px] text-editor-ink-muted mt-0.5 flex items-center gap-1">
+                                <span className={`w-1.5 h-1.5 rounded-full ${everyScene ? 'bg-emerald-400' : 'bg-editor-primary'}`}/>
                                 {everyScene ? 'Every scene' : (item.scene_id === activeSceneId ? 'This scene' : 'Another scene')}
                             </p>
                         </div>
-                        <p className="text-[11px] text-[#6b6b60]">Edit this {isLogo ? 'logo' : 'cover-up'}?</p>
+                        <p className="text-[11px] text-editor-ink-muted">Edit this {isLogo ? 'logo' : 'cover-up'}?</p>
                         <div className="flex gap-1.5">
                             <button onClick={onDelete}
-                                    className="flex-1 h-7 text-[11px] rounded-lg border border-[#E2E2DA] text-red-500 hover:bg-red-50 transition-colors">
+                                    className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border text-red-500 hover:bg-red-50 transition-colors">
                                 Delete
                             </button>
                             <button onClick={onEdit}
-                                    className="flex-1 h-7 text-[11px] rounded-lg bg-[#3730a3] text-white font-semibold hover:bg-[#312e81] transition-colors">
+                                    className="flex-1 h-7 text-[11px] rounded-lg bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover transition-colors">
                                 Yes, edit
                             </button>
                         </div>
@@ -133,15 +146,15 @@ function OverlayPopup({ item, kind, editing, screenPos, halfW, halfH, viewerSize
                 {editing && (
                     <div className="px-3 py-3 space-y-2.5">
                         <div>
-                            <p className="text-[10px] text-[#6b6b60] uppercase tracking-wider font-medium mb-1">Show in</p>
-                            <div className="flex p-0.5 rounded-lg bg-[#F4F4EF] border border-[#E2E2DA]">
+                            <p className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium mb-1">Show in</p>
+                            <div className="flex p-0.5 rounded-lg bg-editor-subtle border border-editor-border">
                                 <button onClick={() => onSetScope(item.id, null)}
-                                        className={`flex-1 h-6 rounded-md text-[10.5px] font-semibold transition-colors ${everyScene ? 'bg-white text-[#3730a3] shadow-sm' : 'text-[#9a9a8e] hover:text-[#6b6b60]'}`}>
+                                        className={`flex-1 h-6 rounded-md text-[10.5px] font-semibold transition-colors ${everyScene ? 'bg-white text-editor-primary shadow-sm' : 'text-editor-ink-dim hover:text-editor-ink-muted'}`}>
                                     Every scene
                                 </button>
                                 <button onClick={() => activeSceneId && onSetScope(item.id, activeSceneId)} disabled={!activeSceneId}
                                         title={activeSceneName ? `Only ${activeSceneName}` : undefined}
-                                        className={`flex-1 h-6 rounded-md text-[10.5px] font-semibold transition-colors disabled:opacity-40 ${!everyScene ? 'bg-white text-[#3730a3] shadow-sm' : 'text-[#9a9a8e] hover:text-[#6b6b60]'}`}>
+                                        className={`flex-1 h-6 rounded-md text-[10.5px] font-semibold transition-colors disabled:opacity-40 ${!everyScene ? 'bg-white text-editor-primary shadow-sm' : 'text-editor-ink-dim hover:text-editor-ink-muted'}`}>
                                     This scene
                                 </button>
                             </div>
@@ -157,15 +170,15 @@ function OverlayPopup({ item, kind, editing, screenPos, halfW, halfH, viewerSize
 
                         <div className="flex gap-1.5">
                             <button onClick={onDelete}
-                                    className="flex-1 h-7 text-[11px] rounded-lg border border-[#E2E2DA] text-red-500 hover:bg-red-50 transition-colors">
+                                    className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border text-red-500 hover:bg-red-50 transition-colors">
                                 Delete
                             </button>
                             <button onClick={onClose}
-                                    className="flex-1 h-7 text-[11px] rounded-lg bg-[#3730a3] text-white font-semibold hover:bg-[#312e81] transition-colors">
+                                    className="flex-1 h-7 text-[11px] rounded-lg bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover transition-colors">
                                 Done
                             </button>
                         </div>
-                        <p className="text-[10px] text-[#9a9a8e] leading-snug">
+                        <p className="text-[10px] text-editor-ink-dim leading-snug">
                             {isLogo ? 'Drag it in the tour to place it — it stays fixed on screen.'
                                 : 'Drag it onto what to hide — it sticks to the photo.'}
                         </p>
@@ -193,6 +206,8 @@ export default function ProjectClient({ projectId }) {
     const onPolygonClickRef = useRef(null)
     const lastVertexRef     = useRef(null)   // { yaw, pitch, t } — guards against a click double-firing
     const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging a logo
+    const overlayGestureRef = useRef(null)   // { mode:'resize'|'rotate', id, cxPage, cyPage, startSize, startDist } while resizing/rotating a cover-up
+    const pinGestureRef     = useRef(null)   // { mode:'resize'|'rotate', cxPage, cyPage, startSize, startDist } while resizing/rotating the hotspot placement pin
     const [logoAspect, setLogoAspect] = useState({}) // logo id -> naturalHeight/naturalWidth
     const [coverupAspect, setCoverupAspect] = useState({}) // coverup id -> naturalHeight/naturalWidth
     const coverupsRef       = useRef([])     // full coverups list, read inside the rAF loop by id
@@ -209,6 +224,7 @@ export default function ProjectClient({ projectId }) {
     const [loading, setLoading]                 = useState(true)
     const [isDragOver, setIsDragOver]           = useState(false)
     const [isDraggingPin, setIsDraggingPin]     = useState(false)
+    const [activeRightTab, setActiveRightTab]   = useState('directions') // 'directions' | 'overlays' | 'zones'
     const [showSettings, setShowSettings]       = useState(false)
     const [settingsDraft, setSettingsDraft]     = useState(null)
     const [confirmDelete, setConfirmDelete]     = useState(false)
@@ -246,6 +262,8 @@ export default function ProjectClient({ projectId }) {
     const [hotspotSize, setHotspotSize]         = useState(90)
     const [hotspotToDelete, setHotspotToDelete] = useState(null)
     const [deletingHotspot, setDeletingHotspot] = useState(false)
+    const [savingView, setSavingView]           = useState(false)
+    const [savedViewTick, setSavedViewTick]     = useState(false)
 
     // ── Polygon zones ──────────────────────────────────────────────────────
     // Always scene-scoped (no "every scene" concept — a zone marks a specific
@@ -262,7 +280,7 @@ export default function ProjectClient({ projectId }) {
     const [deletingPolygon, setDeletingPolygon] = useState(false)
     const [polygonError, setPolygonError]       = useState('')
 
-    // popupState modes: 'new' | 'confirm-edit' | 'edit-existing' | 'saved'
+    // popupState modes: 'new' | 'edit-existing' | 'saved'
     const [popupState, setPopupState] = useState(null)
 
     scenesRef.current         = scenes
@@ -368,17 +386,36 @@ export default function ProjectClient({ projectId }) {
     onHotspotClickRef.current = (hotspotId) => {
         const h = hotspots.find(x => x.id === hotspotId)
         if (!h) return
-        setPopupState({ mode: 'confirm-edit', hotspot: h })
+        // Straight into edit mode — the bounding box on the canvas already
+        // doubles as the confirmation that you're about to change something,
+        // so a separate "Edit this hotspot?" step was just extra friction.
+        setPopupState({
+            mode: 'edit-existing',
+            hotspot: h,
+            arrow_type: h.arrow_type,
+            pitch: h.pitch,
+            yaw: h.yaw,
+            label: h.label || '',
+            target_scene_id: h.target_scene_id,
+            // null = no per-hotspot override, keeps following the tour-wide
+            // slider — only a real number here permanently decouples this
+            // one hotspot from it.
+            size: h.size ?? null,
+            rotation: h.rotation ?? 0,
+        })
+        setActiveRightTab('directions')
     }
     onCoverupClickRef.current = (coverupId) => {
         if (!coverupId) return
         setSelectedOverlay(coverupId)
         setEditOverlay(null)
+        setActiveRightTab('overlays')
     }
     onPolygonClickRef.current = (polygonId) => {
         const p = polygons.find(x => x.id === polygonId)
         if (!p) return
         setPolygonPopup({ mode: 'view', polygon: p })
+        setActiveRightTab('zones')
     }
 
     // ── Viewer init ────────────────────────────────────────────────────────
@@ -407,7 +444,7 @@ export default function ProjectClient({ projectId }) {
         // convert once the instance is ready so the opening view matches what
         // was saved.
         viewer.addEventListener('ready', () => {
-            try { viewer.zoom(viewer.dataHelper.fovToZoomLevel(activeScene.initial_hfov ?? 120)) } catch {}
+            try { viewer.zoom(viewer.dataHelper.fovToZoomLevel(activeScene.initial_hfov ?? DEFAULT_HFOV)) } catch {}
         }, { once: true })
 
         const mp = viewer.getPlugin(MarkersPlugin)
@@ -513,18 +550,20 @@ export default function ProjectClient({ projectId }) {
             .filter(h => h.scene_id === activeScene.id && h.id !== editingId)
             .map(h => {
                 const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
+                const size = h.size ?? hotspotSize
                 return {
                     id: `hs_${h.id}`,
                     type: 'image',
                     image: arrow.gif,
-                    size: { width: hotspotSize, height: hotspotSize },
+                    size: { width: size, height: size },
                     position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
+                    rotation: `${h.rotation ?? 0}deg`,
                     tooltip: h.label || undefined,
                     data: { hotspotDbId: h.id },
                 }
             })
 
-        const baseHfov = activeScene.initial_hfov ?? 120
+        const baseHfov = activeScene.initial_hfov ?? DEFAULT_HFOV
         const coverupMarkers = visibleCoverups
             .filter(c => c.id !== selectedOverlay) // the selected one is rendered as plain DOM instead
             .map(c => {
@@ -569,7 +608,7 @@ export default function ProjectClient({ projectId }) {
                 id: 'poly_preview',
                 type: 'polyline',
                 polyline: drawingPolygon.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
-                svgStyle: { stroke: '#a3e635', strokeWidth: '2', strokeDasharray: '6,4', fill: 'none' },
+                svgStyle: { stroke: 'var(--editor-lime-400)', strokeWidth: '2', strokeDasharray: '6,4', fill: 'none' },
             }]
             : []
 
@@ -594,7 +633,7 @@ export default function ProjectClient({ projectId }) {
 
         let pitch, yaw
         if      (ps?.mode === 'new' || ps?.mode === 'edit-existing')  { pitch = ps.pitch;          yaw = ps.yaw }
-        else if (ps?.mode === 'confirm-edit' || ps?.mode === 'saved') { pitch = ps.hotspot?.pitch;  yaw = ps.hotspot?.yaw }
+        else if (ps?.mode === 'saved') { pitch = ps.hotspot?.pitch;  yaw = ps.hotspot?.yaw }
 
         if (viewer && pitch != null && yaw != null) {
             try {
@@ -664,12 +703,63 @@ export default function ProjectClient({ projectId }) {
             if (drawingPolygon) return // drawing a zone takes priority over placing a new arrow
             const coords = sampleAt(e.clientX, e.clientY)
             if (!coords) return
-            setPopupState({ mode: 'new', arrow_type: hotspotType, ...coords, label: '', target_scene_id: '' })
+            setPopupState({ mode: 'new', arrow_type: hotspotType, ...coords, label: '', target_scene_id: '', size: null, rotation: 0 })
         }
     }, [sampleAt, drawingPolygon])
 
+    // Corner-handle drag on the placement pin's bounding box. Same math
+    // already proven for cover-ups (startOverlayResize/startOverlayRotate) —
+    // center-anchored resize, absolute-angle rotate — just keyed off pinPos
+    // (viewer-relative screen coords, refreshed every rAF frame by mainLoop)
+    // instead of coverupPopupScreen, and writing into popupState instead of
+    // patching a coverups array item.
+    function startPinResize(e) {
+        e.preventDefault(); e.stopPropagation()
+        if (!pinPos || !viewerRef.current) return
+        const rect = viewerRef.current.getBoundingClientRect()
+        const cxPage = rect.left + pinPos.x
+        const cyPage = rect.top  + pinPos.y
+        pinGestureRef.current = {
+            mode: 'resize', cxPage, cyPage,
+            startSize: popupState.size ?? hotspotSize,
+            startDist: Math.hypot(e.clientX - cxPage, e.clientY - cyPage),
+        }
+        setIsDraggingPin(true)
+    }
+
+    function startPinRotate(e) {
+        e.preventDefault(); e.stopPropagation()
+        if (!pinPos || !viewerRef.current) return
+        const rect = viewerRef.current.getBoundingClientRect()
+        pinGestureRef.current = {
+            mode: 'rotate',
+            cxPage: rect.left + pinPos.x,
+            cyPage: rect.top  + pinPos.y,
+        }
+        setIsDraggingPin(true)
+    }
+
     const onOverlayMouseMove = useCallback(e => {
         if (!isDraggingPin) return
+
+        const g = pinGestureRef.current
+        if (g?.mode === 'resize') {
+            const dist = Math.hypot(e.clientX - g.cxPage, e.clientY - g.cyPage)
+            const newSize = Math.min(400, Math.max(40, g.startSize * (dist / g.startDist)))
+            setPopupState(prev =>
+                (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, size: roundTo2(newSize) } : prev
+            )
+            return
+        }
+        if (g?.mode === 'rotate') {
+            const angleDeg = Math.atan2(e.clientY - g.cyPage, e.clientX - g.cxPage) * 180 / Math.PI + 90
+            const wrapped  = ((angleDeg + 180) % 360 + 360) % 360 - 180
+            setPopupState(prev =>
+                (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, rotation: roundTo2(wrapped) } : prev
+            )
+            return
+        }
+
         const coords = sampleAt(e.clientX, e.clientY)
         if (coords) setPopupState(prev =>
             (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, ...coords } : prev
@@ -850,6 +940,7 @@ export default function ProjectClient({ projectId }) {
             // Not yet editing this one — select and ask, don't drag.
             setSelectedOverlay(id)
             setEditOverlay(null)
+            setActiveRightTab('overlays')
             return
         }
         startOverlayDrag(e, id)
@@ -859,6 +950,7 @@ export default function ProjectClient({ projectId }) {
         e.preventDefault(); e.stopPropagation()
         setSelectedOverlay(id)
         setDraggingOverlay(id)
+        overlayGestureRef.current = null   // defensive: a move gesture never inherits a stale resize/rotate
 
         const logo = logos.find(l => l.id === id)
         const el   = viewerRef.current
@@ -870,10 +962,62 @@ export default function ProjectClient({ projectId }) {
         }
     }
 
+    // Corner-handle drag on the selected cover-up's bounding box. Center-
+    // anchored (all 4 corners move symmetrically) — the only resize semantics
+    // that doesn't also require recomputing pitch/yaw, since the data model
+    // has one anchor point, not one per corner.
+    function startOverlayResize(e, id) {
+        e.preventDefault(); e.stopPropagation()
+        const c = coverups.find(x => x.id === id)
+        if (!c || !viewerRef.current || !coverupPopupScreen) return
+        setSelectedOverlay(id)
+        setDraggingOverlay(id)
+        const rect = viewerRef.current.getBoundingClientRect()
+        const cxPage = rect.left + coverupPopupScreen.x
+        const cyPage = rect.top  + coverupPopupScreen.y
+        overlayGestureRef.current = {
+            mode: 'resize', id, cxPage, cyPage,
+            startSize: c.size,
+            startDist: Math.hypot(e.clientX - cxPage, e.clientY - cyPage),
+        }
+    }
+
+    // Rotate-handle drag. Rotation is an absolute angle from box-center to the
+    // cursor every move (not a delta) — the handle always sits at the box's
+    // current "up" direction, so grabbing it and moving is jump-free.
+    function startOverlayRotate(e, id) {
+        e.preventDefault(); e.stopPropagation()
+        if (!viewerRef.current || !coverupPopupScreen) return
+        setSelectedOverlay(id)
+        setDraggingOverlay(id)
+        const rect = viewerRef.current.getBoundingClientRect()
+        overlayGestureRef.current = {
+            mode: 'rotate', id,
+            cxPage: rect.left + coverupPopupScreen.x,
+            cyPage: rect.top  + coverupPopupScreen.y,
+        }
+    }
+
     function onOverlayDragMove(e) {
         if (!draggingOverlay) return
         const el = viewerRef.current
         if (!el) return
+
+        const g = overlayGestureRef.current
+        if (g?.mode === 'resize') {
+            const dist = Math.hypot(e.clientX - g.cxPage, e.clientY - g.cyPage)
+            const newSize = Math.min(800, Math.max(24, g.startSize * (dist / g.startDist)))
+            patchCoverup(g.id, { size: roundTo2(newSize) })
+            return
+        }
+        if (g?.mode === 'rotate') {
+            // Offset by +90deg so "handle straight up" = 0deg, matching CSS
+            // rotate()'s clockwise-for-positive-theta convention exactly.
+            const angleDeg = Math.atan2(e.clientY - g.cyPage, e.clientX - g.cxPage) * 180 / Math.PI + 90
+            const wrapped  = ((angleDeg + 180) % 360 + 360) % 360 - 180
+            patchCoverup(g.id, { rotation: roundTo2(wrapped) })
+            return
+        }
 
         const logo = logos.find(l => l.id === draggingOverlay)
         if (logo) {
@@ -919,8 +1063,9 @@ export default function ProjectClient({ projectId }) {
     function endOverlayDrag() {
         if (!draggingOverlay) return
         setDraggingOverlay(null)
-        // Position already lives in state from the drag itself; releasing just
-        // ends the gesture. Nothing is written until Save.
+        overlayGestureRef.current = null
+        // Position/size/rotation already live in state from the drag itself;
+        // releasing just ends the gesture. Nothing is written until Save.
     }
 
     // ── API: create hotspot ────────────────────────────────────────────────
@@ -935,6 +1080,7 @@ export default function ProjectClient({ projectId }) {
                     pitch: roundTo2(popupState.pitch), yaw: roundTo2(popupState.yaw),
                     arrow_type: popupState.arrow_type, label: popupState.label || '',
                     target_scene_id: popupState.target_scene_id,
+                    size: popupState.size, rotation: popupState.rotation,
                 }),
             })
             if (res.ok) {
@@ -959,6 +1105,8 @@ export default function ProjectClient({ projectId }) {
                     pitch:           roundTo2(popupState.pitch),
                     yaw:             roundTo2(popupState.yaw),
                     arrow_type:      popupState.arrow_type,
+                    size:            popupState.size,
+                    rotation:        popupState.rotation,
                 }),
             })
             if (res.ok) {
@@ -1090,16 +1238,37 @@ export default function ProjectClient({ projectId }) {
         }
     }
 
-    // Common hotspot arrow size — saved on the project, exactly like logo size.
-    async function saveHotspotSize(size) {
-        if (!project) return
+    // Captures wherever you've currently panned/zoomed to and saves it as this
+    // scene's opening view. The column and PATCH /api/scenes/[id] support have
+    // existed since the start; this is the first thing that actually calls it.
+    async function saveCurrentViewAsOpening() {
+        const viewer = psvRef.current
+        if (!viewer || !activeScene) return
+        setSavingView(true)
         try {
-            const res = await fetch(`/api/projects/${project.id}`, {
-                method: 'PATCH', headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({ hotspot_size: Math.round(size) }),
+            const pos  = viewer.getPosition()
+            const hfov = viewer.dataHelper.zoomLevelToFov(viewer.getZoomLevel())
+            const res = await fetch(`/api/scenes/${activeScene.id}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    initial_yaw:   roundTo2(pos.yaw   * DEG),
+                    initial_pitch: roundTo2(pos.pitch * DEG),
+                    initial_hfov:  roundTo2(hfov),
+                }),
             })
-            if (res.ok) { const { project: updated } = await res.json(); setProject(updated) }
+            if (res.ok) {
+                const { scene: updated } = await res.json()
+                // Same scene id, so the viewer-init/marker-sync effects that
+                // depend on activeScene see their guard hold and don't
+                // re-initialize the viewer — they just pick up the new saved
+                // angle for next time this scene is opened.
+                setScenes(prev => prev.map(s => s.id === updated.id ? updated : s))
+                setActiveScene(updated)
+                setSavedViewTick(true)
+                setTimeout(() => setSavedViewTick(false), 1800)
+            }
         } catch {}
+        finally { setSavingView(false) }
     }
 
     async function deleteProject() {
@@ -1204,7 +1373,7 @@ export default function ProjectClient({ projectId }) {
     }
 
     if (loading) return (
-        <div className="h-screen flex items-center justify-center bg-[#FAFAF7]">
+        <div className="h-screen flex items-center justify-center bg-editor-canvas">
             <Spinner size={20}/>
         </div>
     )
@@ -1218,31 +1387,31 @@ export default function ProjectClient({ projectId }) {
 
     return (
         <>
-            <div className="h-screen flex flex-col bg-[#FAFAF7] overflow-hidden">
+            <div className="h-screen flex flex-col bg-editor-canvas overflow-hidden">
 
                 {/* ── Top bar ── */}
-                <header className="h-[52px] flex items-center px-5 gap-3 border-b border-[#E2E2DA] bg-white shrink-0 z-10">
-                    <Link href="/360editor" className="flex items-center gap-1.5 text-[#6b6b60] hover:text-[#1a1a18] transition-colors">
+                <header className="h-[52px] flex items-center px-5 gap-3 border-b border-editor-border bg-white shrink-0 z-10">
+                    <Link href="/360editor" className="flex items-center gap-1.5 text-editor-ink-muted hover:text-editor-ink transition-colors">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
                         <span className="text-[12px] font-medium">Dashboard</span>
                     </Link>
-                    <span className="text-[#E2E2DA]">/</span>
+                    <span className="text-editor-border">/</span>
                     <div className="flex items-center gap-2 mr-auto">
-                        <div className="w-6 h-6 bg-[#3730a3] rounded-md flex items-center justify-center shrink-0">
+                        <div className="w-6 h-6 bg-editor-primary rounded-md flex items-center justify-center shrink-0">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
                                 <circle cx="12" cy="12" r="10"/>
                                 <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                             </svg>
                         </div>
-                        <span className="text-[#1a1a18] font-semibold text-[14px] truncate">{project?.name}</span>
+                        <span className="text-editor-ink font-semibold text-[14px] truncate">{project?.name}</span>
                     </div>
-                    {activeScene && <span className="text-[12px] text-[#6b6b60] truncate hidden sm:block">{activeScene.name}</span>}
+                    {activeScene && <span className="text-[12px] text-editor-ink-muted truncate hidden sm:block">{activeScene.name}</span>}
 
                     {/* Settings */}
                     <button
                         onClick={() => { setSettingsDraft({ show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3 }); setShowSettings(true) }}
                         title="Project settings"
-                        className="flex items-center justify-center w-8 h-8 rounded-lg border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] transition-colors shrink-0">
+                        className="flex items-center justify-center w-8 h-8 rounded-lg border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors shrink-0">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <circle cx="12" cy="12" r="3"/>
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -1251,7 +1420,7 @@ export default function ProjectClient({ projectId }) {
 
                     {/* Delete */}
                     <button onClick={() => setConfirmDelete(true)} title="Delete project"
-                            className="flex items-center justify-center w-8 h-8 rounded-lg border border-[#E2E2DA] text-[#6b6b60] hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0">
+                            className="flex items-center justify-center w-8 h-8 rounded-lg border border-editor-border text-editor-ink-muted hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <polyline points="3 6 5 6 21 6"/>
                             <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
@@ -1263,7 +1432,7 @@ export default function ProjectClient({ projectId }) {
                     {/* Preview */}
                     <button onClick={openPreview} disabled={!scenes.length}
                             title="Preview the tour exactly as it will be exported"
-                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[#E2E2DA] text-[#6b6b60] text-[12px] font-medium hover:bg-[#F4F4EF] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-editor-border text-editor-ink-muted text-[12px] font-medium hover:bg-editor-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                             <circle cx="12" cy="12" r="3"/>
@@ -1274,7 +1443,7 @@ export default function ProjectClient({ projectId }) {
                     {/* Publish — creates (or refreshes) the permanent public link */}
                     <button onClick={publishTour} disabled={flags.publishing || !scenes.length}
                             title={publicUrl ? 'Push the current version to the live link' : 'Host this tour on a permanent public link'}
-                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#3730a3] text-white text-[12px] font-semibold hover:bg-[#312e81] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-editor-primary text-white text-[12px] font-semibold hover:bg-editor-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         {flags.publishing
                             ? <><Spinner/>{publicUrl ? 'Updating…' : 'Publishing…'}</>
                             : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><polyline points="8 7 12 3 16 7"/><line x1="12" y1="3" x2="12" y2="15"/></svg>{publicUrl ? 'Update live tour' : 'Publish'}</>}
@@ -1283,52 +1452,35 @@ export default function ProjectClient({ projectId }) {
 
                 {/* ── Live link bar — appears once the tour has been published ── */}
                 {publicUrl && (
-                    <div className="h-9 flex items-center gap-2 px-5 border-b border-[#E2E2DA] bg-[#F4F4EF] shrink-0">
+                    <div className="h-9 flex items-center gap-2 px-5 border-b border-editor-border bg-editor-subtle shrink-0">
                         <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 shrink-0">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"/>Live
                         </span>
                         <a href={openUrl()} target="_blank" rel="noreferrer"
-                           className="text-[12px] text-[#3730a3] hover:underline truncate font-medium">
+                           className="text-[12px] text-editor-primary hover:underline truncate font-medium">
                             {publicUrl.replace(/^https?:\/\//, '')}
                         </a>
                         <button onClick={copyLink}
-                                className="ml-auto flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:text-[#1a1a18] transition-colors shrink-0">
+                                className="ml-auto flex items-center gap-1 h-6 px-2 rounded-lg border border-editor-border bg-white text-[11px] font-medium text-editor-ink-muted hover:text-editor-ink transition-colors shrink-0">
                             {copied
                                 ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Copied</>
                                 : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy link</>}
                         </button>
                         <a href={openUrl()} target="_blank" rel="noreferrer"
-                           className="flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:text-[#1a1a18] transition-colors shrink-0">
+                           className="flex items-center gap-1 h-6 px-2 rounded-lg border border-editor-border bg-white text-[11px] font-medium text-editor-ink-muted hover:text-editor-ink transition-colors shrink-0">
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>Open
                         </a>
                         <button onClick={unpublishTour} disabled={flags.unpublishing}
                                 title="Take the tour offline (the link is kept and can be restored)"
-                                className="flex items-center gap-1 h-6 px-2 rounded-md border border-[#E2E2DA] bg-white text-[11px] font-medium text-[#6b6b60] hover:border-red-300 hover:text-red-500 disabled:opacity-40 transition-colors shrink-0">
+                                className="flex items-center gap-1 h-6 px-2 rounded-lg border border-editor-border bg-white text-[11px] font-medium text-editor-ink-muted hover:border-red-300 hover:text-red-500 disabled:opacity-40 transition-colors shrink-0">
                             {flags.unpublishing ? <Spinner size={11}/> : 'Unpublish'}
                         </button>
                     </div>
                 )}
 
-                {publishError && (
-                    <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
-                        {publishError}
-                        <button onClick={() => setPublishError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
-                    </div>
-                )}
-
-                {overlayError && (
-                    <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
-                        {overlayError}
-                        <button onClick={() => setOverlayError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
-                    </div>
-                )}
-
-                {polygonError && (
-                    <div className="h-8 flex items-center gap-2 px-5 border-b border-red-200 bg-red-50 text-[11px] font-medium text-red-600 shrink-0">
-                        {polygonError}
-                        <button onClick={() => setPolygonError('')} className="ml-auto text-red-400 hover:text-red-600">Dismiss</button>
-                    </div>
-                )}
+                {publishError && <ErrorBanner message={publishError} onDismiss={() => setPublishError('')}/>}
+                {overlayError && <ErrorBanner message={overlayError} onDismiss={() => setOverlayError('')}/>}
+                {polygonError && <ErrorBanner message={polygonError} onDismiss={() => setPolygonError('')}/>}
 
                 {/* ── Body ── */}
                 <div className="flex-1 flex overflow-hidden">
@@ -1336,27 +1488,33 @@ export default function ProjectClient({ projectId }) {
                     {/* Left — scenes */}
                     <div className="w-[180px] shrink-0 relative overflow-hidden">
                         <ScenePanel projectId={projectId} scenes={scenes}
+                                    activeSceneId={activeScene?.id}
+                                    onSelectScene={setActiveScene}
                                     onScenesChange={updated => { setScenes(updated); if (!activeScene && updated.length) setActiveScene(updated[0]) }}/>
                     </div>
 
                     {/* Middle — viewer */}
-                    <div className="flex-1 relative overflow-hidden bg-[#F4F4EF]">
+                    <div className="flex-1 relative overflow-hidden bg-editor-subtle">
                         {!activeScene ? (
-                            <div className={`absolute inset-0 flex flex-col items-center justify-center border-2 border-dashed transition-colors ${isDragOver ? 'border-[#3730a3] bg-[#3730a3]/5' : 'border-[#E2E2DA]'}`}
+                            <div className={`absolute inset-0 flex flex-col items-center justify-center border-2 border-dashed transition-colors ${isDragOver ? 'border-editor-primary bg-editor-primary/5' : 'border-editor-border'}`}
                                  onDragOver={onViewerDragOver} onDragLeave={() => setIsDragOver(false)} onDrop={onViewerDrop}>
-                                <div className="w-16 h-16 bg-[#3730a3]/8 rounded-2xl flex items-center justify-center mb-4">
-                                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#3730a3" strokeWidth="1.5">
+                                <div className="w-16 h-16 bg-editor-primary/8 rounded-2xl flex items-center justify-center mb-4">
+                                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--editor-indigo-700)" strokeWidth="1.5">
                                         <circle cx="12" cy="12" r="10"/>
                                         <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                                     </svg>
                                 </div>
-                                <p className="text-[14px] font-semibold text-[#1a1a18]">Drop a scene here</p>
-                                <p className="text-[12px] text-[#6b6b60] mt-1">Drag an image from the left panel</p>
+                                <p className="text-[14px] font-semibold text-editor-ink">
+                                    {scenes.length ? 'No scene open' : 'Drop a scene here'}
+                                </p>
+                                <p className="text-[12px] text-editor-ink-muted mt-1">
+                                    {scenes.length ? 'Drag a scene onto here, or double-click one to open it' : 'Drag an image from the left panel'}
+                                </p>
                             </div>
                         ) : (
                             <>
                                 <div ref={viewerRef}
-                                     className={`absolute inset-0 ${isDragOver ? 'ring-2 ring-[#3730a3] ring-inset' : ''}`}
+                                     className={`absolute inset-0 ${isDragOver ? 'ring-2 ring-editor-primary ring-inset' : ''}`}
                                      onDragOver={onViewerDragOver} onDragLeave={() => setIsDragOver(false)} onDrop={onViewerDrop}/>
 
                                 {/* ── Selected cover-up — the only one rendered as plain DOM.
@@ -1366,31 +1524,61 @@ export default function ProjectClient({ projectId }) {
                                     already used for hotspot placement below. */}
                                 {selectedCoverup && coverupPopupScreen && (() => {
                                     const c = selectedCoverup
-                                    const zoom = (activeScene.initial_hfov ?? 120) / (coverupPopupScreen.hfov || activeScene.initial_hfov || 120)
+                                    const zoom = (activeScene.initial_hfov ?? DEFAULT_HFOV) / (coverupPopupScreen.hfov || activeScene.initial_hfov || DEFAULT_HFOV)
                                     const editing = editOverlay === c.id
                                     const w = c.size * zoom
+                                    // Falls back to a square until this cover-up's preload effect
+                                    // (~line 351) resolves its true aspect ratio — same fallback the
+                                    // marker-sync effect already uses, so it self-heals on the next
+                                    // render with no lasting distortion.
+                                    const h = w * (coverupAspect[c.id] ?? 1)
                                     return (
                                         <div className="absolute z-10" style={{ left: coverupPopupScreen.x, top: coverupPopupScreen.y, transform: 'translate(-50%,-50%)' }}>
-                                            <img
-                                                src={c.url}
-                                                alt=""
-                                                draggable={false}
-                                                onMouseDown={e => { if (editing) startOverlayDrag(e, c.id) }}
-                                                style={{
-                                                    width: w,
-                                                    opacity: c.opacity,
-                                                    transform: `rotate(${c.rotation}deg)`,
-                                                    outline: `2px ${editing ? 'solid' : 'dashed'} #3730a3`,
-                                                    outlineOffset: '2px',
-                                                    display: 'block',
-                                                }}
-                                                className={`select-none h-auto ${editing ? (draggingOverlay === c.id ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}`}
-                                            />
+                                            <div style={{ width: w, height: h, position: 'relative', transform: `rotate(${c.rotation}deg)`, transformOrigin: 'center center' }}>
+                                                <img
+                                                    src={c.url}
+                                                    alt=""
+                                                    draggable={false}
+                                                    onMouseDown={e => { if (editing) startOverlayDrag(e, c.id) }}
+                                                    style={{
+                                                        width: '100%',
+                                                        height: '100%',
+                                                        opacity: c.opacity,
+                                                        outline: `2px ${editing ? 'solid' : 'dashed'} var(--editor-indigo-700)`,
+                                                        outlineOffset: '2px',
+                                                        display: 'block',
+                                                    }}
+                                                    className={`select-none ${editing ? (draggingOverlay === c.id ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-pointer'}`}
+                                                />
+                                                {editing && (
+                                                    <>
+                                                        {/* Corner resize handles — center-anchored, uniform (the data model has one size scalar) */}
+                                                        <div onMouseDown={e => startOverlayResize(e, c.id)}
+                                                             className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
+                                                             style={{ left: 0, top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                        <div onMouseDown={e => startOverlayResize(e, c.id)}
+                                                             className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nesw-resize"
+                                                             style={{ left: '100%', top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                        <div onMouseDown={e => startOverlayResize(e, c.id)}
+                                                             className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nesw-resize"
+                                                             style={{ left: 0, top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                        <div onMouseDown={e => startOverlayResize(e, c.id)}
+                                                             className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
+                                                             style={{ left: '100%', top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                        {/* Rotate handle */}
+                                                        <div className="absolute pointer-events-none"
+                                                             style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-indigo-700)' }}/>
+                                                        <div onMouseDown={e => startOverlayRotate(e, c.id)}
+                                                             className="absolute w-3 h-3 bg-white border-2 border-editor-primary rounded-full"
+                                                             style={{ left: '50%', top: -28, transform: 'translate(-50%,-50%)', zIndex: 2, cursor: ROTATE_CURSOR }}/>
+                                                    </>
+                                                )}
+                                            </div>
                                             {!draggingOverlay && (
                                                 <OverlayPopup item={c} kind="coverup"
                                                               editing={editing}
                                                               screenPos={coverupPopupScreen}
-                                                              halfW={w / 2} halfH={w / 2}
+                                                              halfW={w / 2} halfH={h / 2}
                                                               viewerSize={viewerSize}
                                                               activeSceneId={activeScene?.id} activeSceneName={activeScene?.name}
                                                               onEdit={() => setEditOverlay(c.id)}
@@ -1426,7 +1614,7 @@ export default function ProjectClient({ projectId }) {
                                                 style={{
                                                     width: l.size,
                                                     opacity: l.opacity,
-                                                    outline: sel ? `2px ${editOverlay === l.id ? 'solid' : 'dashed'} #3730a3` : 'none',
+                                                    outline: sel ? `2px ${editOverlay === l.id ? 'solid' : 'dashed'} var(--editor-indigo-700)` : 'none',
                                                     outlineOffset: '2px',
                                                     display: 'block',
                                                 }}
@@ -1463,23 +1651,55 @@ export default function ProjectClient({ projectId }) {
                                 {isDraggingPin && (
                                     <div className="absolute inset-0 z-40 cursor-crosshair"
                                          onMouseMove={onOverlayMouseMove}
-                                         onMouseUp={() => setIsDraggingPin(false)}
-                                         onMouseLeave={() => setIsDraggingPin(false)}/>
+                                         onMouseUp={() => { setIsDraggingPin(false); pinGestureRef.current = null }}
+                                         onMouseLeave={() => { setIsDraggingPin(false); pinGestureRef.current = null }}/>
                                 )}
 
                                 {/* While editing/placing: the draggable handle IS the real
                                     arrow image (same gif the exported tour uses) — WYSIWYG,
-                                    no crosshair/pointer. */}
-                                {hasPopup && isEditing && pinPos && (
-                                    <img
-                                        src={(ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
-                                        alt=""
-                                        draggable={false}
-                                        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingPin(true) }}
-                                        style={{ left: pinPos.x, top: pinPos.y, width: hotspotSize, height: hotspotSize, transform: 'translate(-50%,-50%)' }}
-                                        className={`absolute z-30 object-contain select-none drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)] ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
-                                    />
-                                )}
+                                    no crosshair/pointer. Wrapped in a sized/rotated box with
+                                    corner+rotate handles, same pattern as the cover-up bounding
+                                    box — arrows are always square so there's no aspect-ratio
+                                    tracking to do here, unlike cover-ups. */}
+                                {hasPopup && isEditing && pinPos && (() => {
+                                    const size = popupState.size ?? hotspotSize
+                                    const rot  = popupState.rotation ?? 0
+                                    return (
+                                        <div className="absolute z-30" style={{ left: pinPos.x, top: pinPos.y, transform: 'translate(-50%,-50%)' }}>
+                                            <div style={{ width: size, height: size, position: 'relative', transform: `rotate(${rot}deg)`, transformOrigin: 'center center' }}>
+                                                <img
+                                                    src={(ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
+                                                    alt=""
+                                                    draggable={false}
+                                                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
+                                                    style={{
+                                                        width: '100%', height: '100%', display: 'block',
+                                                        outline: '2px solid var(--editor-indigo-700)',
+                                                        outlineOffset: '2px',
+                                                    }}
+                                                    className={`object-contain select-none drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)] ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
+                                                />
+                                                <div onMouseDown={startPinResize}
+                                                     className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
+                                                     style={{ left: 0, top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                <div onMouseDown={startPinResize}
+                                                     className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nesw-resize"
+                                                     style={{ left: '100%', top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                <div onMouseDown={startPinResize}
+                                                     className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nesw-resize"
+                                                     style={{ left: 0, top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                <div onMouseDown={startPinResize}
+                                                     className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
+                                                     style={{ left: '100%', top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                <div className="absolute pointer-events-none"
+                                                     style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-indigo-700)' }}/>
+                                                <div onMouseDown={startPinRotate}
+                                                     className="absolute w-3 h-3 bg-white border-2 border-editor-primary rounded-full"
+                                                     style={{ left: '50%', top: -28, transform: 'translate(-50%,-50%)', zIndex: 2, cursor: ROTATE_CURSOR }}/>
+                                            </div>
+                                        </div>
+                                    )
+                                })()}
 
                                 {hasPopup && (
                                     <HotspotPopup
@@ -1517,13 +1737,17 @@ export default function ProjectClient({ projectId }) {
                                 )}
                                 {isDraggingPin && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
-                                        Release to place
+                                        {pinGestureRef.current?.mode === 'resize' ? 'Resizing the arrow'
+                                            : pinGestureRef.current?.mode === 'rotate' ? 'Rotating the arrow'
+                                            : 'Release to place'}
                                     </div>
                                 )}
                                 {draggingOverlay && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
                                         {logos.some(l => l.id === draggingOverlay)
                                             ? 'Drag the logo · it stays put on screen'
+                                            : overlayGestureRef.current?.mode === 'resize' ? 'Resizing the cover-up'
+                                            : overlayGestureRef.current?.mode === 'rotate' ? 'Rotating the cover-up'
                                             : 'Drag the cover-up · it moves in every scene at once'}
                                     </div>
                                 )}
@@ -1534,7 +1758,7 @@ export default function ProjectClient({ projectId }) {
                                             {' · '}{drawingPolygon.points.length < 3 ? 'need 3+ to finish' : 'click Finish, or click back on your first point'}
                                         </span>
                                         <button onClick={finishDrawingPolygon} disabled={drawingPolygon.points.length < 3}
-                                                className="h-6 px-2.5 rounded-full bg-[#3730a3] text-white font-semibold disabled:opacity-40 transition-colors">
+                                                className="h-6 px-2.5 rounded-full bg-editor-primary text-white font-semibold disabled:opacity-40 transition-colors">
                                             Finish
                                         </button>
                                         <button onClick={cancelDrawingPolygon}
@@ -1544,46 +1768,59 @@ export default function ProjectClient({ projectId }) {
                                     </div>
                                 )}
 
-                                <CameraControls psvRef={psvRef}/>
+                                <CameraControls psvRef={psvRef}
+                                                 onSaveView={saveCurrentViewAsOpening}
+                                                 savingView={savingView}
+                                                 savedView={savedViewTick}/>
                             </>
                         )}
                     </div>
 
-                    {/* Right — directions on top, overlays underneath */}
-                    <div className="w-[220px] shrink-0 relative overflow-hidden flex flex-col">
+                    {/* Right — Directions / Overlays / Zones share one column now,
+                        switched via tabs, instead of three sections hard-stacked in
+                        fixed-height blocks (that stacking is what silently clipped
+                        the arrow palette on shorter viewports). */}
+                    <div className="w-[240px] shrink-0 relative overflow-hidden flex flex-col">
+                        <PanelTabs
+                            active={activeRightTab}
+                            onChange={setActiveRightTab}
+                            tabs={[
+                                { key: 'directions', label: 'Directions', count: hotspots.filter(h => h.scene_id === activeScene?.id).length },
+                                { key: 'overlays',   label: 'Overlays',   count: logos.length + coverups.length, dot: dirtyLogos || dirtyCoverups },
+                                { key: 'zones',      label: 'Zones',      count: visiblePolygons.length },
+                            ]}/>
                         <div className="flex-1 min-h-0 relative overflow-hidden">
-                            <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
-                                          hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}
-                                          hotspotSize={hotspotSize}
-                                          onHotspotSizeChange={setHotspotSize}
-                                          onHotspotSizeCommit={saveHotspotSize}/>
-                        </div>
-                        <div className="h-[220px] shrink-0 border-t border-[#E2E2DA]">
-                            <OverlayPanel
-                                logos={logos}
-                                coverups={coverups}
-                                selectedId={selectedOverlay}
-                                activeSceneId={activeScene?.id}
-                                hasActiveScene={!!activeScene}
-                                onSelect={openOverlayEditor}
-                                onAddLogo={addLogo}
-                                onAddCoverup={addCoverup}
-                                onDeleteLogo={deleteLogo}
-                                onDeleteCoverup={deleteCoverup}
-                                dirty={dirtyLogos || dirtyCoverups}
-                                saving={savingOverlays}
-                                saved={savedTick}
-                                onSave={saveOverlays}/>
-                        </div>
-                        <div className="h-[220px] shrink-0 border-t border-[#E2E2DA]">
-                            <PolygonPanel
-                                polygons={visiblePolygons}
-                                selectedId={polygonPopup?.polygon?.id ?? null}
-                                activeSceneId={activeScene?.id}
-                                drawing={!!drawingPolygon}
-                                onStartDraw={startDrawingPolygon}
-                                onSelect={selectPolygon}
-                                onDelete={deletePolygon}/>
+                            {activeRightTab === 'directions' && (
+                                <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
+                                              hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}/>
+                            )}
+                            {activeRightTab === 'overlays' && (
+                                <OverlayPanel
+                                    logos={logos}
+                                    coverups={coverups}
+                                    selectedId={selectedOverlay}
+                                    activeSceneId={activeScene?.id}
+                                    hasActiveScene={!!activeScene}
+                                    onSelect={openOverlayEditor}
+                                    onAddLogo={addLogo}
+                                    onAddCoverup={addCoverup}
+                                    onDeleteLogo={deleteLogo}
+                                    onDeleteCoverup={deleteCoverup}
+                                    dirty={dirtyLogos || dirtyCoverups}
+                                    saving={savingOverlays}
+                                    saved={savedTick}
+                                    onSave={saveOverlays}/>
+                            )}
+                            {activeRightTab === 'zones' && (
+                                <PolygonPanel
+                                    polygons={visiblePolygons}
+                                    selectedId={polygonPopup?.polygon?.id ?? null}
+                                    activeSceneId={activeScene?.id}
+                                    drawing={!!drawingPolygon}
+                                    onStartDraw={startDrawingPolygon}
+                                    onSelect={selectPolygon}
+                                    onDelete={deletePolygon}/>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1595,16 +1832,26 @@ export default function ProjectClient({ projectId }) {
                                saving={flags.savingSettings}/>
             )}
             {confirmDelete && (
-                <DeleteModal projectName={project?.name} onConfirm={deleteProject}
-                             onClose={() => setConfirmDelete(false)} deleting={flags.deleting}/>
+                <ConfirmDeleteModal
+                    title="Delete project?"
+                    description={`This will permanently delete "${project?.name}" and all its scenes and hotspots.`}
+                    confirmLabel="Delete project"
+                    onConfirm={deleteProject}
+                    onClose={() => setConfirmDelete(false)}
+                    deleting={flags.deleting}/>
             )}
-            {hotspotToDelete && (
-                <HotspotDeleteModal hotspot={hotspotToDelete}
-                                    targetName={scenes.find(s => s.id === hotspotToDelete.target_scene_id)?.name}
-                                    onConfirm={confirmDeleteHotspot}
-                                    onClose={() => setHotspotToDelete(null)}
-                                    deleting={deletingHotspot}/>
-            )}
+            {hotspotToDelete && (() => {
+                const targetName = scenes.find(s => s.id === hotspotToDelete.target_scene_id)?.name
+                return (
+                    <ConfirmDeleteModal
+                        title="Delete this hotspot?"
+                        description={`${hotspotToDelete.label ? `"${hotspotToDelete.label}"` : 'This arrow'}${targetName ? ` (goes to ${targetName})` : ''} will be removed from this scene.`}
+                        confirmLabel="Delete"
+                        onConfirm={confirmDeleteHotspot}
+                        onClose={() => setHotspotToDelete(null)}
+                        deleting={deletingHotspot}/>
+                )
+            })()}
             {previewHtml && (
                 <TourPreviewModal html={previewHtml} projectName={project?.name}
                                   onClose={() => { previewOpenRef.current = false; setPreviewHtml(null) }}/>

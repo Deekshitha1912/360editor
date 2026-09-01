@@ -47,7 +47,7 @@ export async function POST(req, { params }) {
                 .order('created_at'),
             supabase
                 .from('hotspots')
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation')
                 .eq('project_id', id),
             // Not destructured with the others: a database that hasn't had
             // db/001_create_polygons.sql applied yet must still be able to

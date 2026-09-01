@@ -14,7 +14,7 @@ import { useRef, useState } from 'react'
 
 const MAX_BYTES = 50 * 1024 * 1024   // mirror the server cap for fast feedback
 
-export default function ScenePanel({ projectId, scenes, onScenesChange }) {
+export default function ScenePanel({ projectId, scenes, onScenesChange, onSelectScene, activeSceneId }) {
     const fileInputRef = useRef(null)
     const [uploading, setUploading] = useState(false)
     const [pendingName, setPendingName] = useState('')
@@ -98,17 +98,17 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
     }
 
     return (
-        <aside className="flex flex-col h-full bg-white border-r border-[#E2E2DA] select-none">
+        <aside className="flex flex-col h-full bg-editor-panel border-r border-editor-border select-none">
             {/* Header */}
-            <div className="px-4 py-3 border-b border-[#E2E2DA]">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-[#6b6b60]">Scenes</p>
+            <div className="px-3 py-3 border-b border-editor-border">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-editor-ink-muted">Scenes</p>
             </div>
 
             {/* Upload trigger */}
-            <div className="px-3 py-3 border-b border-[#E2E2DA]">
+            <div className="px-3 py-3 border-b border-editor-border">
                 <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="w-full h-9 rounded-lg border border-dashed border-[#3730a3]/40 text-[12px] font-semibold text-[#3730a3] hover:bg-[#3730a3]/5 transition-colors flex items-center justify-center gap-1.5"
+                    className="w-full h-9 rounded-lg border border-dashed border-editor-primary/40 text-[12px] font-semibold text-editor-primary hover:bg-editor-primary/5 transition-colors flex items-center justify-center gap-1.5"
                 >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
                     Import Image
@@ -118,7 +118,7 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
 
             {/* Name + confirm upload */}
             {pendingFile && (
-                <div className="px-3 py-3 border-b border-[#E2E2DA] space-y-2">
+                <div className="px-3 py-3 border-b border-editor-border space-y-2">
                     {pendingPreview && (
                         <img src={pendingPreview} alt="" className="w-full h-[80px] object-cover rounded-lg" />
                     )}
@@ -126,18 +126,18 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
                         value={pendingName}
                         onChange={e => setPendingName(e.target.value)}
                         placeholder="Scene name"
-                        className="w-full h-8 bg-[#FAFAF7] border border-[#E2E2DA] rounded-lg px-2.5 text-[12px] text-[#1a1a18] focus:outline-none focus:border-[#3730a3] placeholder:text-[#6b6b60]"
+                        className="w-full h-8 bg-editor-surface border border-editor-border rounded-lg px-2.5 text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted"
                     />
                     {error && <p className="text-red-500 text-[11px]">{error}</p>}
                     <div className="flex gap-1.5">
                         <button
                             onClick={() => { setPendingFile(null); setPendingName(''); setPendingPreview(null); setError('') }}
-                            className="flex-1 h-7 text-[11px] rounded-md border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] transition-colors"
+                            className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors"
                         >Cancel</button>
                         <button
                             onClick={uploadScene}
                             disabled={uploading || !pendingName.trim()}
-                            className="flex-1 h-7 text-[11px] rounded-md bg-[#3730a3] text-white font-semibold hover:bg-[#312e81] disabled:opacity-40 transition-colors"
+                            className="flex-1 h-7 text-[11px] rounded-lg bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover disabled:opacity-40 transition-colors"
                         >{uploading ? 'Uploading…' : 'Save'}</button>
                     </div>
                 </div>
@@ -146,7 +146,7 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
             {/* Scene list */}
             <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1.5">
                 {scenes.length === 0 && (
-                    <p className="text-[11px] text-[#6b6b60] text-center mt-6 px-3">No scenes yet. Import a 360° image to begin.</p>
+                    <p className="text-[11px] text-editor-ink-muted text-center mt-6 px-3">No scenes yet. Import a 360° image to begin.</p>
                 )}
                 {!pendingFile && error && (
                     <p className="text-red-500 text-[11px] text-center px-3">{error}</p>
@@ -156,7 +156,11 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
                         key={scene.id}
                         draggable
                         onDragStart={e => e.dataTransfer.setData('scene', JSON.stringify(scene))}
-                        className="group relative rounded-lg overflow-hidden border border-[#E2E2DA] hover:border-[#3730a3]/40 hover:shadow-[0_2px_10px_rgba(55,48,163,0.08)] cursor-grab active:cursor-grabbing transition-all"
+                        onDoubleClick={() => onSelectScene?.(scene)}
+                        title="Drag onto the viewer, or double-click to open"
+                        className={`group relative rounded-lg overflow-hidden border hover:shadow-[0_2px_10px_rgba(55,48,163,0.08)] cursor-grab active:cursor-grabbing transition-all ${
+                            scene.id === activeSceneId ? 'border-editor-primary ring-2 ring-editor-primary/30' : 'border-editor-border hover:border-editor-primary/40'
+                        }`}
                     >
                         <img src={scene.url} alt={scene.name} className="w-full h-[68px] object-cover" />
                         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
@@ -164,7 +168,7 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
                         </div>
                         <button
                             onClick={e => { e.stopPropagation(); setConfirmDelete(scene) }}
-                            className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 w-5 h-5 bg-white/80 rounded flex items-center justify-center text-[#6b6b60] hover:text-red-500 hover:bg-red-50 transition-all"
+                            className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 w-5 h-5 bg-white/80 rounded flex items-center justify-center text-editor-ink-muted hover:text-red-500 hover:bg-red-50 transition-all"
                         >
                             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M18 6L6 18M6 6l12 12"/></svg>
                         </button>
@@ -175,11 +179,11 @@ export default function ScenePanel({ projectId, scenes, onScenesChange }) {
             {/* Delete confirmation modal */}
             {confirmDelete && (
                 <div className="absolute inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <div className="bg-white border border-[#E2E2DA] rounded-xl p-5 w-full max-w-[220px] shadow-xl">
-                        <p className="text-[13px] font-semibold text-[#1a1a18] mb-1">Delete scene?</p>
-                        <p className="text-[11px] text-[#6b6b60] mb-4">"{confirmDelete.name}" will be permanently removed.</p>
+                    <div className="bg-white border border-editor-border rounded-xl p-5 w-full max-w-[220px] shadow-xl">
+                        <p className="text-[13px] font-semibold text-editor-ink mb-1">Delete scene?</p>
+                        <p className="text-[11px] text-editor-ink-muted mb-4">"{confirmDelete.name}" will be permanently removed.</p>
                         <div className="flex gap-2">
-                            <button onClick={() => setConfirmDelete(null)} className="flex-1 h-8 text-[12px] rounded-lg border border-[#E2E2DA] text-[#6b6b60] hover:bg-[#F4F4EF] transition-colors">Cancel</button>
+                            <button onClick={() => setConfirmDelete(null)} className="flex-1 h-8 text-[12px] rounded-lg border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors">Cancel</button>
                             <button onClick={() => deleteScene(confirmDelete)} className="flex-1 h-8 text-[12px] rounded-lg bg-red-500 text-white font-semibold hover:bg-red-600 transition-colors">Delete</button>
                         </div>
                     </div>
