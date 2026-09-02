@@ -29,6 +29,25 @@ import { Spinner, CameraControls, SettingsModal, ConfirmDeleteModal, ErrorBanner
 const RAD = Math.PI / 180
 const DEG = 180 / Math.PI
 
+// While drawing a zone, a click within this many screen px of an existing
+// vertex (another saved zone's, or the shape currently being drawn) snaps
+// onto that exact point instead of a new nearby one — lets adjacent zones
+// share a real, identical edge instead of two visually-close-but-different
+// ones from re-clicking by eye each time.
+const SNAP_PX = 16
+function findSnapPoint(viewer, candidates, screenX, screenY) {
+    let best = null, bestDist = SNAP_PX
+    for (const [yaw, pitch] of candidates) {
+        try {
+            const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD })
+            if (!pt) continue
+            const d = Math.hypot(pt.x - screenX, pt.y - screenY)
+            if (d < bestDist) { bestDist = d; best = [yaw, pitch] }
+        } catch {}
+    }
+    return best
+}
+
 // Fallback opening horizontal FOV when a scene has no saved initial_hfov —
 // there's no UI yet to set/save a custom one per scene (the column and
 // PATCH /api/scenes/[id] support it, nothing calls it), so every scene opens
@@ -205,6 +224,7 @@ export default function ProjectClient({ projectId }) {
     const onCoverupClickRef = useRef(null)
     const onPolygonClickRef = useRef(null)
     const lastVertexRef     = useRef(null)   // { yaw, pitch, t } — guards against a click double-firing
+    const drawCursorRef     = useRef(null)   // { x, y } client coords, for the live rubber-band preview line
     const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging a logo
     const overlayGestureRef = useRef(null)   // { mode:'resize'|'rotate', id, cxPage, cyPage, startSize, startDist } while resizing/rotating a cover-up
     const pinGestureRef     = useRef(null)   // { mode:'resize'|'rotate', cxPage, cyPage, startSize, startDist } while resizing/rotating the hotspot placement pin
@@ -353,6 +373,21 @@ export default function ProjectClient({ projectId }) {
         return () => window.removeEventListener('beforeunload', warn)
     }, [dirtyLogos, dirtyCoverups])
 
+    // Ctrl+Z (or Cmd+Z) while drawing a zone undoes the last placed point.
+    // Reads drawingPolygonRef so this only needs to mount once; preventDefault
+    // only fires while actively drawing, so undo anywhere else on the page
+    // (an input field, etc.) is untouched.
+    useEffect(() => {
+        function onKeyDown(e) {
+            if (!drawingPolygonRef.current || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return
+            if (!drawingPolygonRef.current.points.length) return
+            e.preventDefault()
+            setDrawingPolygon(prev => prev ? { points: prev.points.slice(0, -1) } : prev)
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+    }, [])
+
     // ── Load natural aspect ratio for each cover-up ─────────────────────────
     // PSV image markers need an explicit {width,height} (unlike a plain <img>,
     // which can leave height:auto) — so the natural ratio has to be known up
@@ -474,15 +509,17 @@ export default function ProjectClient({ projectId }) {
         // Click-to-place-vertex while drawing a zone. A raw viewer click (not
         // a marker select), fired regardless of what's under the cursor.
         //
-        // The shape auto-closes on its own (the last point connects straight
-        // back to the first) — clicking the starting corner again is NOT
-        // needed to close it, and doing so used to add a near-duplicate
-        // vertex sitting almost on top of point 1, which barely shows in the
-        // OPEN preview line but throws off which region the CLOSED filled
-        // polygon fills once it auto-closes, producing a collapsed/twisted
-        // shape. So: a click landing back near the first point FINISHES the
-        // shape (using the points already placed) instead of adding one —
-        // matching how most polygon tools treat "click back at the start".
+        // Every click adds exactly one point — finishing a shape is always
+        // the explicit Finish button now, never automatic. (It used to
+        // auto-close on a click back near the first point, but that made a
+        // click meant to SNAP onto a nearby point ambiguous with "close the
+        // shape" — snapping below replaces what that shortcut was for:
+        // precision, not automation.)
+        //
+        // A click within SNAP_PX of an existing vertex — another saved
+        // zone's, or one already placed in this shape — locks onto that
+        // exact point instead of the raw click position, so adjacent zones
+        // can share a real, identical edge.
         //
         // Also guarded against firing twice for what the user experiences as
         // one click (a tight time+distance check on the immediately-previous
@@ -496,8 +533,15 @@ export default function ProjectClient({ projectId }) {
             // validated this whole drawing flow — that comparison is what
             // proved the real bug was server-side (normalizePoints clamping
             // yaw instead of wrapping it, see lib/polygons.js), not here.
-            const yaw   = data.yaw   * DEG
-            const pitch = data.pitch * DEG
+            let yaw   = data.yaw   * DEG
+            let pitch = data.pitch * DEG
+
+            const candidates = [
+                ...polygonsRef.current.filter(p => p.scene_id === activeScene.id).flatMap(p => p.points),
+                ...drawingPolygonRef.current.points,
+            ]
+            const snapped = findSnapPoint(viewer, candidates, data.viewerX, data.viewerY)
+            if (snapped) { [yaw, pitch] = snapped }
 
             const last = lastVertexRef.current
             const now  = Date.now()
@@ -505,30 +549,27 @@ export default function ProjectClient({ projectId }) {
                 return
             }
 
-            const pts = drawingPolygonRef.current.points
-            if (pts.length >= 3) {
-                try {
-                    const first = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: pts[0][0] * RAD, pitch: pts[0][1] * RAD })
-                    if (first) {
-                        const dx = data.viewerX - first.x, dy = data.viewerY - first.y
-                        if (Math.sqrt(dx * dx + dy * dy) < 24) {
-                            lastVertexRef.current = { yaw, pitch, t: now }
-                            setPolygonPopup({ mode: 'new', points: pts, status: 'available', label: '', detail: {} })
-                            setDrawingPolygon(null)
-                            return
-                        }
-                    }
-                } catch {}
-            }
-
             lastVertexRef.current = { yaw, pitch, t: now }
             setDrawingPolygon(prev => prev ? { points: [...prev.points, [yaw, pitch]] } : prev)
         })
+
+        // Tracked purely for the live rubber-band preview line drawn each
+        // frame in mainLoop — cheap to update on every move, unlike the
+        // declarative marker list which would mean a full arrows/cover-ups/
+        // zones rebuild dozens of times a second if driven from here instead.
+        // viewerRef.current is the persistent React-owned container (reused
+        // across scene switches, unlike the Viewer instance itself) — the
+        // listener has to be explicitly removed below or every scene switch
+        // would stack another one on top of it.
+        const drawContainer = viewerRef.current
+        const onDrawMouseMove = e => { drawCursorRef.current = { x: e.clientX, y: e.clientY } }
+        drawContainer.addEventListener('mousemove', onDrawMouseMove)
 
         psvRef.current           = viewer
         markersPluginRef.current = mp
 
         return () => {
+            drawContainer.removeEventListener('mousemove', onDrawMouseMove)
             viewer.destroy()
             psvRef.current           = null
             markersPluginRef.current = null
@@ -601,18 +642,13 @@ export default function ProjectClient({ projectId }) {
             }
         })
 
-        // Live preview while placing vertices — a growing dashed line, same
-        // pattern already validated in the polygon spike.
-        const previewMarkers = (drawingPolygon && drawingPolygon.points.length >= 2)
-            ? [{
-                id: 'poly_preview',
-                type: 'polyline',
-                polyline: drawingPolygon.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
-                svgStyle: { stroke: 'var(--editor-lime-400)', strokeWidth: '2', strokeDasharray: '6,4', fill: 'none' },
-            }]
-            : []
-
-        const next = [...coverupMarkers, ...polygonMarkers, ...previewMarkers, ...arrowMarkers]
+        // The live drawing-preview line is NOT built here — it needs to
+        // follow the cursor every frame (a rubber band from the last placed
+        // point), which would mean rebuilding this entire arrows/cover-ups/
+        // zones list on every mousemove if driven from this effect. It's
+        // managed imperatively in mainLoop instead, the same way the
+        // placement pin and selected cover-up already are.
+        const next = [...coverupMarkers, ...polygonMarkers, ...arrowMarkers]
         try {
             mp.setMarkers(next)
         } catch {
@@ -620,7 +656,7 @@ export default function ProjectClient({ projectId }) {
             mp.clearMarkers()
             for (const m of next) { try { mp.addMarker(m) } catch {} }
         }
-    }, [hotspots, visibleCoverups, visiblePolygons, drawingPolygon, activeScene, hotspotSize, editingId, selectedOverlay, coverupAspect])
+    }, [hotspots, visibleCoverups, visiblePolygons, activeScene, hotspotSize, editingId, selectedOverlay, coverupAspect])
 
     // ── rAF — keeps the placement pin + selected cover-up projected on screen
     const mainLoop = useCallback(() => {
@@ -670,6 +706,55 @@ export default function ProjectClient({ projectId }) {
             } catch { setPolygonPopupScreen(null) }
         } else {
             setPolygonPopupScreen(null)
+        }
+
+        // Live rubber-band preview line while drawing a zone — a dashed line
+        // from every placed point through to the current cursor position,
+        // updated every frame so it visibly tracks the mouse between clicks
+        // (not just between already-placed points). Managed imperatively
+        // here rather than in the declarative marker-sync effect, which
+        // would mean rebuilding the whole arrows/cover-ups/zones list on
+        // every mousemove. updateMarker is tried first (cheap patch on an
+        // existing marker); addMarker is the fallback for the first frame
+        // after a point is placed, when the marker doesn't exist yet — self-
+        // healing, so it doesn't matter if the marker-sync effect happens to
+        // run in between and hand PSV a marker list that doesn't include it.
+        //
+        // The line's end point snaps the same way a click would (same
+        // findSnapPoint, same candidates, same SNAP_PX) — hovering near an
+        // existing vertex pulls the line onto it before you click, and
+        // moving away past SNAP_PX releases it back to the raw cursor. This
+        // has to stay in exact agreement with the click handler's own snap
+        // check, or the preview would show one thing and clicking would do
+        // another.
+        const mp = markersPluginRef.current
+        const dp = drawingPolygonRef.current
+        if (viewer && mp && dp && dp.points.length >= 1 && drawCursorRef.current) {
+            try {
+                const el     = viewerRef.current
+                const rect   = el.getBoundingClientRect()
+                const screenX = drawCursorRef.current.x - rect.left
+                const screenY = drawCursorRef.current.y - rect.top
+                const sph    = viewer.dataHelper.viewerCoordsToSphericalCoords({ x: screenX, y: screenY })
+                if (sph) {
+                    const sceneId = viewerSceneIdRef.current
+                    const candidates = [
+                        ...polygonsRef.current.filter(p => p.scene_id === sceneId).flatMap(p => p.points),
+                        ...dp.points,
+                    ]
+                    const snapped = findSnapPoint(viewer, candidates, screenX, screenY)
+                    const cursorPoint = snapped || [sph.yaw * DEG, sph.pitch * DEG]
+                    const markerCfg = {
+                        id: 'poly_preview',
+                        type: 'polyline',
+                        polyline: [...dp.points, cursorPoint].map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
+                        svgStyle: { stroke: 'var(--editor-lime-400)', strokeWidth: '3', strokeDasharray: '4,2', fill: 'none' },
+                    }
+                    try { mp.updateMarker(markerCfg) } catch { try { mp.addMarker(markerCfg) } catch {} }
+                }
+            } catch {}
+        } else if (mp && !dp) {
+            try { mp.removeMarker('poly_preview') } catch {}
         }
 
         rafRef.current = requestAnimationFrame(mainLoop)
@@ -1708,6 +1793,7 @@ export default function ProjectClient({ projectId }) {
                                         state={popupState}
                                         scenes={scenes}
                                         activeSceneId={activeScene?.id}
+                                        halfSize={isEditing ? (popupState.size ?? hotspotSize) / 2 : 0}
                                         onUpdate={setPopupState}
                                         onSave={handleSave}
                                         onCancel={() => setPopupState(null)}
@@ -1755,7 +1841,7 @@ export default function ProjectClient({ projectId }) {
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 bg-black/70 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
                                         <span>
                                             {drawingPolygon.points.length} point{drawingPolygon.points.length === 1 ? '' : 's'}
-                                            {' · '}{drawingPolygon.points.length < 3 ? 'need 3+ to finish' : 'click Finish, or click back on your first point'}
+                                            {' · '}{drawingPolygon.points.length < 3 ? 'need 3+ to finish' : 'Finish when done · Ctrl+Z to undo a point'}
                                         </span>
                                         <button onClick={finishDrawingPolygon} disabled={drawingPolygon.points.length < 3}
                                                 className="h-6 px-2.5 rounded-full bg-editor-primary text-white font-semibold disabled:opacity-40 transition-colors">

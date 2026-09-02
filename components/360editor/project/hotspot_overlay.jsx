@@ -26,14 +26,25 @@ function Spinner({ size = 10 }) {
 // (middle.jsx), not by fields in here — this form only holds what can't be
 // set by dragging: the label and which scene it links to.
 
-export function HotspotPopup({ pos, viewerSize, state, scenes, activeSceneId, onUpdate, onSave, onCancel, saving }) {
+export function HotspotPopup({ pos, viewerSize, state, scenes, activeSceneId, halfSize = 0, onUpdate, onSave, onCancel, saving }) {
     if (!pos) return null
 
     const POPUP_W = 224
-    const POPUP_H = state.mode === 'saved' ? 120 : 150
+    // Used only to keep the card inside the viewer (see the vertical clamp
+    // below) — has to be >= the card's real rendered height or the clamp
+    // lets the bottom (Cancel/Save) sit past the edge of the window. Form
+    // mode: header (~36) + padding (24) + Label row (~46) + Links-to row
+    // (~46) + gaps (20) + buttons (28) = ~200, +buffer. Saved mode: header
+    // (36) + padding (24) + 3 text lines (~49) + gap (8) + Close button
+    // (28) = ~145, +buffer.
+    const POPUP_H = state.mode === 'saved' ? 160 : 220
 
-    // Prefer right of pin; fall back to left if near the edge
-    const GAP     = 32
+    // Prefer right of pin; fall back to left if near the edge. GAP is
+    // measured from the edge of the bounding box, not the pin's center —
+    // halfSize, plus 8px so the corner/rotate handles (which sit right on
+    // that edge) clear too — otherwise the card overlaps the box on
+    // anything but a tiny hotspot.
+    const GAP     = 32 + halfSize + 8
     const goLeft  = pos.x + GAP + POPUP_W > viewerSize.w - 8
     const offsetX = goLeft ? -(GAP + POPUP_W) : GAP
 
