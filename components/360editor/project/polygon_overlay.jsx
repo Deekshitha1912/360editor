@@ -109,6 +109,11 @@ export function PolygonPopup({ pos, viewerSize, state, onUpdate, onSave, onEdit,
 
                 {isForm && (
                     <div className="px-3 py-3 space-y-2.5 max-h-[360px] overflow-y-auto">
+                        {state.mode === 'edit' && (
+                            <p className="text-[10.5px] text-editor-ink-muted leading-snug -mt-1">
+                                Drag any corner on the canvas to reshape the zone, then Finish.
+                            </p>
+                        )}
                         <div className="space-y-1">
                             <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Label</label>
                             <input autoFocus value={state.label}
@@ -141,7 +146,7 @@ export function PolygonPopup({ pos, viewerSize, state, onUpdate, onSave, onEdit,
                             </button>
                             <button onClick={onSave} disabled={saving || !state.label.trim()}
                                     className="flex-1 h-7 text-[11px] rounded-lg bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover disabled:opacity-40 transition-colors flex items-center justify-center gap-1">
-                                {saving ? <><Spinner/>Saving…</> : 'Save'}
+                                {saving ? <><Spinner/>Saving…</> : (state.mode === 'edit' ? 'Finish' : 'Save')}
                             </button>
                         </div>
                     </div>

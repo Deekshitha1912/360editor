@@ -228,12 +228,31 @@ export default function ProjectClient({ projectId }) {
     const logoDragRef       = useRef(null)   // { offX, offY } in px while dragging a logo
     const overlayGestureRef = useRef(null)   // { mode:'resize'|'rotate', id, cxPage, cyPage, startSize, startDist } while resizing/rotating a cover-up
     const pinGestureRef     = useRef(null)   // { mode:'resize'|'rotate', cxPage, cyPage, startSize, startDist } while resizing/rotating the hotspot placement pin
+    const vertexDragRef     = useRef(null)   // index of the polygon corner being dragged, while editing a zone's shape
+    const polygonVertexScreensRef = useRef([]) // mirrors polygonVertexScreens, read inside the rAF loop to skip redundant setState calls
     const [logoAspect, setLogoAspect] = useState({}) // logo id -> naturalHeight/naturalWidth
     const [coverupAspect, setCoverupAspect] = useState({}) // coverup id -> naturalHeight/naturalWidth
     const coverupsRef       = useRef([])     // full coverups list, read inside the rAF loop by id
     const selectedOverlayRef = useRef(null)  // mirrors selectedOverlay, read inside the rAF loop
     const polygonsRef        = useRef([])    // full polygons list, read inside the marker click/hover handlers
     const drawingPolygonRef  = useRef(null)  // mirrors drawingPolygon, read inside the PSV click handler
+    // Every distinct point placed since "Start Drawing", across every split
+    // so far in this session — NOT reset when a loop closes and gets carved
+    // off. drawingPolygon.points only ever holds the CURRENTLY OPEN shape
+    // (so the live preview line and the loop just extracted don't drag in
+    // stale geometry from earlier shapes); this is the separate, ever-
+    // growing history that lets a later shape in the same stroke close by
+    // revisiting a point from an EARLIER, already-finished shape (e.g.
+    // triangle 1-2-3 closes and is saved, then drawing 1-4-2 needs to
+    // recognize "2" as a real point to close back onto even though it's no
+    // longer part of the open shape).
+    const sessionPointsRef   = useRef([])
+    // Next default "Zone N" number for this drawing session — set from the
+    // scene's existing zone count when drawing starts, then incremented
+    // synchronously (not after a save resolves) so two zones auto-split in
+    // quick succession, before either save's response comes back, can't
+    // both land on the same number.
+    const zoneNumberRef      = useRef(1)
     const polygonPopupRef    = useRef(null)  // mirrors polygonPopup, read inside the rAF loop
     const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
 
@@ -296,6 +315,8 @@ export default function ProjectClient({ projectId }) {
     const [drawingPolygon, setDrawingPolygon]   = useState(null)
     const [polygonPopup, setPolygonPopup]       = useState(null)
     const [polygonPopupScreen, setPolygonPopupScreen] = useState(null)
+    const [polygonVertexScreens, setPolygonVertexScreens] = useState([]) // [{x,y}, ...] — this frame's screen position of each corner handle while editing a zone's shape
+    const [isDraggingVertex, setIsDraggingVertex]     = useState(false)
     const [savingPolygon, setSavingPolygon]     = useState(false)
     const [deletingPolygon, setDeletingPolygon] = useState(false)
     const [polygonError, setPolygonError]       = useState('')
@@ -310,6 +331,7 @@ export default function ProjectClient({ projectId }) {
     polygonsRef.current       = polygons
     drawingPolygonRef.current = drawingPolygon
     polygonPopupRef.current   = polygonPopup
+    polygonVertexScreensRef.current = polygonVertexScreens
 
     // What the ACTIVE scene displays: every-scene overlays + those scoped here.
     const visibleLogos    = overlaysForScene(logos,    activeScene?.id)
@@ -319,6 +341,11 @@ export default function ProjectClient({ projectId }) {
 
     // Id of the hotspot currently being edited (stable primitive for effect deps)
     const editingId = popupState?.mode === 'edit-existing' ? popupState.hotspot?.id : null
+    // Id of the zone currently having its corners dragged — its saved marker
+    // is hidden while this is set; the live shape is drawn separately from
+    // polygonPopup.points instead (see the JSX corner-handle overlay), which
+    // is why "points are immutable" no longer holds for the open one.
+    const editingPolygonId = polygonPopup?.mode === 'edit' ? polygonPopup.polygon?.id : null
 
     // ── Fetch ──────────────────────────────────────────────────────────────
     useEffect(() => {
@@ -380,8 +407,19 @@ export default function ProjectClient({ projectId }) {
     useEffect(() => {
         function onKeyDown(e) {
             if (!drawingPolygonRef.current || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return
-            if (!drawingPolygonRef.current.points.length) return
+            const pts = drawingPolygonRef.current.points
+            if (!pts.length) return
             e.preventDefault()
+            // Only pop it from the session history too if it was actually
+            // the most recent point added there — a point that's the start
+            // of the open shape because it's a just-closed loop's shared
+            // vertex (not a fresh click) must stay in history so it's still
+            // revisit-able for whatever gets drawn next.
+            const removed = pts[pts.length - 1]
+            const hist = sessionPointsRef.current
+            if (hist.length && hist[hist.length - 1] === removed) {
+                sessionPointsRef.current = hist.slice(0, -1)
+            }
             setDrawingPolygon(prev => prev ? { points: prev.points.slice(0, -1) } : prev)
         }
         window.addEventListener('keydown', onKeyDown)
@@ -472,7 +510,17 @@ export default function ProjectClient({ projectId }) {
             minFov: 30,
             maxFov: 130,
             navbar: false,
-            plugins: [[MarkersPlugin, {}]],
+            // clickEventOnMarker: by default PSV swallows a click that lands
+            // on top of a marker (arrow, cover-up, or a zone's own fill) —
+            // it fires select-marker and calls stopImmediatePropagation, so
+            // the plain viewer 'click' below never sees it. That's exactly
+            // where a vertex often needs to land while drawing (an adjacent
+            // zone is a big filled region, easy to click inside by
+            // accident), so points would silently fail to place. This makes
+            // marker clicks ALSO reach the normal click handler; outside
+            // drawing mode it's a no-op (the handler bails out immediately
+            // when nothing is being drawn).
+            plugins: [[MarkersPlugin, { clickEventOnMarker: true }]],
         })
 
         // PSV's zoom axis (0-100) isn't the same as Pannellum's hfov degrees —
@@ -509,17 +557,25 @@ export default function ProjectClient({ projectId }) {
         // Click-to-place-vertex while drawing a zone. A raw viewer click (not
         // a marker select), fired regardless of what's under the cursor.
         //
-        // Every click adds exactly one point — finishing a shape is always
-        // the explicit Finish button now, never automatic. (It used to
-        // auto-close on a click back near the first point, but that made a
-        // click meant to SNAP onto a nearby point ambiguous with "close the
-        // shape" — snapping below replaces what that shortcut was for:
-        // precision, not automation.)
-        //
         // A click within SNAP_PX of an existing vertex — another saved
-        // zone's, or one already placed in this shape — locks onto that
-        // exact point instead of the raw click position, so adjacent zones
-        // can share a real, identical edge.
+        // zone's, or one already placed in the shape being traced — locks
+        // onto that exact point instead of the raw click position, so
+        // adjacent zones can share a real, identical edge.
+        //
+        // A click that snaps onto one of THIS shape's own already-placed
+        // points (as opposed to a fresh spot, or a point borrowed from
+        // another saved zone) means the stroke has looped back on itself —
+        // like closing a boundary with a paint-bucket tool, that loop is a
+        // complete, fillable region on its own. It's committed as its own
+        // zone immediately (no popup — a fill tool doesn't ask you to name
+        // the region before filling it; rename it after from the panel) and
+        // the rest of the stroke keeps going from that shared point, so
+        // tracing a second shape straight into the first without lifting the
+        // pen (e.g. a roof triangle flowing into the body below it) produces
+        // two zones sharing an edge, not one fused shape. An earlier attempt
+        // only checked the shape's very first point for this, which missed
+        // exactly this case — a shape can close on ANY of its own points,
+        // not just point 1, and it can happen more than once per stroke.
         //
         // Also guarded against firing twice for what the user experiences as
         // one click (a tight time+distance check on the immediately-previous
@@ -536,21 +592,79 @@ export default function ProjectClient({ projectId }) {
             let yaw   = data.yaw   * DEG
             let pitch = data.pitch * DEG
 
-            const candidates = [
-                ...polygonsRef.current.filter(p => p.scene_id === activeScene.id).flatMap(p => p.points),
-                ...drawingPolygonRef.current.points,
-            ]
-            const snapped = findSnapPoint(viewer, candidates, data.viewerX, data.viewerY)
+            const currentPts = drawingPolygonRef.current.points
+
+            // A click landing back on the point you JUST placed — however
+            // many times, however far apart in time, as long as the cursor
+            // never actually moved off it — is always a no-op: not a new
+            // point, and not a close either. This has to be checked purely
+            // by position (not the old 250ms window), because repeated
+            // clicks at a frozen cursor position can be spaced well over
+            // 250ms apart and each one that slipped through was ADDING a
+            // fresh near-duplicate point at that spot; a couple of those
+            // piling up was enough to pass the 3-point minimum and trigger
+            // an unwanted close on the click after.
+            const lastPt = currentPts[currentPts.length - 1]
+            if (lastPt) {
+                try {
+                    const p = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: lastPt[0] * RAD, pitch: lastPt[1] * RAD })
+                    if (p && Math.hypot(p.x - data.viewerX, p.y - data.viewerY) < SNAP_PX) return
+                } catch {}
+            }
+
+            // Self-revisit is checked against EVERY point placed this whole
+            // drawing session (sessionPointsRef), not just the currently
+            // open shape — closing a later shape can revisit a point from an
+            // earlier shape that's already been carved off and saved (e.g.
+            // triangle 1-2-3 closes and saves, then drawing 1-4-2 needs "2"
+            // to still count as a real point to close onto, even though it's
+            // no longer in the open shape). This search is kept separate
+            // from (and prioritized over) snapping to another SAVED zone's
+            // corner — folding them into one merged list would let ties
+            // resolve to the wrong copy of an identical coordinate.
+            const selfSnapped = findSnapPoint(viewer, sessionPointsRef.current, data.viewerX, data.viewerY)
+
+            let snapped = selfSnapped
+            if (!snapped) {
+                const otherPoints = polygonsRef.current.filter(p => p.scene_id === activeScene.id).flatMap(p => p.points)
+                snapped = findSnapPoint(viewer, otherPoints, data.viewerX, data.viewerY)
+            }
             if (snapped) { [yaw, pitch] = snapped }
 
+            // Belt and suspenders against React Strict Mode's double-invoked
+            // effects in dev possibly overlapping two Viewer instances for a
+            // moment, each registering its own listener against the same
+            // shared setDrawingPolygon — the position check above can't
+            // catch that case because both duplicate listeners fire before
+            // either has updated currentPts.
             const last = lastVertexRef.current
             const now  = Date.now()
             if (last && now - last.t < 250 && Math.abs(yaw - last.yaw) < 0.05 && Math.abs(pitch - last.pitch) < 0.05) {
                 return
             }
 
+            if (selfSnapped) {
+                // Revisiting a point still inside the open shape closes it
+                // as-is (drop anything before that point — same as before).
+                // Revisiting a point from an EARLIER, already-saved shape
+                // isn't in currentPts at all, so it's the missing closing
+                // vertex — append it to complete the loop.
+                const idxInOpen = currentPts.indexOf(selfSnapped)
+                const loop = idxInOpen !== -1 ? currentPts.slice(idxInOpen) : [...currentPts, selfSnapped]
+                if (loop.length >= 3) {
+                    saveAutoPolygon(loop)
+                    setDrawingPolygon({ points: [selfSnapped] })
+                    lastVertexRef.current = null
+                    return
+                }
+                // Too few points to form a closed shape yet — fall through
+                // and place it as an ordinary (snapped-coordinate) point.
+            }
+
+            const newPt = [yaw, pitch]
             lastVertexRef.current = { yaw, pitch, t: now }
-            setDrawingPolygon(prev => prev ? { points: [...prev.points, [yaw, pitch]] } : prev)
+            sessionPointsRef.current = [...sessionPointsRef.current, newPt]
+            setDrawingPolygon(prev => prev ? { points: [...prev.points, newPt] } : prev)
         })
 
         // Tracked purely for the live rubber-band preview line drawn each
@@ -628,19 +742,23 @@ export default function ProjectClient({ projectId }) {
                 }
             })
 
-        // Zones. Points are immutable once drawn, so — unlike hotspots/cover-ups
-        // — the one open in the popup never needs excluding here; only its
-        // fill color changes, via the hover handlers registered at init.
-        const polygonMarkers = visiblePolygons.map(p => {
-            const c = colorForStatus(p.status)
-            return {
-                id: `poly_${p.id}`,
-                type: 'polygon',
-                polygon: p.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
-                svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' },
-                data: { polygonId: p.id },
-            }
-        })
+        // Zones. The one currently being corner-dragged (editingPolygonId) is
+        // excluded here — its live shape is drawn separately, from
+        // polygonPopup.points, in the JSX corner-handle overlay, so this
+        // marker (still holding the pre-edit points) would otherwise sit
+        // behind/beside it looking like a second, stale copy of the zone.
+        const polygonMarkers = visiblePolygons
+            .filter(p => p.id !== editingPolygonId)
+            .map(p => {
+                const c = colorForStatus(p.status)
+                return {
+                    id: `poly_${p.id}`,
+                    type: 'polygon',
+                    polygon: p.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
+                    svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' },
+                    data: { polygonId: p.id },
+                }
+            })
 
         // The live drawing-preview line is NOT built here — it needs to
         // follow the cursor every frame (a rubber band from the last placed
@@ -656,7 +774,7 @@ export default function ProjectClient({ projectId }) {
             mp.clearMarkers()
             for (const m of next) { try { mp.addMarker(m) } catch {} }
         }
-    }, [hotspots, visibleCoverups, visiblePolygons, activeScene, hotspotSize, editingId, selectedOverlay, coverupAspect])
+    }, [hotspots, visibleCoverups, visiblePolygons, activeScene, hotspotSize, editingId, editingPolygonId, selectedOverlay, coverupAspect])
 
     // ── rAF — keeps the placement pin + selected cover-up projected on screen
     const mainLoop = useCallback(() => {
@@ -694,10 +812,14 @@ export default function ProjectClient({ projectId }) {
             setCoverupPopupScreen(null)
         }
 
-        // Polygon popup ('new' before it's saved, or 'view'/'edit' on an
-        // existing zone) is anchored to the shape's centroid.
+        // Polygon popup ('new' before it's saved, 'view', or 'edit' on an
+        // existing zone) is anchored to the shape's centroid. In 'edit' mode
+        // pp.points is the live (possibly mid-drag) working copy, so the
+        // popup and the centroid it's anchored to follow a dragged corner
+        // immediately rather than staying pinned to the shape's original
+        // shape while you're changing it.
         const pp  = polygonPopupRef.current
-        const pts = pp ? (pp.mode === 'new' ? pp.points : pp.polygon?.points) : null
+        const pts = pp ? (pp.mode === 'new' || pp.mode === 'edit' ? pp.points : pp.polygon?.points) : null
         if (viewer && pts?.length) {
             try {
                 const c  = centroidOf(pts)
@@ -706,6 +828,22 @@ export default function ProjectClient({ projectId }) {
             } catch { setPolygonPopupScreen(null) }
         } else {
             setPolygonPopupScreen(null)
+        }
+
+        // Corner-handle screen positions while editing a zone's shape — a
+        // plain DOM/SVG overlay (not a PSV marker) projected fresh every
+        // frame, same reasoning as the placement pin's own corner handles:
+        // PSV markers can't be dragged natively, so the interactive bits
+        // live in React-owned DOM instead.
+        if (viewer && pp?.mode === 'edit' && pp.points?.length) {
+            try {
+                setPolygonVertexScreens(pp.points.map(([yaw, pitch]) => {
+                    const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD })
+                    return pt ? { x: pt.x, y: pt.y } : null
+                }))
+            } catch { setPolygonVertexScreens([]) }
+        } else if (polygonVertexScreensRef.current.length) {
+            setPolygonVertexScreens([])
         }
 
         // Live rubber-band preview line while drawing a zone — a dashed line
@@ -1234,16 +1372,46 @@ export default function ProjectClient({ projectId }) {
         setPolygonPopup(null)
         setPolygonError('')
         lastVertexRef.current = null
+        sessionPointsRef.current = []
+        zoneNumberRef.current = polygonsRef.current.filter(p => p.scene_id === activeScene.id).length + 1
         setDrawingPolygon({ points: [] })
     }
 
     function cancelDrawingPolygon() {
+        sessionPointsRef.current = []
         setDrawingPolygon(null)
+    }
+
+    // A loop closed by revisiting one of the current stroke's own points
+    // (see the click handler) — saved immediately with no popup, matching a
+    // paint-bucket fill: the boundary just closed, so that's a complete zone
+    // right there. Same shape as a manual Finish + Save, minus the label
+    // step; rename/edit it afterward from the panel like any other zone.
+    async function saveAutoPolygon(points) {
+        if (!project || !activeScene) return
+        const label = `Zone ${zoneNumberRef.current}`
+        zoneNumberRef.current += 1
+        try {
+            const res = await fetch('/api/polygons', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    project_id: project.id, scene_id: activeScene.id,
+                    points, status: 'available', label, detail: {},
+                }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) { setPolygonError(json.error || 'Could not save a zone.'); return }
+            setPolygons(prev => [...prev, json.polygon])
+        } catch {
+            setPolygonError('Network error — a zone was not saved.')
+        }
     }
 
     function finishDrawingPolygon() {
         if (!drawingPolygon || drawingPolygon.points.length < 3) return
-        setPolygonPopup({ mode: 'new', points: drawingPolygon.points, status: 'available', label: '', detail: {} })
+        const label = `Zone ${zoneNumberRef.current}`
+        zoneNumberRef.current += 1
+        setPolygonPopup({ mode: 'new', points: drawingPolygon.points, status: 'available', label, detail: {} })
         setDrawingPolygon(null)
     }
 
@@ -1264,6 +1432,13 @@ export default function ProjectClient({ projectId }) {
             if (!res.ok) { setPolygonError(json.error || 'Could not save the zone.'); return }
             setPolygons(prev => [...prev, json.polygon])
             setPolygonPopup(null)
+            // Re-arm drawing mode right away — Finish already drew the line
+            // between "this shape" and "the next one" unambiguously, so
+            // starting the next zone shouldn't need "Start Drawing" pressed
+            // again. Only after a successful save, not on error: a failed
+            // save should leave the points/popup alone so nothing is lost.
+            setDrawingPolygon({ points: [] })
+            lastVertexRef.current = null
         } catch {
             setPolygonError('Network error — the zone was not saved.')
         } finally {
@@ -1278,7 +1453,10 @@ export default function ProjectClient({ projectId }) {
         try {
             const res = await fetch(`/api/polygons/${polygonPopup.polygon.id}`, {
                 method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ status: polygonPopup.status, label: polygonPopup.label, detail: polygonPopup.detail }),
+                body: JSON.stringify({
+                    status: polygonPopup.status, label: polygonPopup.label, detail: polygonPopup.detail,
+                    points: polygonPopup.points,
+                }),
             })
             const json = await res.json().catch(() => ({}))
             if (!res.ok) { setPolygonError(json.error || 'Could not save the zone.'); return }
@@ -1296,6 +1474,35 @@ export default function ProjectClient({ projectId }) {
         if (polygonPopup?.mode === 'edit') updatePolygon()
     }
 
+    // Corner-handle drag on a zone being edited — same shape as the hotspot
+    // pin's drag (a full-screen capture div feeds mousemove here while
+    // isDraggingVertex is set), but per-vertex: which corner moves is fixed
+    // for the whole gesture (vertexDragRef), and every move just re-samples
+    // the cursor's own sphere position for that one point — no resize/rotate
+    // math, a corner just goes wherever the cursor is.
+    function startVertexDrag(e, index) {
+        e.preventDefault(); e.stopPropagation()
+        vertexDragRef.current = index
+        setIsDraggingVertex(true)
+    }
+
+    const onVertexDragMove = useCallback(e => {
+        const index = vertexDragRef.current
+        if (index == null) return
+        const coords = sampleAt(e.clientX, e.clientY)
+        if (!coords) return
+        setPolygonPopup(prev => {
+            if (prev?.mode !== 'edit') return prev
+            const points = prev.points.map((pt, i) => i === index ? [coords.yaw, coords.pitch] : pt)
+            return { ...prev, points }
+        })
+    }, [sampleAt])
+
+    function endVertexDrag() {
+        vertexDragRef.current = null
+        setIsDraggingVertex(false)
+    }
+
     // Panel row click / re-click toggles the view card, same affordance as the
     // overlay panel's rows.
     function selectPolygon(id) {
@@ -1306,10 +1513,33 @@ export default function ProjectClient({ projectId }) {
     }
 
     function editPolygon() {
-        setPolygonPopup(prev => prev?.polygon ? {
-            mode: 'edit', polygon: prev.polygon,
-            status: prev.polygon.status, label: prev.polygon.label, detail: prev.polygon.detail,
-        } : prev)
+        setPolygonPopup(prev => {
+            if (!prev?.polygon) return prev
+            // A working copy of the points, dragged live via the corner
+            // handles (see startVertexDrag/onVertexDragMove) — the original
+            // polygon.points stays untouched until Save actually writes it,
+            // so Cancel just discards this copy for free.
+            let points = prev.polygon.points.map(([yaw, pitch]) => [yaw, pitch])
+            // A shape's last edge already connects back to its first point
+            // automatically — it never needed a literal closing point equal
+            // to point 1 stored in the array. Some earlier-drawn zones have
+            // one anyway (from before this drag tool existed, when closing
+            // meant re-clicking point 1 as an actual extra vertex), which
+            // put two drag handles exactly on top of each other: dragging
+            // one visibly left the other behind. Collapse that duplicate
+            // back into one point here — first time this shape is edited,
+            // Finish writes the deduped version back and it stays fixed.
+            if (points.length > 3) {
+                const [fy, fp] = points[0]
+                const [ly, lp] = points[points.length - 1]
+                if (Math.abs(fy - ly) < 1e-6 && Math.abs(fp - lp) < 1e-6) points = points.slice(0, -1)
+            }
+            return {
+                mode: 'edit', polygon: prev.polygon,
+                status: prev.polygon.status, label: prev.polygon.label, detail: prev.polygon.detail,
+                points,
+            }
+        })
     }
 
     async function deletePolygon(id) {
@@ -1785,6 +2015,37 @@ export default function ProjectClient({ projectId }) {
                                         </div>
                                     )
                                 })()}
+
+                                {/* Editing a zone's shape: a full-screen capture surface feeds
+                                    drag moves to whichever corner grabbed it, an SVG outline
+                                    traces the live (possibly mid-drag) points so the shape
+                                    itself visibly updates, and a small handle sits on every
+                                    corner — same "PSV markers can't be dragged, so do it in
+                                    plain DOM" pattern as the hotspot pin's own corner handles. */}
+                                {isDraggingVertex && (
+                                    <div className="absolute inset-0 z-40 cursor-grabbing"
+                                         onMouseMove={onVertexDragMove}
+                                         onMouseUp={endVertexDrag}
+                                         onMouseLeave={endVertexDrag}/>
+                                )}
+
+                                {polygonPopup?.mode === 'edit' && polygonVertexScreens.length === polygonPopup.points.length && (
+                                    <>
+                                        <svg className="absolute inset-0 z-30 pointer-events-none overflow-visible" width="100%" height="100%">
+                                            <polygon
+                                                points={polygonVertexScreens.map(p => `${p.x},${p.y}`).join(' ')}
+                                                fill="var(--editor-indigo-700)" fillOpacity="0.15"
+                                                stroke="var(--editor-indigo-700)" strokeWidth="2" strokeDasharray="6,3"
+                                            />
+                                        </svg>
+                                        {polygonVertexScreens.map((p, i) => (
+                                            <div key={i}
+                                                 onMouseDown={e => startVertexDrag(e, i)}
+                                                 className="absolute z-30 w-3.5 h-3.5 bg-white border-2 border-editor-primary rounded-full cursor-grab active:cursor-grabbing"
+                                                 style={{ left: p.x, top: p.y, transform: 'translate(-50%,-50%)' }}/>
+                                        ))}
+                                    </>
+                                )}
 
                                 {hasPopup && (
                                     <HotspotPopup
