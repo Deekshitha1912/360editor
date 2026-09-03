@@ -4,6 +4,7 @@
 // placement pin on top of the PSV canvas in the editor.
 
 import { ARROWS } from '@/components/360editor/project/hotspot_panel'
+import { HOTSPOT_COLORS, LABEL_COLORS } from '@/lib/hotspots'
 
 function Spinner({ size = 10 }) {
     return (
@@ -34,10 +35,13 @@ export function HotspotPopup({ pos, viewerSize, state, scenes, activeSceneId, ha
     // below) — has to be >= the card's real rendered height or the clamp
     // lets the bottom (Cancel/Save) sit past the edge of the window. Form
     // mode: header (~36) + padding (24) + Label row (~46) + Links-to row
-    // (~46) + gaps (20) + buttons (28) = ~200, +buffer. Saved mode: header
+    // (~46) + gaps (20) + buttons (28) = ~200, +buffer — +36 per extra color
+    // row (landmark only: Stick color + Label color). Saved mode: header
     // (36) + padding (24) + 3 text lines (~49) + gap (8) + Close button
     // (28) = ~145, +buffer.
-    const POPUP_H = state.mode === 'saved' ? 160 : 220
+    const isForm  = state.mode === 'new' || state.mode === 'edit-existing'
+    const isLandmarkForm = isForm && state.arrow_type === 'landmark'
+    const POPUP_H = state.mode === 'saved' ? 160 : (isLandmarkForm ? 292 : 220)
 
     // Prefer right of pin; fall back to left if near the edge. GAP is
     // measured from the edge of the bounding box, not the pin's center —
@@ -54,7 +58,6 @@ export function HotspotPopup({ pos, viewerSize, state, scenes, activeSceneId, ha
     if (absTop < 8)                          offsetY = 8 - pos.y
     if (absTop + POPUP_H > viewerSize.h - 8) offsetY = viewerSize.h - 8 - POPUP_H - pos.y
 
-    const isForm  = state.mode === 'new' || state.mode === 'edit-existing'
     const hotspot = state.hotspot
     const arrow   = isForm
         ? ARROWS.find(a => a.type === state.arrow_type)
@@ -123,6 +126,36 @@ export function HotspotPopup({ pos, viewerSize, state, scenes, activeSceneId, ha
                                 ))}
                             </select>
                         </div>
+                        {isLandmarkForm && (
+                            <div className="space-y-1">
+                                <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Stick color</label>
+                                <div className="flex gap-1.5">
+                                    {HOTSPOT_COLORS.map(c => (
+                                        <button key={c} type="button" onClick={() => onUpdate({ ...state, color: c })}
+                                                aria-label={c}
+                                                className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                                                    (state.color || HOTSPOT_COLORS[0]) === c ? 'border-editor-ink scale-110' : 'border-white/60 hover:scale-105'
+                                                }`}
+                                                style={{ background: c, boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}/>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                        {isLandmarkForm && (
+                            <div className="space-y-1">
+                                <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Label color</label>
+                                <div className="flex gap-1.5">
+                                    {LABEL_COLORS.map(c => (
+                                        <button key={c} type="button" onClick={() => onUpdate({ ...state, label_color: c })}
+                                                aria-label={c}
+                                                className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                                                    (state.label_color || LABEL_COLORS[0]) === c ? 'border-editor-ink scale-110' : 'border-white/60 hover:scale-105'
+                                                }`}
+                                                style={{ background: c, boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}/>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                         <div className="flex gap-1.5">
                             <button onClick={onCancel}
                                     className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border

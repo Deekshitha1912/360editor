@@ -6,6 +6,7 @@
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
 import { colorForStatus } from '@/lib/polygons'
+import { DEFAULT_HOTSPOT_COLOR, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 
 const PSV_VERSION = '5.15.1'
 const THREE_VERSION = '0.185.1'
@@ -57,9 +58,16 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                 const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
                 return {
                     id: h.id, yaw: h.yaw, pitch: h.pitch,
+                    // landmark carries through so arrowMarker() below can
+                    // build an 'html' marker instead of an 'image' one —
+                    // gif still gets set (harmlessly unused for landmark)
+                    // so this stays a valid entry for v1-snapshot compat.
+                    type: h.arrow_type,
                     gif: arrow.gif, label: h.label || '',
                     size: h.size ?? project.hotspot_size ?? 90,
                     rotation: h.rotation ?? 0,
+                    color: h.color || DEFAULT_HOTSPOT_COLOR,
+                    labelColor: h.label_color || DEFAULT_LABEL_COLOR,
                     target: h.target_scene_id,
                 }
             })
@@ -158,6 +166,11 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #zoneCard .zc-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:3px 0;}
 #zoneCard .zc-row span:first-child{opacity:.55}
 #zoneCard .zc-row span:last-child{font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.lm{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:auto;filter:drop-shadow(0 0 1.5px rgba(0,0,0,.75)) drop-shadow(0 2px 4px rgba(0,0,0,.4));}
+.lm-label{background:var(--lm-label-color,#14141a);color:#fff;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);margin-bottom:4px;border-bottom:2px solid var(--lm-color,#3730a3);}
+.lm-line{width:3.5px;height:var(--lm-height,48px);background:var(--lm-color,#3730a3);border-radius:2px;}
+.lm-dot{width:15px;height:15px;border-radius:50%;background:var(--lm-color,#3730a3);border:2px solid #fff;box-shadow:0 0 0 0 var(--lm-color,#3730a3);animation:lm-pulse 2s ease-out infinite;}
+@keyframes lm-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--lm-color,#3730a3) 55%, transparent)}70%{box-shadow:0 0 0 14px color-mix(in srgb, var(--lm-color,#3730a3) 0%, transparent)}100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--lm-color,#3730a3) 0%, transparent)}}
 </style>
 </head>
 <body>
@@ -187,7 +200,23 @@ ${autorotateImport}
 
 var TOURS=${toursJson};var SM=${sceneListJson};
 
-function arrowMarker(h){return {id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:{target:h.target}};}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// height/color are baked into an inline style attribute on the markup
+// itself, not left to PSV's own marker style config -- that config gets
+// applied via Object.assign(element.style, config.style) (a plain
+// property assignment, not style.setProperty()), which doesn't reliably
+// set CSS custom properties. An inline style="..." attribute, parsed by
+// the browser while setting innerHTML, doesn't go through that code path.
+function landmarkHtml(label,height,color,labelColor){
+  var h=(typeof height==='number'&&isFinite(height))?height:48;
+  var c=/^#[0-9a-f]{6}$/i.test(color||'')?color:'#3730a3';
+  var lc=/^#[0-9a-f]{6}$/i.test(labelColor||'')?labelColor:'#14141a';
+  return '<div class="lm" style="--lm-height:'+h+'px;--lm-color:'+c+';--lm-label-color:'+lc+'"><div class="lm-label">'+esc(label||'Landmark')+'</div><div class="lm-line"></div><div class="lm-dot"></div></div>';
+}
+function arrowMarker(h){
+  if(h.type==='landmark'){return {id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:{target:h.target}};}
+  return {id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:{target:h.target}};
+}
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
 function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+'55',stroke:z.color,strokeWidth:'2'},data:z};}
 function markersFor(id){var s=TOURS[id];return s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker)).concat(s.arrows.map(arrowMarker));}

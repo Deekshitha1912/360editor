@@ -23,7 +23,7 @@ export async function GET(_req, { params }) {
                 .eq('project_id', id)
                 .order('created_at'),
             supabase.from('hotspots')
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color')
                 .eq('project_id', id),
             supabase.from('polygons')
                 .select('id, scene_id, project_id, points, status, label, detail')

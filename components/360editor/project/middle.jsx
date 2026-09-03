@@ -6,16 +6,18 @@ import { Viewer } from '@photo-sphere-viewer/core'
 import { MarkersPlugin } from '@photo-sphere-viewer/markers-plugin'
 import '@photo-sphere-viewer/core/index.css'
 import '@photo-sphere-viewer/markers-plugin/index.css'
+import '@/components/360editor/project/landmark-marker.css'
 import ScenePanel       from '@/components/360editor/project/scene_panel'
 import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
 import PolygonPanel from '@/components/360editor/project/polygon_panel'
 import PanelTabs from '@/components/360editor/project/panel_tabs'
 import { ARROWS } from '@/lib/arrows'
+import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
 import { colorForStatus, centroidOf } from '@/lib/polygons'
 import TourPreviewModal from '@/components/360editor/project/preview'
-import { buildTourHtml } from '@/components/360editor/project/export'
+import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
 import { HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
 import { PolygonPopup } from '@/components/360editor/project/polygon_overlay'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
@@ -56,6 +58,34 @@ function findSnapPoint(viewer, candidates, screenX, screenY) {
 // really are. Kept as one constant since it has to stay consistent with the
 // cover-up scale-with-zoom math, which anchors to the same "opening FOV".
 const DEFAULT_HFOV = 90
+
+// Markup for the 'landmark' arrow_type — a PSV `html` marker (unlike every
+// other arrow type, which is a plain `image` marker), because the floating
+// label has to show this hotspot's own text, not a fixed sprite. See
+// landmark-marker.css for the .lm-*/@keyframes rules, and export.jsx's
+// arrowMarker() for the from-scratch duplicate this needs for the published
+// tour (no shared module between the two). label is untrusted user text
+// going into raw HTML, so it's always escaped here.
+//
+// --lm-height/--lm-color are baked into an inline style ATTRIBUTE on the
+// returned markup itself, rather than left to be set later via PSV's own
+// marker `style` config. PSV applies that config with
+// `Object.assign(element.style, config.style)` — a plain property
+// assignment, not `style.setProperty()` — which doesn't reliably set CSS
+// custom properties (React's own style prop explicitly uses setProperty
+// for dashed keys for exactly this reason). That mismatch is why the edit
+// preview — plain React DOM, styled the normal React way — always looked
+// right, while the actual saved PSV marker silently kept falling back to
+// each variable's CSS default (48px / indigo) no matter what was saved.
+// An inline `style="..."` HTML attribute, parsed by the browser itself
+// while setting innerHTML, doesn't go through that code path at all.
+function landmarkMarkerHtml(label, height, color, labelColor) {
+    const h  = Number.isFinite(height) ? height : 48
+    const c  = /^#[0-9a-f]{6}$/i.test(color || '') ? color : DEFAULT_HOTSPOT_COLOR
+    const lc = /^#[0-9a-f]{6}$/i.test(labelColor || '') ? labelColor : DEFAULT_LABEL_COLOR
+    return `<div class="lm" style="--lm-height:${h}px;--lm-color:${c};--lm-label-color:${lc}"><div class="lm-label">${escapeHtml(label || 'Landmark')}</div>`
+        + `<div class="lm-line"></div><div class="lm-dot"></div></div>`
+}
 
 // Rotate-handle cursor — a curved arrow, the near-universal convention for a
 // rotate control (Figma, Canva, PowerPoint, Photoshop's free-transform all
@@ -475,6 +505,8 @@ export default function ProjectClient({ projectId }) {
             // one hotspot from it.
             size: h.size ?? null,
             rotation: h.rotation ?? 0,
+            color: h.color || DEFAULT_HOTSPOT_COLOR,
+            label_color: h.label_color || DEFAULT_LABEL_COLOR,
         })
         setActiveRightTab('directions')
     }
@@ -704,8 +736,32 @@ export default function ProjectClient({ projectId }) {
         const arrowMarkers = hotspots
             .filter(h => h.scene_id === activeScene.id && h.id !== editingId)
             .map(h => {
-                const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
                 const size = h.size ?? hotspotSize
+                // Landmark is an `html` marker (a per-hotspot line+label
+                // built from its own text), not an `image` sprite like every
+                // other arrow type — see landmarkMarkerHtml. anchor:'bottom
+                // center' puts the pulsing dot exactly on the saved point,
+                // with the line+label stacking upward from there. Rotation
+                // is deliberately not applied (a vertical line rotating in
+                // the screen plane doesn't mean anything).
+                if (h.arrow_type === 'landmark') {
+                    return {
+                        id: `hs_${h.id}`,
+                        type: 'html',
+                        // height (this hotspot's own `size`, same drag-to-
+                        // resize control every other type uses) and color
+                        // are baked into the markup's own inline style
+                        // attribute by landmarkMarkerHtml — see its comment
+                        // for why that's necessary instead of PSV's `style`
+                        // marker config. The dot and label are fixed sizes
+                        // in the CSS, so height only changes the stick.
+                        html: landmarkMarkerHtml(h.label, size, h.color, h.label_color),
+                        anchor: 'bottom center',
+                        position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
+                        data: { hotspotDbId: h.id },
+                    }
+                }
+                const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
                 return {
                     id: `hs_${h.id}`,
                     type: 'image',
@@ -926,7 +982,7 @@ export default function ProjectClient({ projectId }) {
             if (drawingPolygon) return // drawing a zone takes priority over placing a new arrow
             const coords = sampleAt(e.clientX, e.clientY)
             if (!coords) return
-            setPopupState({ mode: 'new', arrow_type: hotspotType, ...coords, label: '', target_scene_id: '', size: null, rotation: 0 })
+            setPopupState({ mode: 'new', arrow_type: hotspotType, ...coords, label: '', target_scene_id: '', size: null, rotation: 0, color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR })
         }
     }, [sampleAt, drawingPolygon])
 
@@ -1303,7 +1359,8 @@ export default function ProjectClient({ projectId }) {
                     pitch: roundTo2(popupState.pitch), yaw: roundTo2(popupState.yaw),
                     arrow_type: popupState.arrow_type, label: popupState.label || '',
                     target_scene_id: popupState.target_scene_id,
-                    size: popupState.size, rotation: popupState.rotation,
+                    size: popupState.size, rotation: popupState.rotation, color: popupState.color,
+                    label_color: popupState.label_color,
                 }),
             })
             if (res.ok) {
@@ -1330,6 +1387,8 @@ export default function ProjectClient({ projectId }) {
                     arrow_type:      popupState.arrow_type,
                     size:            popupState.size,
                     rotation:        popupState.rotation,
+                    color:           popupState.color,
+                    label_color:     popupState.label_color,
                 }),
             })
             if (res.ok) {
@@ -1978,22 +2037,52 @@ export default function ProjectClient({ projectId }) {
                                     tracking to do here, unlike cover-ups. */}
                                 {hasPopup && isEditing && pinPos && (() => {
                                     const size = popupState.size ?? hotspotSize
-                                    const rot  = popupState.rotation ?? 0
+                                    // Rotation is never applied to a landmark's own preview — the
+                                    // real marker never reads it either (a vertical line rotating
+                                    // in the screen plane doesn't mean anything), so rotating this
+                                    // WYSIWYG preview box would show something the saved marker
+                                    // never actually renders. The rotate handle stays active
+                                    // regardless (no special-casing the drag math itself) — its
+                                    // value is just harmlessly unused for this type.
+                                    const isLandmark = popupState.arrow_type === 'landmark'
+                                    const rot = isLandmark ? 0 : (popupState.rotation ?? 0)
+                                    // The real landmark marker is anchored 'bottom center' — its
+                                    // dot sits exactly on pinPos, with the line+label rising above.
+                                    // The box below is centered on pinPos for every other type
+                                    // (translate(-50%,-50%)); for landmark it's bottom-anchored
+                                    // instead (translate(-50%,-100%)) so this preview's dot lands
+                                    // on the real point too, not size/2 px below it.
                                     return (
-                                        <div className="absolute z-30" style={{ left: pinPos.x, top: pinPos.y, transform: 'translate(-50%,-50%)' }}>
+                                        <div className="absolute z-30" style={{ left: pinPos.x, top: pinPos.y, transform: isLandmark ? 'translate(-50%,-100%)' : 'translate(-50%,-50%)' }}>
                                             <div style={{ width: size, height: size, position: 'relative', transform: `rotate(${rot}deg)`, transformOrigin: 'center center' }}>
-                                                <img
-                                                    src={(ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
-                                                    alt=""
-                                                    draggable={false}
-                                                    onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
-                                                    style={{
-                                                        width: '100%', height: '100%', display: 'block',
-                                                        outline: '2px solid var(--editor-indigo-700)',
-                                                        outlineOffset: '2px',
-                                                    }}
-                                                    className={`object-contain select-none drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)] ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
-                                                />
+                                                {isLandmark ? (
+                                                    <div
+                                                        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
+                                                        className={`w-full h-full flex items-end justify-center select-none ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
+                                                        // height/color/label-color are baked into the
+                                                        // returned markup's own inline style attribute by
+                                                        // landmarkMarkerHtml itself — a style prop set HERE
+                                                        // (on this wrapper) would be shadowed by that, since
+                                                        // .lm's own attribute wins over an ancestor's value
+                                                        // for the same custom property. This is exactly the
+                                                        // bug that made editing always show default size/
+                                                        // color while the bounding box alone resized.
+                                                        dangerouslySetInnerHTML={{ __html: landmarkMarkerHtml(popupState.label, size, popupState.color, popupState.label_color) }}
+                                                    />
+                                                ) : (
+                                                    <img
+                                                        src={(ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
+                                                        alt=""
+                                                        draggable={false}
+                                                        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
+                                                        style={{
+                                                            width: '100%', height: '100%', display: 'block',
+                                                            outline: '2px solid var(--editor-indigo-700)',
+                                                            outlineOffset: '2px',
+                                                        }}
+                                                        className={`object-contain select-none drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)] ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
+                                                    />
+                                                )}
                                                 <div onMouseDown={startPinResize}
                                                      className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
                                                      style={{ left: 0, top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>

@@ -1,0 +1,67 @@
+/* components/360editor/project/landmark-marker.css
+   Krpano-style "landmark" hotspot: a vertical line rising from the real 3D
+   point to a floating, always-visible label, with a pulsing dot at the base
+   marking the exact anchor. Built as a PSV `html` marker (see middle.jsx's
+   arrowMarkers builder), anchored bottom-center so .lm's bottom edge (the
+   dot) sits on the saved yaw/pitch and the line+label stack upward from
+   there.
+
+   --lm-height is the STICK's height in real pixels (the hotspot's `size`
+   field, dragged via the same corner-resize handle every other hotspot
+   type uses) — deliberately NOT a scale factor applied to the whole
+   marker: the dot and label are fixed sizes below, so resizing only
+   changes how tall the stick is, never how big the bulb/label look.
+   --lm-color tints the dot/line/label together; falls back to the default
+   indigo when a hotspot has no color set yet (pre-existing rows).
+
+   Mirrored (not shared — no module boundary between this and the published
+   tour) in export.jsx's inline <style> block; keep both in sync. */
+
+.lm {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: auto;
+    /* A tight dark outline plus a soft shadow, applied to the whole
+       composite so the thin stick (which has no fill/border loud enough
+       on its own) still reads clearly against a bright sky or a light
+       wall — the same reasoning as the arrow sprites' own drop-shadow. */
+    filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, .75)) drop-shadow(0 2px 4px rgba(0, 0, 0, .4));
+}
+
+.lm-label {
+    background: var(--lm-label-color, #14141a);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 8px;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+    margin-bottom: 4px;
+    border-bottom: 2px solid var(--lm-color, #3730a3);
+}
+
+.lm-line {
+    width: 3.5px;
+    height: var(--lm-height, 48px);
+    background: var(--lm-color, #3730a3);
+    border-radius: 2px;
+}
+
+.lm-dot {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--lm-color, #3730a3);
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 0 var(--lm-color, #3730a3);
+    animation: lm-pulse 2s ease-out infinite;
+}
+
+@keyframes lm-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--lm-color, #3730a3) 55%, transparent); }
+    70%  { box-shadow: 0 0 0 14px color-mix(in srgb, var(--lm-color, #3730a3) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--lm-color, #3730a3) 0%, transparent); }
+}

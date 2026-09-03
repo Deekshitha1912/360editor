@@ -1,7 +1,7 @@
 ﻿// app/api/hotspots/[id]/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
-import { clampHotspotSize, clampHotspotRotation } from '@/lib/hotspots'
+import { clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor } from '@/lib/hotspots'
 
 export async function PATCH(req, { params }) {
     try {
@@ -27,7 +27,7 @@ export async function PATCH(req, { params }) {
             return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 })
         }
 
-        const allowed = ['label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation']
+        const allowed = ['label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation', 'color', 'label_color']
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
         )
@@ -36,8 +36,10 @@ export async function PATCH(req, { params }) {
             return NextResponse.json({ error: 'No valid fields.' }, { status: 400 })
         }
 
-        if ('size'     in updates) updates.size     = clampHotspotSize(updates.size)
-        if ('rotation' in updates) updates.rotation = clampHotspotRotation(updates.rotation)
+        if ('size'        in updates) updates.size        = clampHotspotSize(updates.size)
+        if ('rotation'    in updates) updates.rotation     = clampHotspotRotation(updates.rotation)
+        if ('color'       in updates) updates.color        = normalizeHotspotColor(updates.color)
+        if ('label_color' in updates) updates.label_color  = normalizeLabelColor(updates.label_color)
 
         // Step 1: fetch the hotspot
         const { data: hotspot, error: fetchErr } = await supabase
@@ -73,7 +75,7 @@ export async function PATCH(req, { params }) {
             .from('hotspots')
             .update(updates)
             .eq('id', id)
-            .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation')
+            .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color')
             .single()
 
         if (updateErr) {
