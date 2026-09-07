@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeEdgeLengths, MAX_POLYGONS_PER_SCENE } from '@/lib/polygons'
-import { normalizeActionType, clampText } from '@/lib/actions'
+import { normalizeActionType, clampText, normalizeInfoFields } from '@/lib/actions'
 
 export async function POST(req) {
     try {
@@ -13,7 +13,7 @@ export async function POST(req) {
         const body = await req.json()
         const {
             project_id, scene_id, points, status, label, detail, custom_color, edge_lengths,
-            action_type, target_scene_id, link_url, info_body, info_image_url, toggle_target_id, start_hidden,
+            action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden,
         } = body
 
         if (!project_id || !scene_id || points == null)
@@ -72,6 +72,7 @@ export async function POST(req) {
                 target_scene_id: target_scene_id || null,
                 link_url: clampText(link_url, 2000), info_body: clampText(info_body, 4000),
                 info_image_url: clampText(info_image_url, 2000),
+                info_fields: normalizeInfoFields(info_fields),
                 toggle_target_id: toggle_target_id || null, start_hidden: !!start_hidden,
             })
             .select().single()

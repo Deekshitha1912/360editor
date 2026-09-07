@@ -23,10 +23,10 @@ export async function GET(_req, { params }) {
                 .eq('project_id', id)
                 .order('created_at'),
             supabase.from('hotspots')
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, action_type, link_url, info_body, info_image_url, toggle_target_id, start_hidden, animate_line')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url')
                 .eq('project_id', id),
             supabase.from('polygons')
-                .select('id, scene_id, project_id, points, status, label, detail, custom_color, edge_lengths, action_type, target_scene_id, link_url, info_body, info_image_url, toggle_target_id, start_hidden')
+                .select('id, scene_id, project_id, points, status, label, detail, custom_color, edge_lengths, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
                 .eq('project_id', id),
         ])
 

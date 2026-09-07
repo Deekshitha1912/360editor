@@ -15,6 +15,7 @@
 // or select something else.
 import { useState } from 'react'
 import { STATUS_COLORS, CUSTOM_STATUS_COLORS, colorForStatus, MAX_DETAIL_KEYS } from '@/lib/polygons'
+import InfoFieldsEditor from './info_fields_editor'
 
 function Spinner({ size = 10 }) {
     return (
@@ -81,11 +82,13 @@ function DetailFields({ detail, onChange }) {
 // edit — clicking a zone (row or marker) always lands you straight here.
 //
 // "On click" is the exact same action system hotspots have (see
-// hotspot_panel.jsx's HotspotForm) — action_type/link_url/info_body/
-// info_image_url/toggle_target_id/start_hidden, same 4 action types, same
-// fields. Status/label/detail stay independent of it: they're the zone's
-// own properties (status still drives the shape's fill color) shown
-// whenever action_type is 'info', not the click-action selector itself.
+// hotspot_panel.jsx's HotspotForm) — action_type/link_url/info_fields/
+// info_image_url/toggle_target_id/start_hidden, same 5 action types
+// (navigate/link/image/info/toggle), same fields, same shared
+// InfoFieldsEditor for the 'info' card's content. Status/label/detail stay
+// independent of it: they're the zone's own properties (status still
+// drives the shape's fill color) shown whenever action_type is 'info', not
+// the click-action selector itself.
 function PolygonForm({ state, scenes, activeSceneId, hotspots, onUpdate, onDelete, onCancel, onSaveNow, onUploadImage, saving, justSaved, deleting }) {
     const [uploadingImage, setUploadingImage] = useState(false)
     const [uploadError, setUploadError] = useState('')
@@ -197,6 +200,7 @@ function PolygonForm({ state, scenes, activeSceneId, hotspots, onUpdate, onDelet
                         <option value="info">Show status &amp; details</option>
                         <option value="navigate">Go to scene</option>
                         <option value="link">Open link</option>
+                        <option value="image">Open image</option>
                         <option value="toggle">Show/hide a hotspot</option>
                     </select>
                 </div>
@@ -232,70 +236,56 @@ function PolygonForm({ state, scenes, activeSceneId, hotspots, onUpdate, onDelet
                     </div>
                 )}
 
+                {actionType === 'image' && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Image</label>
+                        {state.info_image_url ? (
+                            <div className="flex items-center gap-1.5">
+                                <img src={state.info_image_url} alt="" className="w-7 h-7 rounded object-cover border border-editor-border shrink-0"/>
+                                <button type="button" onClick={() => onUpdate({ ...state, info_image_url: '' })}
+                                        className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border
+                                                   text-editor-ink-muted hover:bg-editor-subtle transition-colors">
+                                    Remove
+                                </button>
+                            </div>
+                        ) : (
+                            <label className="flex items-center justify-center h-7 text-[11px] rounded-lg border border-dashed
+                                               border-editor-border text-editor-ink-muted hover:bg-editor-subtle
+                                               transition-colors cursor-pointer">
+                                {uploadingImage ? <><Spinner/>&nbsp;Uploading…</> : 'Upload image'}
+                                <input
+                                    type="file" accept="image/*" className="hidden" disabled={uploadingImage}
+                                    onChange={async e => {
+                                        const file = e.target.files?.[0]
+                                        e.target.value = ''
+                                        if (!file || !onUploadImage) return
+                                        setUploadingImage(true)
+                                        setUploadError('')
+                                        try {
+                                            const url = await onUploadImage(file)
+                                            if (url) onUpdate({ ...state, info_image_url: url })
+                                        } catch (err) {
+                                            setUploadError(err?.message || 'Upload failed.')
+                                        } finally {
+                                            setUploadingImage(false)
+                                        }
+                                    }}
+                                />
+                            </label>
+                        )}
+                        {uploadError && <p className="text-[10px] text-red-500">{uploadError}</p>}
+                        <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                            Opens centered, full-screen, with a close button — clicking outside it or the ✕ closes it.
+                        </p>
+                    </div>
+                )}
+
                 {actionType === 'info' && (
-                    <>
-                        <div className="space-y-1">
-                            <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Body text (optional)</label>
-                            <textarea
-                                value={state.info_body || ''}
-                                onChange={e => onUpdate({ ...state, info_body: e.target.value })}
-                                rows={3}
-                                placeholder="Extra text shown under the status/details"
-                                className="w-full bg-editor-surface border border-editor-border rounded-lg px-2.5 py-1.5
-                                           text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary
-                                           placeholder:text-editor-ink-muted resize-none"
-                            />
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Image (optional)</label>
-                            {state.info_image_url ? (
-                                <div className="flex items-center gap-1.5">
-                                    <img src={state.info_image_url} alt="" className="w-7 h-7 rounded object-cover border border-editor-border shrink-0"/>
-                                    <button type="button" onClick={() => onUpdate({ ...state, info_image_url: '' })}
-                                            className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border
-                                                       text-editor-ink-muted hover:bg-editor-subtle transition-colors">
-                                        Remove
-                                    </button>
-                                </div>
-                            ) : (
-                                <label className="flex items-center justify-center h-7 text-[11px] rounded-lg border border-dashed
-                                                   border-editor-border text-editor-ink-muted hover:bg-editor-subtle
-                                                   transition-colors cursor-pointer">
-                                    {uploadingImage ? <><Spinner/>&nbsp;Uploading…</> : 'Upload image'}
-                                    <input
-                                        type="file" accept="image/*" className="hidden" disabled={uploadingImage}
-                                        onChange={async e => {
-                                            const file = e.target.files?.[0]
-                                            e.target.value = ''
-                                            if (!file || !onUploadImage) return
-                                            setUploadingImage(true)
-                                            setUploadError('')
-                                            try {
-                                                const url = await onUploadImage(file)
-                                                if (url) onUpdate({ ...state, info_image_url: url })
-                                            } catch (err) {
-                                                setUploadError(err?.message || 'Upload failed.')
-                                            } finally {
-                                                setUploadingImage(false)
-                                            }
-                                        }}
-                                    />
-                                </label>
-                            )}
-                            {uploadError && <p className="text-[10px] text-red-500">{uploadError}</p>}
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Learn more link (optional)</label>
-                            <input
-                                value={state.link_url || ''}
-                                onChange={e => onUpdate({ ...state, link_url: e.target.value })}
-                                placeholder="https://…"
-                                className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5
-                                           text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary
-                                           placeholder:text-editor-ink-muted"
-                            />
-                        </div>
-                    </>
+                    <InfoFieldsEditor
+                        fields={state.info_fields}
+                        onChange={info_fields => onUpdate({ ...state, info_fields })}
+                        onUploadImage={onUploadImage}
+                    />
                 )}
 
                 {actionType === 'toggle' && (

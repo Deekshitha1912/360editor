@@ -5,6 +5,7 @@ import {
     clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
     clampHotspotAngle, normalizeActionType, clampText,
 } from '@/lib/hotspots'
+import { normalizeInfoFields } from '@/lib/actions'
 
 export async function POST(req) {
     try {
@@ -16,7 +17,8 @@ export async function POST(req) {
         const {
             project_id, scene_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
             color, label_color, rotate_x, rotate_y,
-            action_type, link_url, info_body, info_image_url, toggle_target_id, start_hidden, animate_line,
+            action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
+            custom_icon_url,
         } = body
 
         if (!project_id || !scene_id || pitch == null || yaw == null)
@@ -60,8 +62,10 @@ export async function POST(req) {
                 action_type: normalizeActionType(action_type),
                 link_url: clampText(link_url, 2000), info_body: clampText(info_body, 4000),
                 info_image_url: clampText(info_image_url, 2000),
+                info_fields: normalizeInfoFields(info_fields),
                 toggle_target_id: toggle_target_id || null, start_hidden: !!start_hidden,
                 animate_line: animate_line == null ? true : !!animate_line,
+                custom_icon_url: clampText(custom_icon_url, 2000),
             })
             .select().single()
 

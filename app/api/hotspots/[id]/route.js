@@ -5,6 +5,7 @@ import {
     clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
     clampHotspotAngle, normalizeActionType, clampText,
 } from '@/lib/hotspots'
+import { normalizeInfoFields } from '@/lib/actions'
 
 export async function PATCH(req, { params }) {
     try {
@@ -33,8 +34,8 @@ export async function PATCH(req, { params }) {
         const allowed = [
             'label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation',
             'color', 'label_color', 'rotate_x', 'rotate_y',
-            'action_type', 'link_url', 'info_body', 'info_image_url', 'toggle_target_id', 'start_hidden',
-            'animate_line',
+            'action_type', 'link_url', 'info_body', 'info_image_url', 'info_fields', 'toggle_target_id', 'start_hidden',
+            'animate_line', 'custom_icon_url',
         ]
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
@@ -57,6 +58,8 @@ export async function PATCH(req, { params }) {
         if ('toggle_target_id' in updates) updates.toggle_target_id = updates.toggle_target_id || null
         if ('start_hidden'    in updates) updates.start_hidden    = !!updates.start_hidden
         if ('animate_line'    in updates) updates.animate_line    = !!updates.animate_line
+        if ('info_fields'     in updates) updates.info_fields     = normalizeInfoFields(updates.info_fields)
+        if ('custom_icon_url' in updates) updates.custom_icon_url = clampText(updates.custom_icon_url, 2000)
 
         // Step 1: fetch the hotspot
         const { data: hotspot, error: fetchErr } = await supabase
@@ -97,22 +100,42 @@ export async function PATCH(req, { params }) {
         }
 
         // Step 3: update
-        const { data: updated, error: updateErr } = await supabase
+        //
+        // No .single() — same reasoning as app/api/scenes/[id]/route.js's
+        // and app/api/polygons/[id]/route.js's own PATCH handlers: an UPDATE
+        // that affects 0 rows (a rejecting row-level security policy is the
+        // usual cause) still resolves successfully with an empty result set,
+        // and .single() then throws PostgREST's "Cannot coerce the result to
+        // a single JSON object" — a genuine 0-row outcome is a condition to
+        // report clearly, not a cryptic crash to surface as-is.
+        const { data: rows, error: updateErr } = await supabase
             .from('hotspots')
             .update(updates)
             .eq('id', id)
             .select(`
                 id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
                 color, label_color, rotate_x, rotate_y,
-                action_type, link_url, info_body, info_image_url, toggle_target_id, start_hidden, animate_line
+                action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
+                custom_icon_url
             `)
-            .single()
 
         if (updateErr) {
-            return NextResponse.json({ error: 'Update error: ' + updateErr.message }, { status: 500 })
+            console.error('[hotspots PATCH] update failed:', updateErr.code, updateErr.message)
+            return NextResponse.json({ error: 'Could not save the hotspot.' }, { status: 500 })
+        }
+        if (!rows?.length) {
+            console.error(
+                '[hotspots PATCH] update affected 0 rows for hotspot', id,
+                '— the row exists and is owned by this user, so an UPDATE row-level ' +
+                'security policy on public.hotspots is rejecting the write.'
+            )
+            return NextResponse.json(
+                { error: 'The hotspot could not be updated. Check the update policy on the hotspots table.' },
+                { status: 403 }
+            )
         }
 
-        return NextResponse.json({ hotspot: updated })
+        return NextResponse.json({ hotspot: rows[0] })
 
     } catch (err) {
         console.error('PATCH /api/hotspots/[id] crashed:', err)

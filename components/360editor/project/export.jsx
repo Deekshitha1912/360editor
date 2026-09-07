@@ -64,6 +64,12 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                     // so this stays a valid entry for v1-snapshot compat.
                     type: h.arrow_type,
                     gif: arrow.gif, label: h.label || '',
+                    // 'custom' is a plain billboard exactly like every other
+                    // type here -- the ONLY difference is which image it
+                    // renders, so it needs no marker-builder branch of its
+                    // own, just this one field arrowMarker's fallback branch
+                    // prefers over `gif` when set.
+                    customIconUrl: h.custom_icon_url || '',
                     size: h.size ?? project.hotspot_size ?? 90,
                     rotation: h.rotation ?? 0,
                     color: h.color || DEFAULT_HOTSPOT_COLOR,
@@ -75,6 +81,7 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                     linkUrl: h.link_url || '',
                     infoBody: h.info_body || '',
                     infoImageUrl: h.info_image_url || '',
+                    infoFields: Array.isArray(h.info_fields) ? h.info_fields : [],
                     toggleTargetId: h.toggle_target_id || '',
                     startHidden: !!h.start_hidden,
                     animateLine: h.animate_line !== false,
@@ -106,6 +113,7 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                 linkUrl: z.link_url || '',
                 infoBody: z.info_body || '',
                 infoImageUrl: z.info_image_url || '',
+                infoFields: Array.isArray(z.info_fields) ? z.info_fields : [],
                 toggleTargetId: z.toggle_target_id || '',
                 startHidden: !!z.start_hidden,
             }))
@@ -157,12 +165,12 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #viewer{width:100vw;height:100vh}
 .wm{position:fixed;transform:translate(-50%,-50%);z-index:15000;pointer-events:none;max-width:90vw;}
 .wm img{display:block;width:100%;height:auto;filter:drop-shadow(0 2px 8px rgba(0,0,0,.5));}
-#sceneSidebar{position:fixed;top:50%;right:18px;transform:translateY(-50%);z-index:20000;max-height:90vh;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;display:flex;flex-direction:column;gap:10px;padding:4px 0;}
+#sceneSidebar{position:fixed;top:50%;right:14px;transform:translateY(-50%);z-index:20000;max-height:90vh;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;display:flex;flex-direction:column;gap:7px;padding:4px 0;}
 #sceneSidebar::-webkit-scrollbar{display:none}
 .ss-item{cursor:pointer;text-align:center;transition:transform .25s ease}.ss-item:hover{transform:scale(1.06)}
-.ss-item img{width:115px;height:72px;object-fit:cover;border-radius:10px;display:block;box-shadow:0 3px 14px rgba(0,0,0,.55);border:2px solid transparent;transition:border-color .2s ease;}
+.ss-item img{width:78px;height:49px;object-fit:cover;border-radius:8px;display:block;box-shadow:0 2px 10px rgba(0,0,0,.5);border:2px solid transparent;transition:border-color .2s ease;}
 .ss-item.active img{border-color:#3730a3}
-.ss-item span{display:block;margin-top:5px;font-size:12px;color:#fff;font-weight:600;text-shadow:0 1px 4px rgba(0,0,0,.75);}
+.ss-item span{display:block;margin-top:3px;font-size:10px;color:#fff;font-weight:600;text-shadow:0 1px 4px rgba(0,0,0,.75);}
 #controls{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:20000;display:flex;gap:5px;}
 .ctrl{width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:15px;font-weight:700;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);color:#1a1a18;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.28);transition:background .15s ease;}.ctrl:hover{background:#fff}
 #loadOverlay{position:fixed;inset:0;background:#0a0a0a;color:#fff;display:flex;justify-content:center;align-items:center;flex-direction:column;z-index:100001;}
@@ -185,13 +193,24 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #zoneCard .zc-row span:last-child{font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #zoneCard .zc-image{width:100%;border-radius:8px;margin:8px 0;object-fit:cover;max-height:140px;}
 #zoneCard .zc-body{font-size:12px;line-height:1.5;opacity:.85;margin:8px 0 0;white-space:pre-wrap;}
-#zoneCard .zc-link{margin-top:10px;background:#3730a3;color:#fff;font-size:11px;font-weight:600;text-decoration:none;padding:7px 14px;border-radius:16px;text-align:center;}
+#zoneCard .zc-link{display:inline-block;margin:8px 6px 0 0;background:#3730a3;color:#fff;font-size:11px;font-weight:600;text-decoration:none;padding:7px 14px;border-radius:16px;text-align:center;}
+#zoneCard .zc-caption{font-size:11px;opacity:.6;margin:-4px 0 8px;}
+#zoneCard .zc-field-label{font-size:10px;font-weight:700;opacity:.55;text-transform:uppercase;letter-spacing:.04em;margin:10px 0 3px;}
+#imgLightbox{display:none;position:fixed;inset:0;z-index:95000;background:rgba(10,10,14,.55);backdrop-filter:blur(2px);align-items:center;justify-content:center;opacity:0;transition:opacity .25s ease;}
+#imgLightbox.show{opacity:1;}
+#imgLbFrame{position:relative;max-width:90vw;max-height:88vh;transform:scale(.9);transition:transform .32s cubic-bezier(.22,1,.36,1);}
+#imgLightbox.show #imgLbFrame{transform:scale(1);}
+#imgLbFrame img{display:block;max-width:90vw;max-height:88vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+#imgLbClose{position:absolute;top:10px;right:10px;width:32px;height:32px;border-radius:50%;border:none;background:rgba(20,20,26,.65);color:#fff;font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:background .15s ease;}
+#imgLbClose:hover{background:rgba(0,0,0,.8)}
 .edge-label{pointer-events:none;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;white-space:nowrap;}
 .hs-info{padding:2px 2px 8px}
 .hs-info h3{font-size:15px;font-weight:600;margin:0 0 8px}
 .hs-info img{display:block;width:100%;border-radius:10px;margin-bottom:10px;object-fit:cover;max-height:180px;}
 .hs-info p{font-size:13px;line-height:1.5;opacity:.85;margin:0 0 12px;white-space:pre-wrap;}
-.hs-info a{display:inline-block;background:#3730a3;color:#fff;font-size:12px;font-weight:600;text-decoration:none;padding:8px 16px;border-radius:20px;}
+.hs-info a{display:inline-block;background:#3730a3;color:#fff;font-size:12px;font-weight:600;text-decoration:none;padding:8px 16px;border-radius:20px;margin:0 8px 8px 0;}
+.hs-info .hs-caption{font-size:11px;opacity:.6;margin:-6px 0 10px;}
+.hs-info .hs-field-label{font-size:10.5px;font-weight:700;opacity:.55;text-transform:uppercase;letter-spacing:.04em;margin:0 0 3px;}
 .lm{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:auto;filter:drop-shadow(0 0 1.5px rgba(0,0,0,.75)) drop-shadow(0 2px 4px rgba(0,0,0,.4));}
 .lm-label{background:var(--lm-label-color,#14141a);color:#fff;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);margin-bottom:4px;border-bottom:2px solid var(--lm-color,#3730a3);}
 .lm-line{width:3.5px;height:var(--lm-height,48px);background:var(--lm-color,#3730a3);border-radius:2px;}
@@ -209,7 +228,8 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 ${introHtml}
 <div id="viewer"></div>
 ${logoHtml}
-<div id="zoneCard"><div class="zc-head"><span class="zc-dot" id="zcDot"></span><span class="zc-title" id="zcTitle"></span><button class="zc-close" onclick="hideZoneCard()">&#10005;</button></div><div class="zc-status" id="zcStatus"></div><img class="zc-image" id="zcImage" alt=""><div id="zcDetail"></div><p class="zc-body" id="zcBody"></p><a class="zc-link" id="zcLink" target="_blank" rel="noopener">Learn more</a></div>
+<div id="zoneCard"><div class="zc-head"><span class="zc-dot" id="zcDot"></span><span class="zc-title" id="zcTitle"></span><button class="zc-close" onclick="hideZoneCard()">&#10005;</button></div><div class="zc-status" id="zcStatus"></div><div id="zcDetail"></div></div>
+<div id="imgLightbox"><div id="imgLbFrame"><img id="imgLbImg" alt=""><button id="imgLbClose" aria-label="Close">&#10005;</button></div></div>
 <div id="sceneSidebar"></div>
 <div id="controls">
   <button class="ctrl" onclick="move('up')">▲</button><button class="ctrl" onclick="move('dn')">▼</button>
@@ -254,9 +274,17 @@ function landmarkHtml(label,height,color,labelColor,animate){
 // showZoneCard below has its own.
 function hsInfoContent(h){
   var html='<div class="hs-info"><h3>'+esc(h.label||'')+'</h3>';
-  if(h.infoImageUrl) html+='<img src="'+esc(h.infoImageUrl)+'" alt="">';
-  if(h.infoBody) html+='<p>'+esc(h.infoBody)+'</p>';
-  if(h.linkUrl) html+='<a href="'+esc(h.linkUrl)+'" target="_blank" rel="noopener">Learn more</a>';
+  (h.infoFields||[]).forEach(function(f){
+    if(f.type==='image'){
+      html+='<img src="'+esc(f.value)+'" alt="'+esc(f.label||'')+'">';
+      if(f.label) html+='<p class="hs-caption">'+esc(f.label)+'</p>';
+    }else if(f.type==='link'){
+      html+='<a href="'+esc(f.value)+'" target="_blank" rel="noopener">'+esc(f.label||'Learn more')+'</a>';
+    }else{
+      if(f.label) html+='<p class="hs-field-label">'+esc(f.label)+'</p>';
+      html+='<p>'+esc(f.value)+'</p>';
+    }
+  });
   html+='</div>';
   return html;
 }
@@ -268,7 +296,7 @@ function arrowMarker(h){
   // type leaves it unset, so showMarkerPanel() silently no-ops for them.
   var extra={visible:!h.startHidden};
   if(h.actionType==='info') extra.content=hsInfoContent(h);
-  var d={target:h.target,actionType:h.actionType,linkUrl:h.linkUrl,toggleTargetId:h.toggleTargetId};
+  var d={target:h.target,actionType:h.actionType,linkUrl:h.linkUrl,toggleTargetId:h.toggleTargetId,infoImageUrl:h.infoImageUrl};
   if(h.type==='landmark'){return Object.assign({id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor,h.animateLine),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:d},extra);}
   // Floor decal: a real 3D plane (imageLayer), placed as a single point +
   // a 3-axis rotation object -- rotation.yaw/pitch/roll map to Y/X/Z axis
@@ -290,7 +318,7 @@ function arrowMarker(h){
   // this type, so it's free for a cosmetic perspective tilt. Mirrors
   // middle.jsx's arrowMarkers builder exactly.
   if(h.type==='pulse'){return Object.assign({id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,style:{transform:'perspective(600px) rotateX('+h.rotateX+'deg) rotateY('+h.rotateY+'deg)'},data:d},extra);}
-  return Object.assign({id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:d},extra);
+  return Object.assign({id:'hs_'+h.id,type:'image',image:h.customIconUrl||h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:d},extra);
 }
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
 function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+'55',stroke:z.color,strokeWidth:'2'},visible:!z.startHidden,data:z};}
@@ -360,6 +388,28 @@ function openLink(url){
   if(url.indexOf('mailto:')===0||url.indexOf('tel:')===0){location.href=url;}
   else{window.open(url,'_blank','noopener');}
 }
+// display:flex is set a frame before .show is added (a display:none element
+// can't transition) -- the double rAF makes sure the browser has actually
+// painted that display change before the opacity/scale transition starts,
+// otherwise both changes can get batched into the same frame and the fade+
+// scale-in never visibly plays.
+function showImageLightbox(url){
+  if(!url)return;
+  document.getElementById('imgLbImg').src=url;
+  var lb=document.getElementById('imgLightbox');
+  lb.style.display='flex';
+  requestAnimationFrame(function(){requestAnimationFrame(function(){lb.classList.add('show');});});
+}
+function hideImageLightbox(){
+  var lb=document.getElementById('imgLightbox');
+  if(lb.style.display==='none')return;
+  lb.classList.remove('show');
+  setTimeout(function(){lb.style.display='none';document.getElementById('imgLbImg').src='';},250);
+}
+window.hideImageLightbox=hideImageLightbox;
+document.getElementById('imgLbClose').addEventListener('click',hideImageLightbox);
+document.getElementById('imgLightbox').addEventListener('click',function(e){if(e.target.id==='imgLightbox')hideImageLightbox();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')hideImageLightbox();});
 mp.addEventListener('select-marker',function(ev){
   var m=ev.marker;
   if(m.id.indexOf('hs_')===0 && m.data){
@@ -369,6 +419,7 @@ mp.addEventListener('select-marker',function(ev){
     // before this listener even runs.
     if(t==='navigate' && d.target) loadScene(d.target);
     else if(t==='link') openLink(d.linkUrl);
+    else if(t==='image') showImageLightbox(d.infoImageUrl);
     // toggleMarker is a built-in MarkersPlugin method -- no manual
     // visible-state tracking needed.
     else if(t==='toggle' && d.toggleTargetId) mp.toggleMarker('hs_'+d.toggleTargetId);
@@ -377,6 +428,7 @@ mp.addEventListener('select-marker',function(ev){
     var z=m.data,zt=z.actionType||'info';
     if(zt==='navigate' && z.target) loadScene(z.target);
     else if(zt==='link') openLink(z.linkUrl);
+    else if(zt==='image') showImageLightbox(z.infoImageUrl);
     else if(zt==='toggle' && z.toggleTargetId) mp.toggleMarker('hs_'+z.toggleTargetId);
     else showZoneCard(z);
   }
@@ -401,19 +453,23 @@ mp.addEventListener('leave-marker',function(ev){
 // needed. Driven off the SAME camera events (position/zoom) PSV itself
 // fires for every pan/zoom/auto-rotate tick, rather than a polling loop.
 var _curScene=null;
-// Fraction of the viewport inset on every side before a landmark counts as
-// "in view" -- 0 would trigger the instant it touches the literal edge
-// (the old behavior); 0.25 means it has to clear a quarter of the screen's
-// width/height inward first, so the animation reads as reacting to the
-// landmark coming properly into frame, not just barely peeking into it.
-// The SAME boundary is used both ways (no separate enter/exit thresholds).
+// Fraction of the viewport inset on the LEFT/RIGHT edges before a landmark
+// counts as "in view" -- 0 would trigger the instant it touches the literal
+// edge (the old behavior); 0.25 means it has to clear a quarter of the
+// screen's width inward first, so the animation reads as reacting to the
+// landmark panning properly into frame, not just barely peeking into it.
+// Vertical position is deliberately NOT checked -- a landmark near the top
+// or bottom edge (but horizontally centered) still counts as in view, since
+// the trigger is meant to react to left/right camera panning only, the axis
+// you actually navigate a tour with, not looking up/down. The SAME
+// horizontal boundary is used both ways (no separate enter/exit thresholds).
 var _INVIEW_MARGIN=0.25;
 function _updateLandmarkAnim(){
   var s=_curScene&&TOURS[_curScene];
   if(!s)return;
   var host=document.getElementById('viewer');
-  var vw=host?host.clientWidth:window.innerWidth, vh=host?host.clientHeight:window.innerHeight;
-  var mx=vw*_INVIEW_MARGIN, my=vh*_INVIEW_MARGIN;
+  var vw=host?host.clientWidth:window.innerWidth;
+  var mx=vw*_INVIEW_MARGIN;
   s.arrows.forEach(function(h){
     if(h.type!=='landmark'||!h.animateLine)return;
     var marker;
@@ -423,7 +479,7 @@ function _updateLandmarkAnim(){
     var inView=false;
     try{
       var pt=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:h.yaw*Math.PI/180,pitch:h.pitch*Math.PI/180});
-      inView=!!pt&&pt.x>=mx&&pt.x<=vw-mx&&pt.y>=my&&pt.y<=vh-my;
+      inView=!!pt&&pt.x>=mx&&pt.x<=vw-mx;
     }catch(e){}
     el.classList.toggle('lm-in-view',inView);
   });
@@ -445,14 +501,21 @@ function showZoneCard(z){
     row.appendChild(a);row.appendChild(b);body.appendChild(row);
   });
   // Optional extras shared with the hotspot info card (same action-system
-  // fields) -- absent on every zone that predates this, so each one only
-  // shows up when actually set.
-  var img=document.getElementById('zcImage');
-  if(z.infoImageUrl){img.src=z.infoImageUrl;img.style.display='block';}else{img.style.display='none';}
-  var bodyText=document.getElementById('zcBody');
-  if(z.infoBody){bodyText.textContent=z.infoBody;bodyText.style.display='block';}else{bodyText.style.display='none';}
-  var link=document.getElementById('zcLink');
-  if(z.linkUrl){link.href=z.linkUrl;link.style.display='block';}else{link.style.display='none';}
+  // fields, same InfoFieldsEditor-built list) -- absent on every zone that
+  // predates this, so nothing renders when the list is empty.
+  (z.infoFields||[]).forEach(function(f){
+    if(f.type==='image'){
+      var img=document.createElement('img');img.className='zc-image';img.src=f.value;img.alt=f.label||'';
+      body.appendChild(img);
+      if(f.label){var cap=document.createElement('p');cap.className='zc-caption';cap.textContent=f.label;body.appendChild(cap);}
+    }else if(f.type==='link'){
+      var link=document.createElement('a');link.className='zc-link';link.href=f.value;link.target='_blank';link.rel='noopener';link.textContent=f.label||'Learn more';
+      body.appendChild(link);
+    }else{
+      if(f.label){var lbl=document.createElement('p');lbl.className='zc-field-label';lbl.textContent=f.label;body.appendChild(lbl);}
+      var txt=document.createElement('p');txt.className='zc-body';txt.textContent=f.value;body.appendChild(txt);
+    }
+  });
   document.getElementById('zoneCard').style.display='block';
 }
 
@@ -473,7 +536,7 @@ function move(d){var s=10*Math.PI/180;var p=viewer.getPosition();if(d==='up')vie
 window.move=move;
 function toggleFS(){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(e){console.warn('Fullscreen request was blocked:',e&&e.message);});}else{document.exitFullscreen();}}
 window.toggleFS=toggleFS;
-document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zc=document.getElementById('zoneCard');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zc&&!fs.contains(zc))fs.appendChild(zc);}else{if(sb)document.body.appendChild(sb);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zc)document.body.appendChild(zc);}});
+document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zc=document.getElementById('zoneCard'),lb=document.getElementById('imgLightbox');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zc&&!fs.contains(zc))fs.appendChild(zc);if(lb&&!fs.contains(lb))fs.appendChild(lb);}else{if(sb)document.body.appendChild(sb);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zc)document.body.appendChild(zc);if(lb)document.body.appendChild(lb);}});
 function _chk(){var l=window.innerWidth>window.innerHeight;document.getElementById('rotateOverlay').style.display=l?'none':'flex';}
 window.addEventListener('orientationchange',function(){setTimeout(_chk,300);});window.addEventListener('resize',function(){setTimeout(_chk,300);});setTimeout(_chk,300);
 </script></body></html>`

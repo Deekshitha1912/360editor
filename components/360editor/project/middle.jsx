@@ -611,8 +611,10 @@ export default function ProjectClient({ projectId }) {
             rotate_x: h.rotate_x ?? 90, rotate_y: h.rotate_y ?? 0,
             action_type: h.action_type || 'navigate',
             link_url: h.link_url || '', info_body: h.info_body || '', info_image_url: h.info_image_url || '',
+            info_fields: h.info_fields || [],
             toggle_target_id: h.toggle_target_id || '', start_hidden: !!h.start_hidden,
             animate_line: h.animate_line !== false,
+            custom_icon_url: h.custom_icon_url || '',
         })
         setActiveRightTab('directions')
     }
@@ -923,10 +925,15 @@ export default function ProjectClient({ projectId }) {
                 const tilt = h.arrow_type === 'pulse'
                     ? { style: { transform: `perspective(600px) rotateX(${h.rotate_x ?? 0}deg) rotateY(${h.rotate_y ?? 0}deg)` } }
                     : {}
+                // 'custom' is a plain billboard exactly like every other
+                // type here — the ONLY difference is which image URL it
+                // renders, a user-uploaded one (hotspot_panel.jsx's Icon
+                // image upload) instead of a fixed sprite, falling back to
+                // the lib/arrows.js placeholder glyph until one's uploaded.
                 return {
                     id: `hs_${h.id}`,
                     type: 'image',
-                    image: arrow.gif,
+                    image: h.custom_icon_url || arrow.gif,
                     size: { width: size, height: size },
                     position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
                     rotation: `${h.rotation ?? 0}deg`,
@@ -1240,8 +1247,9 @@ export default function ProjectClient({ projectId }) {
                 // that vanishes" bug already hit and fixed for floor's own
                 // edit-preview.
                 rotate_x: hotspotType === 'floor' ? 90 : 0, rotate_y: 0,
-                action_type: 'navigate', link_url: '', info_body: '', info_image_url: '',
+                action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
                 toggle_target_id: '', start_hidden: false, animate_line: true,
+                custom_icon_url: '',
             })
         }
     }, [sampleAt, drawingPolygon])
@@ -1680,9 +1688,11 @@ export default function ProjectClient({ projectId }) {
                     action_type: popupState.action_type || 'navigate',
                     link_url: popupState.link_url || null, info_body: popupState.info_body || null,
                     info_image_url: popupState.info_image_url || null,
+                    info_fields: popupState.info_fields || [],
                     toggle_target_id: popupState.toggle_target_id || null,
                     start_hidden: !!popupState.start_hidden,
                     animate_line: popupState.animate_line !== false,
+                    custom_icon_url: popupState.custom_icon_url || null,
                 }),
             })
             if (res.ok) {
@@ -1718,9 +1728,11 @@ export default function ProjectClient({ projectId }) {
                     link_url:         popupState.link_url || null,
                     info_body:        popupState.info_body || null,
                     info_image_url:   popupState.info_image_url || null,
+                    info_fields:      popupState.info_fields || [],
                     toggle_target_id: popupState.toggle_target_id || null,
                     start_hidden:     !!popupState.start_hidden,
                     animate_line:     popupState.animate_line !== false,
+                    custom_icon_url:  popupState.custom_icon_url || null,
                 }),
             })
             if (res.ok) {
@@ -1734,9 +1746,13 @@ export default function ProjectClient({ projectId }) {
         } finally { dispatchFlag('savingHotspot') }
     }
 
+    // Returns the underlying save's promise (rather than being fire-and-
+    // forget) so callers that need the save to actually land before moving
+    // on — publishTour flushing a pending edit before it snapshots the
+    // database — can await it.
     function handleSave() {
-        if (popupState?.mode === 'new')           saveHotspot()
-        if (popupState?.mode === 'edit-existing') updateHotspot()
+        if (popupState?.mode === 'new')           return saveHotspot()
+        if (popupState?.mode === 'edit-existing') return updateHotspot()
     }
 
     // Ask before deleting — the panel's trash button opens this confirmation.
@@ -1835,6 +1851,7 @@ export default function ProjectClient({ projectId }) {
             action_type: p.action_type || 'info',
             target_scene_id: p.target_scene_id || '',
             link_url: p.link_url || '', info_body: p.info_body || '', info_image_url: p.info_image_url || '',
+            info_fields: p.info_fields || [],
             toggle_target_id: p.toggle_target_id || '', start_hidden: !!p.start_hidden,
         }
     }
@@ -1865,6 +1882,7 @@ export default function ProjectClient({ projectId }) {
         polygonPopup?.custom_color, polygonPopup?.edge_lengths?.join('|'),
         polygonPopup?.action_type, polygonPopup?.target_scene_id, polygonPopup?.link_url,
         polygonPopup?.info_body, polygonPopup?.info_image_url, polygonPopup?.toggle_target_id, polygonPopup?.start_hidden,
+        polygonPopup?.info_fields,
     ])
 
     async function finishDrawingPolygon() {
@@ -1915,6 +1933,7 @@ export default function ProjectClient({ projectId }) {
                     target_scene_id: savingFor.target_scene_id || null,
                     link_url: savingFor.link_url || null, info_body: savingFor.info_body || null,
                     info_image_url: savingFor.info_image_url || null,
+                    info_fields: savingFor.info_fields || [],
                     toggle_target_id: savingFor.toggle_target_id || null,
                     start_hidden: !!savingFor.start_hidden,
                 }),
@@ -2073,10 +2092,35 @@ export default function ProjectClient({ projectId }) {
         } finally { dispatchFlag('savingSettings') }
     }
 
+    // A hotspot/zone's own save only fires on an explicit action (click
+    // away, Escape, the Save button — or, for a zone, ~700ms after you stop
+    // editing it). Building the preview straight from `hotspots`/`polygons`
+    // meant a hotspot placed right before hitting Preview — with no
+    // intervening click-away — simply wasn't in that array yet, so it
+    // silently didn't appear, while a zone (which auto-saves almost
+    // immediately) usually already had. Rather than forcing a real network
+    // save just to preview (Preview never needs to touch the database),
+    // this overlays whatever's still sitting in the open popup on top of
+    // the saved arrays — the exact same field shapes saveHotspot/
+    // updateHotspot/updatePolygon already send the API, so no translation
+    // needed. Purely local and synchronous: no stale-ref-after-setState risk.
     function openPreview() {
         if (!scenes.length || !project) return
         previewOpenRef.current = true
-        setPreviewHtml(buildTourHtml({ project, scenes, hotspots, polygons }))
+
+        let previewHotspots = hotspots
+        if (popupState?.mode === 'new' && activeScene) {
+            previewHotspots = [...hotspots, { id: '__preview_new_hotspot__', scene_id: activeScene.id, ...popupState }]
+        } else if (popupState?.mode === 'edit-existing') {
+            previewHotspots = hotspots.map(h => h.id === popupState.hotspot.id ? { ...h, ...popupState } : h)
+        }
+
+        let previewPolygons = polygons
+        if (polygonPopup?.mode === 'edit') {
+            previewPolygons = polygons.map(p => p.id === polygonPopup.polygon.id ? { ...p, ...polygonPopup } : p)
+        }
+
+        setPreviewHtml(buildTourHtml({ project, scenes, hotspots: previewHotspots, polygons: previewPolygons }))
     }
 
     // ── Publish ────────────────────────────────────────────────────────────
@@ -2101,6 +2145,17 @@ export default function ProjectClient({ projectId }) {
                     return
                 }
             }
+            // Same reasoning, for a hotspot/zone edit still sitting in its
+            // open form — a hotspot's own save only fires on an explicit
+            // click-away/Escape/Save, not automatically, so one placed right
+            // before hitting Publish would otherwise be silently missing
+            // from the live tour (Preview's own version of this bug is
+            // handled differently — see openPreview — since it can just
+            // overlay the pending edit locally instead of needing a real
+            // save; Publish snapshots the database, so it actually has to
+            // land first).
+            if (popupState?.mode === 'new' || popupState?.mode === 'edit-existing') await handleSave()
+            if (polygonPopup?.mode === 'edit' && polygonPopup._dirty) await updatePolygon()
 
             const res  = await fetch(`/api/projects/${project.id}/publish`, { method: 'POST' })
             const json = await res.json().catch(() => ({}))
@@ -2281,14 +2336,22 @@ export default function ProjectClient({ projectId }) {
                     )}
 
                     {/* Hide/show toggle — collapses the scene list entirely
-                        rather than letting it be dragged narrower/wider. */}
-                    <button onClick={() => setLeftPanelOpen(o => !o)}
-                            title={leftPanelOpen ? 'Hide scene list' : 'Show scene list'}
-                            className="w-4 shrink-0 flex items-center justify-center border-x border-editor-border bg-white hover:bg-editor-primary/8 text-editor-icon-idle hover:text-editor-primary transition-colors">
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                            {leftPanelOpen ? <path d="M15 18l-6-6 6-6"/> : <path d="M9 18l6-6-6-6"/>}
-                        </svg>
-                    </button>
+                        rather than letting it be dragged narrower/wider. A
+                        small floating pill straddling the panel boundary
+                        (not a full-height bar) — the same collapse-button
+                        pattern Notion/VS Code use. */}
+                    <div className="relative w-0 shrink-0 z-20">
+                        <button onClick={() => setLeftPanelOpen(o => !o)}
+                                title={leftPanelOpen ? 'Hide scene list' : 'Show scene list'}
+                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-6 h-11 rounded-full
+                                           border border-editor-border bg-white shadow-[0_1px_4px_rgba(0,0,0,0.1)]
+                                           text-editor-icon-idle hover:border-editor-primary hover:bg-editor-primary
+                                           hover:text-white transition-colors flex items-center justify-center">
+                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5">
+                                {leftPanelOpen ? <path d="M15 18l-6-6 6-6"/> : <path d="M9 18l6-6-6-6"/>}
+                            </svg>
+                        </button>
+                    </div>
 
                     {/* Middle — viewer */}
                     <div className="flex-1 relative overflow-hidden bg-editor-subtle">
@@ -2574,7 +2637,7 @@ export default function ProjectClient({ projectId }) {
                                                     />
                                                 ) : (
                                                     <img
-                                                        src={(ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
+                                                        src={popupState.custom_icon_url || (ARROWS.find(a => a.type === popupState.arrow_type) || ARROWS[0]).gif}
                                                         alt=""
                                                         draggable={false}
                                                         onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
@@ -2876,14 +2939,20 @@ export default function ProjectClient({ projectId }) {
 
                     {/* Hide/show toggle — collapses the Directions/Overlays/
                         Zones column entirely rather than letting it be
-                        dragged narrower/wider. */}
-                    <button onClick={() => setRightPanelOpen(o => !o)}
-                            title={rightPanelOpen ? 'Hide panel' : 'Show panel'}
-                            className="w-4 shrink-0 flex items-center justify-center border-x border-editor-border bg-white hover:bg-editor-primary/8 text-editor-icon-idle hover:text-editor-primary transition-colors">
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                            {rightPanelOpen ? <path d="M9 18l6-6-6-6"/> : <path d="M15 18l-6-6 6-6"/>}
-                        </svg>
-                    </button>
+                        dragged narrower/wider. Same small floating pill as
+                        the left panel's own toggle. */}
+                    <div className="relative w-0 shrink-0 z-20">
+                        <button onClick={() => setRightPanelOpen(o => !o)}
+                                title={rightPanelOpen ? 'Hide panel' : 'Show panel'}
+                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-6 h-11 rounded-full
+                                           border border-editor-border bg-white shadow-[0_1px_4px_rgba(0,0,0,0.1)]
+                                           text-editor-icon-idle hover:border-editor-primary hover:bg-editor-primary
+                                           hover:text-white transition-colors flex items-center justify-center">
+                            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5">
+                                {rightPanelOpen ? <path d="M9 18l6-6-6-6"/> : <path d="M15 18l-6-6 6-6"/>}
+                            </svg>
+                        </button>
+                    </div>
 
                     {/* Right — Directions / Overlays / Zones share one column now,
                         switched via tabs, instead of three sections hard-stacked in

@@ -12,6 +12,7 @@
 import { useState } from 'react'
 import { ARROWS } from '@/lib/arrows'
 import { HOTSPOT_COLORS, LABEL_COLORS } from '@/lib/hotspots'
+import InfoFieldsEditor from './info_fields_editor'
 export { ARROWS }
 
 function Spinner({ size = 10 }) {
@@ -32,7 +33,11 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
     const [uploadingImage, setUploadingImage] = useState(false)
     const [uploadError, setUploadError] = useState('')
 
+    const [uploadingIcon, setUploadingIcon] = useState(false)
+    const [uploadIconError, setUploadIconError] = useState('')
+
     const isLandmarkForm = state.arrow_type === 'landmark'
+    const isCustomForm = state.arrow_type === 'custom'
     // Both 'floor' (a real 3D-embedded plane) and 'pulse' (a plain animated
     // billboard) get the same Rotate X/Y/Z sliders, matching the same 3-ring
     // gizmo shown for both on-canvas (middle.jsx) — X/Y are cosmetically
@@ -42,6 +47,10 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
     const actionType = state.action_type || 'navigate'
     const arrow = ARROWS.find(a => a.type === state.arrow_type)
     const headerLabel = state.mode === 'edit-existing' ? 'Edit direction' : 'New direction'
+    // Custom's own uploaded image stands in for the fixed sprite everywhere
+    // that would otherwise show `arrow.gif` — the placeholder glyph only
+    // shows until one's actually uploaded.
+    const headerIconSrc = state.custom_icon_url || arrow?.gif
 
     return (
         <div ref={formRef} className="flex flex-col h-full overflow-y-auto bg-editor-panel border-l border-editor-border select-none">
@@ -55,7 +64,7 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                         className="w-6 h-6 flex items-center justify-center rounded-lg text-editor-ink-muted hover:text-editor-ink hover:bg-editor-subtle transition-colors shrink-0">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M15 18l-6-6 6-6"/></svg>
                 </button>
-                {arrow && <img src={arrow.gif} alt={arrow.label} className="w-5 h-5 object-contain shrink-0 drop-shadow-[0_1px_3px_rgba(0,0,0,0.5)]"/>}
+                {headerIconSrc && <img src={headerIconSrc} alt={arrow?.label || ''} className="w-5 h-5 object-contain shrink-0 rounded-sm drop-shadow-[0_1px_3px_rgba(0,0,0,0.5)]"/>}
                 <span className="text-[11px] font-bold text-editor-primary flex-1 truncate">{state.label || headerLabel}</span>
                 <button onClick={onSave} disabled={saving}
                         className="h-7 px-3 shrink-0 text-[11px] rounded-lg bg-editor-primary text-white
@@ -91,6 +100,7 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                     >
                         <option value="navigate">Go to scene</option>
                         <option value="link">Open link</option>
+                        <option value="image">Open image</option>
                         <option value="info">Show info card</option>
                         <option value="toggle">Show/hide a hotspot</option>
                     </select>
@@ -127,73 +137,56 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                     </div>
                 )}
 
+                {actionType === 'image' && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Image</label>
+                        {state.info_image_url ? (
+                            <div className="flex items-center gap-1.5">
+                                <img src={state.info_image_url} alt="" className="w-7 h-7 rounded object-cover border border-editor-border shrink-0"/>
+                                <button type="button" onClick={() => onUpdate({ ...state, info_image_url: '' })}
+                                        className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border
+                                                   text-editor-ink-muted hover:bg-editor-subtle transition-colors">
+                                    Remove
+                                </button>
+                            </div>
+                        ) : (
+                            <label className="flex items-center justify-center h-7 text-[11px] rounded-lg border border-dashed
+                                               border-editor-border text-editor-ink-muted hover:bg-editor-subtle
+                                               transition-colors cursor-pointer">
+                                {uploadingImage ? <><Spinner/>&nbsp;Uploading…</> : 'Upload image'}
+                                <input
+                                    type="file" accept="image/*" className="hidden" disabled={uploadingImage}
+                                    onChange={async e => {
+                                        const file = e.target.files?.[0]
+                                        e.target.value = ''
+                                        if (!file || !onUploadImage) return
+                                        setUploadingImage(true)
+                                        setUploadError('')
+                                        try {
+                                            const url = await onUploadImage(file)
+                                            if (url) onUpdate({ ...state, info_image_url: url })
+                                        } catch (err) {
+                                            setUploadError(err?.message || 'Upload failed.')
+                                        } finally {
+                                            setUploadingImage(false)
+                                        }
+                                    }}
+                                />
+                            </label>
+                        )}
+                        {uploadError && <p className="text-[10px] text-red-500">{uploadError}</p>}
+                        <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                            Opens centered, full-screen, with a close button — clicking outside it or the ✕ closes it.
+                        </p>
+                    </div>
+                )}
+
                 {actionType === 'info' && (
-                    <>
-                        <div className="space-y-1">
-                            <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Body text</label>
-                            <textarea
-                                value={state.info_body || ''}
-                                onChange={e => onUpdate({ ...state, info_body: e.target.value })}
-                                rows={3}
-                                placeholder="Shown under the title when clicked"
-                                className="w-full bg-editor-surface border border-editor-border rounded-lg px-2.5 py-1.5
-                                           text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary
-                                           placeholder:text-editor-ink-muted resize-none"
-                            />
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Image (optional)</label>
-                            {state.info_image_url ? (
-                                <div className="flex items-center gap-1.5">
-                                    <img src={state.info_image_url} alt="" className="w-7 h-7 rounded object-cover border border-editor-border shrink-0"/>
-                                    <button type="button" onClick={() => onUpdate({ ...state, info_image_url: '' })}
-                                            className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border
-                                                       text-editor-ink-muted hover:bg-editor-subtle transition-colors">
-                                        Remove
-                                    </button>
-                                </div>
-                            ) : (
-                                <label className="flex items-center justify-center h-7 text-[11px] rounded-lg border border-dashed
-                                                   border-editor-border text-editor-ink-muted hover:bg-editor-subtle
-                                                   transition-colors cursor-pointer">
-                                    {uploadingImage ? <><Spinner/>&nbsp;Uploading…</> : 'Upload image'}
-                                    <input
-                                        type="file" accept="image/*" className="hidden" disabled={uploadingImage}
-                                        onChange={async e => {
-                                            const file = e.target.files?.[0]
-                                            e.target.value = ''
-                                            if (!file || !onUploadImage) return
-                                            setUploadingImage(true)
-                                            setUploadError('')
-                                            try {
-                                                const url = await onUploadImage(file)
-                                                if (url) onUpdate({ ...state, info_image_url: url })
-                                            } catch (err) {
-                                                // uploadOverlayImage (middle.jsx) throws rather than
-                                                // returning an error string — the same function
-                                                // logo/cover-up uploads use, just called directly here.
-                                                setUploadError(err?.message || 'Upload failed.')
-                                            } finally {
-                                                setUploadingImage(false)
-                                            }
-                                        }}
-                                    />
-                                </label>
-                            )}
-                            {uploadError && <p className="text-[10px] text-red-500">{uploadError}</p>}
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Learn more link (optional)</label>
-                            <input
-                                value={state.link_url || ''}
-                                onChange={e => onUpdate({ ...state, link_url: e.target.value })}
-                                placeholder="https://…"
-                                className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5
-                                           text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary
-                                           placeholder:text-editor-ink-muted"
-                            />
-                        </div>
-                    </>
+                    <InfoFieldsEditor
+                        fields={state.info_fields}
+                        onChange={info_fields => onUpdate({ ...state, info_fields })}
+                        onUploadImage={onUploadImage}
+                    />
                 )}
 
                 {actionType === 'toggle' && (
@@ -224,6 +217,50 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                     />
                     Starts hidden until revealed
                 </label>
+
+                {isCustomForm && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Icon image</label>
+                        {state.custom_icon_url ? (
+                            <div className="flex items-center gap-1.5">
+                                <img src={state.custom_icon_url} alt="" className="w-7 h-7 rounded object-contain border border-editor-border shrink-0 bg-editor-surface"/>
+                                <button type="button" onClick={() => onUpdate({ ...state, custom_icon_url: '' })}
+                                        className="flex-1 h-7 text-[11px] rounded-lg border border-editor-border
+                                                   text-editor-ink-muted hover:bg-editor-subtle transition-colors">
+                                    Remove
+                                </button>
+                            </div>
+                        ) : (
+                            <label className="flex items-center justify-center h-7 text-[11px] rounded-lg border border-dashed
+                                               border-editor-border text-editor-ink-muted hover:bg-editor-subtle
+                                               transition-colors cursor-pointer">
+                                {uploadingIcon ? <><Spinner/>&nbsp;Uploading…</> : 'Upload image'}
+                                <input
+                                    type="file" accept="image/*" className="hidden" disabled={uploadingIcon}
+                                    onChange={async e => {
+                                        const file = e.target.files?.[0]
+                                        e.target.value = ''
+                                        if (!file || !onUploadImage) return
+                                        setUploadingIcon(true)
+                                        setUploadIconError('')
+                                        try {
+                                            const url = await onUploadImage(file)
+                                            if (url) onUpdate({ ...state, custom_icon_url: url })
+                                        } catch (err) {
+                                            setUploadIconError(err?.message || 'Upload failed.')
+                                        } finally {
+                                            setUploadingIcon(false)
+                                        }
+                                    }}
+                                />
+                            </label>
+                        )}
+                        {uploadIconError && <p className="text-[10px] text-red-500">{uploadIconError}</p>}
+                        <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                            Shown in place of a preset arrow — everything else about this hotspot (size, rotation, and its click action below) works the same as any other type.
+                        </p>
+                    </div>
+                )}
 
                 {isLandmarkForm && (
                     <label className="flex items-center gap-1.5 text-[11px] text-editor-ink cursor-pointer">

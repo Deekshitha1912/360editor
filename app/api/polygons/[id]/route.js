@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeEdgeLengths } from '@/lib/polygons'
-import { normalizeActionType, clampText } from '@/lib/actions'
+import { normalizeActionType, clampText, normalizeInfoFields } from '@/lib/actions'
 
 // Ownership is checked with its own SELECT, then the write is a plain update
 // scoped by id — never an embedded-join filter on the UPDATE itself. See
@@ -52,6 +52,7 @@ export async function PATCH(req, { params }) {
         if ('link_url'         in body) updates.link_url         = clampText(body.link_url, 2000)
         if ('info_body'        in body) updates.info_body        = clampText(body.info_body, 4000)
         if ('info_image_url'   in body) updates.info_image_url   = clampText(body.info_image_url, 2000)
+        if ('info_fields'      in body) updates.info_fields      = normalizeInfoFields(body.info_fields)
         if ('toggle_target_id' in body) updates.toggle_target_id = body.toggle_target_id || null
         if ('start_hidden'     in body) updates.start_hidden     = !!body.start_hidden
 
@@ -94,7 +95,7 @@ export async function PATCH(req, { params }) {
             .eq('id', id)
             .select(`
                 id, scene_id, project_id, points, status, label, detail, custom_color, edge_lengths,
-                action_type, target_scene_id, link_url, info_body, info_image_url, toggle_target_id, start_hidden
+                action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden
             `)
 
         if (error) {
