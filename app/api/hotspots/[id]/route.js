@@ -1,7 +1,10 @@
 ﻿// app/api/hotspots/[id]/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
-import { clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor } from '@/lib/hotspots'
+import {
+    clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
+    clampHotspotAngle, normalizeActionType, clampText,
+} from '@/lib/hotspots'
 
 export async function PATCH(req, { params }) {
     try {
@@ -27,7 +30,12 @@ export async function PATCH(req, { params }) {
             return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 })
         }
 
-        const allowed = ['label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation', 'color', 'label_color']
+        const allowed = [
+            'label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation',
+            'color', 'label_color', 'rotate_x', 'rotate_y',
+            'action_type', 'link_url', 'info_body', 'info_image_url', 'toggle_target_id', 'start_hidden',
+            'animate_line',
+        ]
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
         )
@@ -36,15 +44,24 @@ export async function PATCH(req, { params }) {
             return NextResponse.json({ error: 'No valid fields.' }, { status: 400 })
         }
 
-        if ('size'        in updates) updates.size        = clampHotspotSize(updates.size)
-        if ('rotation'    in updates) updates.rotation     = clampHotspotRotation(updates.rotation)
-        if ('color'       in updates) updates.color        = normalizeHotspotColor(updates.color)
-        if ('label_color' in updates) updates.label_color  = normalizeLabelColor(updates.label_color)
+        if ('size'            in updates) updates.size            = clampHotspotSize(updates.size)
+        if ('rotation'        in updates) updates.rotation        = clampHotspotRotation(updates.rotation)
+        if ('color'           in updates) updates.color           = normalizeHotspotColor(updates.color)
+        if ('label_color'     in updates) updates.label_color     = normalizeLabelColor(updates.label_color)
+        if ('rotate_x'        in updates) updates.rotate_x        = clampHotspotAngle(updates.rotate_x, 90)
+        if ('rotate_y'        in updates) updates.rotate_y        = clampHotspotAngle(updates.rotate_y, 0)
+        if ('action_type'     in updates) updates.action_type     = normalizeActionType(updates.action_type)
+        if ('link_url'        in updates) updates.link_url        = clampText(updates.link_url, 2000)
+        if ('info_body'       in updates) updates.info_body       = clampText(updates.info_body, 4000)
+        if ('info_image_url'  in updates) updates.info_image_url  = clampText(updates.info_image_url, 2000)
+        if ('toggle_target_id' in updates) updates.toggle_target_id = updates.toggle_target_id || null
+        if ('start_hidden'    in updates) updates.start_hidden    = !!updates.start_hidden
+        if ('animate_line'    in updates) updates.animate_line    = !!updates.animate_line
 
         // Step 1: fetch the hotspot
         const { data: hotspot, error: fetchErr } = await supabase
             .from('hotspots')
-            .select('id, project_id')
+            .select('id, project_id, scene_id')
             .eq('id', id)
             .single()
 
@@ -70,12 +87,25 @@ export async function PATCH(req, { params }) {
             return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
         }
 
+        // toggle_target_id, if being set, must be another hotspot on THIS
+        // SAME scene — see the identical check in POST /api/hotspots.
+        if (updates.toggle_target_id) {
+            const { data: targetHotspot } = await supabase
+                .from('hotspots').select('id').eq('id', updates.toggle_target_id).eq('scene_id', hotspot.scene_id).single()
+            if (!targetHotspot)
+                return NextResponse.json({ error: 'toggle_target_id does not belong to this scene.' }, { status: 400 })
+        }
+
         // Step 3: update
         const { data: updated, error: updateErr } = await supabase
             .from('hotspots')
             .update(updates)
             .eq('id', id)
-            .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color')
+            .select(`
+                id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
+                color, label_color, rotate_x, rotate_y,
+                action_type, link_url, info_body, info_image_url, toggle_target_id, start_hidden, animate_line
+            `)
             .single()
 
         if (updateErr) {

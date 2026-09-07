@@ -206,7 +206,9 @@
   --text-editor-md:    0.8125rem; /* 13px */
   --text-editor-lg:    0.875rem;  /* 14px */
 
-  /* Was copy-pasted verbatim as an inline style/arbitrary value in three
-     floating popups (HotspotPopup, PolygonPopup, OverlayPopup). */
+  /* Was copy-pasted verbatim as an inline style/arbitrary value in the
+     remaining floating popup (OverlayPopup) — the hotspot and zone forms
+     used to float too, but now live inline in the right panel instead
+     (HotspotPanel/PolygonPanel), so they no longer need this. */
   --shadow-editor-popup: 0 8px 32px rgba(0,0,0,.18);
 }

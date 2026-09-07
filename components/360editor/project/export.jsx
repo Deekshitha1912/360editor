@@ -12,10 +12,10 @@ const PSV_VERSION = '5.15.1'
 const THREE_VERSION = '0.185.1'
 
 // Fallback opening horizontal FOV — must match middle.jsx's DEFAULT_HFOV so a
-// published tour's opening view matches what the editor showed. 90deg reads
-// as a normal, true-to-scale view; the old 120deg default read as too wide /
-// zoomed out to judge a room's real dimensions by.
-const DEFAULT_HFOV = 90
+// published tour's opening view matches what the editor showed. Lower = more
+// zoomed in; 70deg reads as a closer, more immersive opening view than the
+// old 90deg default without going so narrow it hides the room's edges.
+const DEFAULT_HFOV = 70
 
 export function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
@@ -68,7 +68,16 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                     rotation: h.rotation ?? 0,
                     color: h.color || DEFAULT_HOTSPOT_COLOR,
                     labelColor: h.label_color || DEFAULT_LABEL_COLOR,
+                    rotateX: h.rotate_x ?? 90,
+                    rotateY: h.rotate_y ?? 0,
                     target: h.target_scene_id,
+                    actionType: h.action_type || 'navigate',
+                    linkUrl: h.link_url || '',
+                    infoBody: h.info_body || '',
+                    infoImageUrl: h.info_image_url || '',
+                    toggleTargetId: h.toggle_target_id || '',
+                    startHidden: !!h.start_hidden,
+                    animateLine: h.animate_line !== false,
                 }
             })
 
@@ -87,10 +96,18 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
             .map(z => ({
                 id: z.id,
                 points: z.points,
-                color: colorForStatus(z.status),
+                color: colorForStatus(z.status, z.custom_color),
                 status: z.status,
                 label: z.label || '',
                 detail: z.detail || {},
+                edgeLengths: z.edge_lengths || [],
+                actionType: z.action_type || 'info',
+                target: z.target_scene_id,
+                linkUrl: z.link_url || '',
+                infoBody: z.info_body || '',
+                infoImageUrl: z.info_image_url || '',
+                toggleTargetId: z.toggle_target_id || '',
+                startHidden: !!z.start_hidden,
             }))
 
         tours[scene.id] = {
@@ -166,11 +183,24 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #zoneCard .zc-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:3px 0;}
 #zoneCard .zc-row span:first-child{opacity:.55}
 #zoneCard .zc-row span:last-child{font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#zoneCard .zc-image{width:100%;border-radius:8px;margin:8px 0;object-fit:cover;max-height:140px;}
+#zoneCard .zc-body{font-size:12px;line-height:1.5;opacity:.85;margin:8px 0 0;white-space:pre-wrap;}
+#zoneCard .zc-link{margin-top:10px;background:#3730a3;color:#fff;font-size:11px;font-weight:600;text-decoration:none;padding:7px 14px;border-radius:16px;text-align:center;}
+.edge-label{pointer-events:none;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;white-space:nowrap;}
+.hs-info{padding:2px 2px 8px}
+.hs-info h3{font-size:15px;font-weight:600;margin:0 0 8px}
+.hs-info img{display:block;width:100%;border-radius:10px;margin-bottom:10px;object-fit:cover;max-height:180px;}
+.hs-info p{font-size:13px;line-height:1.5;opacity:.85;margin:0 0 12px;white-space:pre-wrap;}
+.hs-info a{display:inline-block;background:#3730a3;color:#fff;font-size:12px;font-weight:600;text-decoration:none;padding:8px 16px;border-radius:20px;}
 .lm{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:auto;filter:drop-shadow(0 0 1.5px rgba(0,0,0,.75)) drop-shadow(0 2px 4px rgba(0,0,0,.4));}
 .lm-label{background:var(--lm-label-color,#14141a);color:#fff;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);margin-bottom:4px;border-bottom:2px solid var(--lm-color,#3730a3);}
 .lm-line{width:3.5px;height:var(--lm-height,48px);background:var(--lm-color,#3730a3);border-radius:2px;}
 .lm-dot{width:15px;height:15px;border-radius:50%;background:var(--lm-color,#3730a3);border:2px solid #fff;box-shadow:0 0 0 0 var(--lm-color,#3730a3);animation:lm-pulse 2s ease-out infinite;}
 @keyframes lm-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--lm-color,#3730a3) 55%, transparent)}70%{box-shadow:0 0 0 14px color-mix(in srgb, var(--lm-color,#3730a3) 0%, transparent)}100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--lm-color,#3730a3) 0%, transparent)}}
+.lm.lm-anim .lm-line{transform:scaleY(0);transform-origin:bottom center;transition:transform 1.1s cubic-bezier(.22,1,.36,1);}
+.lm.lm-anim .lm-label{opacity:0;transition:opacity .3s ease;}
+.lm.lm-anim.lm-in-view .lm-line{transform:scaleY(1);}
+.lm.lm-anim.lm-in-view .lm-label{opacity:1;transition:opacity .3s ease 1.1s;}
 </style>
 </head>
 <body>
@@ -179,7 +209,7 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 ${introHtml}
 <div id="viewer"></div>
 ${logoHtml}
-<div id="zoneCard"><div class="zc-head"><span class="zc-dot" id="zcDot"></span><span class="zc-title" id="zcTitle"></span><button class="zc-close" onclick="hideZoneCard()">&#10005;</button></div><div class="zc-status" id="zcStatus"></div><div id="zcDetail"></div></div>
+<div id="zoneCard"><div class="zc-head"><span class="zc-dot" id="zcDot"></span><span class="zc-title" id="zcTitle"></span><button class="zc-close" onclick="hideZoneCard()">&#10005;</button></div><div class="zc-status" id="zcStatus"></div><img class="zc-image" id="zcImage" alt=""><div id="zcDetail"></div><p class="zc-body" id="zcBody"></p><a class="zc-link" id="zcLink" target="_blank" rel="noopener">Learn more</a></div>
 <div id="sceneSidebar"></div>
 <div id="controls">
   <button class="ctrl" onclick="move('up')">▲</button><button class="ctrl" onclick="move('dn')">▼</button>
@@ -207,19 +237,84 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 // property assignment, not style.setProperty()), which doesn't reliably
 // set CSS custom properties. An inline style="..." attribute, parsed by
 // the browser while setting innerHTML, doesn't go through that code path.
-function landmarkHtml(label,height,color,labelColor){
+function landmarkHtml(label,height,color,labelColor,animate){
   var h=(typeof height==='number'&&isFinite(height))?height:48;
   var c=/^#[0-9a-f]{6}$/i.test(color||'')?color:'#3730a3';
   var lc=/^#[0-9a-f]{6}$/i.test(labelColor||'')?labelColor:'#14141a';
-  return '<div class="lm" style="--lm-height:'+h+'px;--lm-color:'+c+';--lm-label-color:'+lc+'"><div class="lm-label">'+esc(label||'Landmark')+'</div><div class="lm-line"></div><div class="lm-dot"></div></div>';
+  // lm-anim starts the line collapsed (see the .lm.lm-anim CSS rules) --
+  // _updateLandmarkAnim adds lm-in-view the moment the camera pans this
+  // landmark into the visible frame, which is what actually grows it.
+  return '<div class="lm'+(animate?' lm-anim':'')+'" style="--lm-height:'+h+'px;--lm-color:'+c+';--lm-label-color:'+lc+'"><div class="lm-label">'+esc(label||'Landmark')+'</div><div class="lm-line"></div><div class="lm-dot"></div></div>';
+}
+// Built for the actionType 'info' case only -- fed straight into a marker's
+// own config.content, which Photo Sphere Viewer's markers-plugin already
+// shows automatically in its built-in side panel on every marker click
+// (showMarkerPanel(), called internally before the select-marker listener
+// below even runs) -- so no custom card DOM/CSS is needed here the way
+// showZoneCard below has its own.
+function hsInfoContent(h){
+  var html='<div class="hs-info"><h3>'+esc(h.label||'')+'</h3>';
+  if(h.infoImageUrl) html+='<img src="'+esc(h.infoImageUrl)+'" alt="">';
+  if(h.infoBody) html+='<p>'+esc(h.infoBody)+'</p>';
+  if(h.linkUrl) html+='<a href="'+esc(h.linkUrl)+'" target="_blank" rel="noopener">Learn more</a>';
+  html+='</div>';
+  return html;
 }
 function arrowMarker(h){
-  if(h.type==='landmark'){return {id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:{target:h.target}};}
-  return {id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:{target:h.target}};
+  // Shared across every branch below: visible defaults a hotspot in/out of
+  // the scene at load (a 'toggle' action later flips it via
+  // mp.toggleMarker), and content -- ONLY set for actionType 'info' -- is
+  // what makes PSV's own panel show something on click; every other action
+  // type leaves it unset, so showMarkerPanel() silently no-ops for them.
+  var extra={visible:!h.startHidden};
+  if(h.actionType==='info') extra.content=hsInfoContent(h);
+  var d={target:h.target,actionType:h.actionType,linkUrl:h.linkUrl,toggleTargetId:h.toggleTargetId};
+  if(h.type==='landmark'){return Object.assign({id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor,h.animateLine),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:d},extra);}
+  // Floor decal: a real 3D plane (imageLayer), placed as a single point +
+  // a 3-axis rotation object -- rotation.yaw/pitch/roll map to Y/X/Z axis
+  // rotation respectively (confirmed from PSV's own Marker3D source), and
+  // the base orientation before rotation is applied is position-
+  // independent, so a given rotateX/rotateY/rotation value looks the same
+  // everywhere on the sphere. size/100 is PSV's own world-scale factor
+  // against the fixed sphere radius, a different unit than every other
+  // arrow's screen-space pixel size, so it's scaled up by the same factor
+  // as lib/arrows.js's FLOOR_SIZE_MULTIPLIER (kept in sync by hand -- this
+  // plain string can't import that module). Mirrors middle.jsx's
+  // arrowMarkers builder.
+  if(h.type==='floor'){var fsz=h.size*2.5;return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:h.gif,position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:fsz,height:fsz},rotation:{yaw:h.rotateY+'deg',pitch:h.rotateX+'deg',roll:(h.rotation||0)+'deg'},data:d},extra);}
+  // Pulse ring stays a plain billboard (a true 3D marker would freeze its
+  // pulse animation to one static frame) but X/Y still get a real visible
+  // effect via a CSS transform on the marker element -- the transform
+  // property (unlike rotate/translate, which PSV's own 2D markers already
+  // use for Z-rotation/position) is never touched by PSV's marker code for
+  // this type, so it's free for a cosmetic perspective tilt. Mirrors
+  // middle.jsx's arrowMarkers builder exactly.
+  if(h.type==='pulse'){return Object.assign({id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,style:{transform:'perspective(600px) rotateX('+h.rotateX+'deg) rotateY('+h.rotateY+'deg)'},data:d},extra);}
+  return Object.assign({id:'hs_'+h.id,type:'image',image:h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:d},extra);
 }
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
-function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+'55',stroke:z.color,strokeWidth:'2'},data:z};}
-function markersFor(id){var s=TOURS[id];return s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker)).concat(s.arrows.map(arrowMarker));}
+function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+'55',stroke:z.color,strokeWidth:'2'},visible:!z.startHidden,data:z};}
+// One read-only label per edge that actually has a length typed in (edge i
+// runs from points[i] to points[(i+1) % length]) -- a plain arithmetic
+// midpoint, same tolerance lib/polygons.js's own centroidOf() uses for these
+// compact, single-object-sized shapes. Non-interactive (pointer-events:none
+// in CSS) so it never steals the zone's own click.
+function edgeLabelMarkers(z){
+  var out=[],lens=z.edgeLengths||[];
+  for(var i=0;i<z.points.length;i++){
+    var label=lens[i];
+    if(!label)continue;
+    var a=z.points[i],b=z.points[(i+1)%z.points.length];
+    out.push({id:'elabel_'+z.id+'_'+i,type:'html',html:'<div class="edge-label">'+esc(label)+'</div>',anchor:'center center',position:{yaw:((a[0]+b[0])/2)+'deg',pitch:((a[1]+b[1])/2)+'deg'},visible:!z.startHidden});
+  }
+  return out;
+}
+function markersFor(id){
+  var s=TOURS[id];
+  var out=s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker)).concat(s.arrows.map(arrowMarker));
+  s.zones.forEach(function(z){out=out.concat(edgeLabelMarkers(z));});
+  return out;
+}
 
 var _l=0,_t=SM.length;
 function _onLoad(){_l++;var p=Math.round(_l/_t*100);document.getElementById('loadPct').textContent='Loading\\u2026 '+p+'%';document.getElementById('loadFill').style.width=p+'%';if(_l>=_t)setTimeout(function(){document.getElementById('loadOverlay').style.display='none';},400);}
@@ -257,10 +352,34 @@ function loadScene(id){
     _onScene(id);
   });
 }
+// mailto:/tel: aren't real navigable pages, so they replace the current tab
+// (a new tab left blank behind them is just confusing); everything else
+// opens in a new tab so the tour itself stays open underneath.
+function openLink(url){
+  if(!url)return;
+  if(url.indexOf('mailto:')===0||url.indexOf('tel:')===0){location.href=url;}
+  else{window.open(url,'_blank','noopener');}
+}
 mp.addEventListener('select-marker',function(ev){
   var m=ev.marker;
-  if(m.id.indexOf('hs_')===0 && m.data && m.data.target) loadScene(m.data.target);
-  if(m.id.indexOf('poly_')===0) showZoneCard(m.data);
+  if(m.id.indexOf('hs_')===0 && m.data){
+    var d=m.data,t=d.actionType||'navigate';
+    // 'info' needs nothing here -- PSV's own showMarkerPanel() already
+    // opened the content panel (set via arrowMarker's config.content)
+    // before this listener even runs.
+    if(t==='navigate' && d.target) loadScene(d.target);
+    else if(t==='link') openLink(d.linkUrl);
+    // toggleMarker is a built-in MarkersPlugin method -- no manual
+    // visible-state tracking needed.
+    else if(t==='toggle' && d.toggleTargetId) mp.toggleMarker('hs_'+d.toggleTargetId);
+  }
+  if(m.id.indexOf('poly_')===0 && m.data){
+    var z=m.data,zt=z.actionType||'info';
+    if(zt==='navigate' && z.target) loadScene(z.target);
+    else if(zt==='link') openLink(z.linkUrl);
+    else if(zt==='toggle' && z.toggleTargetId) mp.toggleMarker('hs_'+z.toggleTargetId);
+    else showZoneCard(z);
+  }
 });
 mp.addEventListener('enter-marker',function(ev){
   var m=ev.marker;
@@ -272,6 +391,45 @@ mp.addEventListener('leave-marker',function(ev){
   if(m.id.indexOf('poly_')!==0||!m.data)return;
   mp.updateMarker({id:m.id,svgStyle:{fill:m.data.color+'55',stroke:m.data.color,strokeWidth:'2'}});
 });
+// Landmark "grow in" line -- toggles lm-in-view (see the .lm.lm-anim CSS
+// rules) on each animated landmark's own marker element once its point is
+// well inside the visible frame (not merely touching the screen edge --
+// see _INVIEW_MARGIN), and off again once it drifts back out -- so the
+// line replays every time it leaves and re-enters view, not just once on
+// first load, and the same transition (defined once, on the base .lm-line
+// rule) runs in reverse on the way out, no separate "backward" animation
+// needed. Driven off the SAME camera events (position/zoom) PSV itself
+// fires for every pan/zoom/auto-rotate tick, rather than a polling loop.
+var _curScene=null;
+// Fraction of the viewport inset on every side before a landmark counts as
+// "in view" -- 0 would trigger the instant it touches the literal edge
+// (the old behavior); 0.25 means it has to clear a quarter of the screen's
+// width/height inward first, so the animation reads as reacting to the
+// landmark coming properly into frame, not just barely peeking into it.
+// The SAME boundary is used both ways (no separate enter/exit thresholds).
+var _INVIEW_MARGIN=0.25;
+function _updateLandmarkAnim(){
+  var s=_curScene&&TOURS[_curScene];
+  if(!s)return;
+  var host=document.getElementById('viewer');
+  var vw=host?host.clientWidth:window.innerWidth, vh=host?host.clientHeight:window.innerHeight;
+  var mx=vw*_INVIEW_MARGIN, my=vh*_INVIEW_MARGIN;
+  s.arrows.forEach(function(h){
+    if(h.type!=='landmark'||!h.animateLine)return;
+    var marker;
+    try{marker=mp.getMarker('hs_'+h.id);}catch(e){marker=null;}
+    var el=marker&&marker.domElement&&marker.domElement.querySelector('.lm');
+    if(!el)return;
+    var inView=false;
+    try{
+      var pt=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:h.yaw*Math.PI/180,pitch:h.pitch*Math.PI/180});
+      inView=!!pt&&pt.x>=mx&&pt.x<=vw-mx&&pt.y>=my&&pt.y<=vh-my;
+    }catch(e){}
+    el.classList.toggle('lm-in-view',inView);
+  });
+}
+viewer.addEventListener('position-updated',_updateLandmarkAnim);
+viewer.addEventListener('zoom-updated',_updateLandmarkAnim);
 function hideZoneCard(){document.getElementById('zoneCard').style.display='none';}
 window.hideZoneCard=hideZoneCard;
 function showZoneCard(z){
@@ -286,6 +444,15 @@ function showZoneCard(z){
     var b=document.createElement('span');b.textContent=String(z.detail[k]);
     row.appendChild(a);row.appendChild(b);body.appendChild(row);
   });
+  // Optional extras shared with the hotspot info card (same action-system
+  // fields) -- absent on every zone that predates this, so each one only
+  // shows up when actually set.
+  var img=document.getElementById('zcImage');
+  if(z.infoImageUrl){img.src=z.infoImageUrl;img.style.display='block';}else{img.style.display='none';}
+  var bodyText=document.getElementById('zcBody');
+  if(z.infoBody){bodyText.textContent=z.infoBody;bodyText.style.display='block';}else{bodyText.style.display='none';}
+  var link=document.getElementById('zcLink');
+  if(z.linkUrl){link.href=z.linkUrl;link.style.display='block';}else{link.style.display='none';}
   document.getElementById('zoneCard').style.display='block';
 }
 
@@ -297,7 +464,7 @@ var _WMCUR=[];
 function _wm(id){var layer=document.getElementById('wmLayer');if(!layer)return;layer.innerHTML='';_WMCUR=[];LOGOS.forEach(function(l){if(l.s!=null&&l.s!==id)return;var d=document.createElement('div');d.className='wm';d.style.cssText='left:'+l.x+'%;top:'+l.y+'%;width:'+l.w+'px;opacity:'+l.o+';';var img=document.createElement('img');img.src=l.u;img.alt='';img.onload=function(){_clampWM(d,l);};d.appendChild(img);layer.appendChild(d);_WMCUR.push({el:d,l:l});_clampWM(d,l);});}
 function _reclampWM(){_WMCUR.forEach(function(o){_clampWM(o.el,o.l);});}
 window.addEventListener('resize',_reclampWM);
-function _onScene(id){_hl(id);_wm(id);hideZoneCard();}
+function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();}
 ${introCode}
 
 // Module-scope top-level functions are NOT global — the inline onclick="..."

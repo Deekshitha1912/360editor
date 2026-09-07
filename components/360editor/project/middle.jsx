@@ -1,5 +1,5 @@
 'use client'
-import React, { useEffect, useRef, useState, useCallback, useReducer } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useReducer, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Viewer } from '@photo-sphere-viewer/core'
@@ -12,16 +12,14 @@ import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
 import PolygonPanel from '@/components/360editor/project/polygon_panel'
 import PanelTabs from '@/components/360editor/project/panel_tabs'
-import { ARROWS } from '@/lib/arrows'
+import { ARROWS, FLOOR_SIZE_MULTIPLIER } from '@/lib/arrows'
 import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus, centroidOf } from '@/lib/polygons'
+import { colorForStatus, normalizeEdgeLengths } from '@/lib/polygons'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
-import { HotspotPopup } from '@/components/360editor/project/hotspot_overlay'
-import { PolygonPopup } from '@/components/360editor/project/polygon_overlay'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
-import { Spinner, CameraControls, SettingsModal, ConfirmDeleteModal, ErrorBanner, OverlayRow } from '@/components/360editor/project/editor_modals'
+import { Spinner, CameraControls, SettingsModal, ConfirmDeleteModal, ErrorBanner, OverlayRow, EmbedModal } from '@/components/360editor/project/editor_modals'
 
 // Radians <-> degrees. Hotspot/overlay data is stored in degrees everywhere
 // (DB, API, React state) exactly as before the viewer swap — PSV's Position
@@ -53,11 +51,13 @@ function findSnapPoint(viewer, candidates, screenX, screenY) {
 // Fallback opening horizontal FOV when a scene has no saved initial_hfov —
 // there's no UI yet to set/save a custom one per scene (the column and
 // PATCH /api/scenes/[id] support it, nothing calls it), so every scene opens
-// at this value. 90deg reads as a normal, true-to-scale view; the old 120deg
-// default was wide enough to make rooms look smaller/more distant than they
-// really are. Kept as one constant since it has to stay consistent with the
-// cover-up scale-with-zoom math, which anchors to the same "opening FOV".
-const DEFAULT_HFOV = 90
+// at this value. Lower = more zoomed in. 70deg reads as a closer, more
+// immersive opening view than the previous 90deg default without going so
+// narrow it hides the room's edges. Kept as one constant since it has to
+// stay consistent with the cover-up scale-with-zoom math, which anchors to
+// the same "opening FOV" — and must match export.jsx's own DEFAULT_HFOV so
+// a published tour's opening view matches what the editor showed.
+const DEFAULT_HFOV = 70
 
 // Markup for the 'landmark' arrow_type — a PSV `html` marker (unlike every
 // other arrow type, which is a plain `image` marker), because the floating
@@ -86,6 +86,7 @@ function landmarkMarkerHtml(label, height, color, labelColor) {
     return `<div class="lm" style="--lm-height:${h}px;--lm-color:${c};--lm-label-color:${lc}"><div class="lm-label">${escapeHtml(label || 'Landmark')}</div>`
         + `<div class="lm-line"></div><div class="lm-dot"></div></div>`
 }
+
 
 // Rotate-handle cursor — a curved arrow, the near-universal convention for a
 // rotate control (Figma, Canva, PowerPoint, Photoshop's free-transform all
@@ -250,6 +251,12 @@ export default function ProjectClient({ projectId }) {
     const rafRef           = useRef(null)
     const scenesRef        = useRef([])
     const popupRef         = useRef(null)
+    const handleSaveRef    = useRef(null)    // mirrors handleSave, called from the document-level "click outside auto-saves" listener (mounted once, needs the CURRENT closure, not a stale one from mount time)
+    const pinBoxRef        = useRef(null)    // the hotspot pin's drag/resize/rotate box — clicks inside it must not count as "outside"
+    const hotspotFormRef   = useRef(null)    // wraps the hotspot form now rendered inside HotspotPanel (right column) — same reason: clicks inside it must not count as "outside" either
+    const savingNewHotspotRef = useRef(false) // re-entrancy guard for saveHotspot — see its own comment
+    const hotspotSizeRef    = useRef(90)     // mirrors hotspotSize, read inside the rAF loop's floor-decal live preview
+    const floorPreviewKeyRef = useRef(null)  // last-applied {yaw,pitch,size,rotate_x,rotate_y,rotation} snapshot for 'hs_floor_preview' — skips the (expensive, WebGL-flickering) updateMarker call on frames where nothing actually changed
     const onHotspotClickRef = useRef(null)
     const onCoverupClickRef = useRef(null)
     const onPolygonClickRef = useRef(null)
@@ -265,6 +272,7 @@ export default function ProjectClient({ projectId }) {
     const coverupsRef       = useRef([])     // full coverups list, read inside the rAF loop by id
     const selectedOverlayRef = useRef(null)  // mirrors selectedOverlay, read inside the rAF loop
     const polygonsRef        = useRef([])    // full polygons list, read inside the marker click/hover handlers
+    const hotspotsRef        = useRef([])    // full hotspots list — onViewerDrop's deps don't include `hotspots`, so it'd otherwise see a stale snapshot when auto-numbering a new one ("Hotspot N")
     const drawingPolygonRef  = useRef(null)  // mirrors drawingPolygon, read inside the PSV click handler
     // Every distinct point placed since "Start Drawing", across every split
     // so far in this session — NOT reset when a loop closes and gets carved
@@ -283,7 +291,9 @@ export default function ProjectClient({ projectId }) {
     // quick succession, before either save's response comes back, can't
     // both land on the same number.
     const zoneNumberRef      = useRef(1)
-    const polygonPopupRef    = useRef(null)  // mirrors polygonPopup, read inside the rAF loop
+    const polygonPopupRef    = useRef(null)  // mirrors polygonPopup, read inside the rAF loop's corner-handle projection
+    const polygonSaveTimerRef = useRef(null) // debounce timer for the zone form's auto-save (see the useEffect below)
+    const polygonSavedFlashTimerRef = useRef(null) // clears the "Saved" confirmation a moment after it appears
     const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
 
     const [project, setProject]                 = useState(null)
@@ -294,6 +304,11 @@ export default function ProjectClient({ projectId }) {
     const [isDragOver, setIsDragOver]           = useState(false)
     const [isDraggingPin, setIsDraggingPin]     = useState(false)
     const [activeRightTab, setActiveRightTab]   = useState('directions') // 'directions' | 'overlays' | 'zones'
+    // Side-panel visibility — each panel keeps its old fixed width; a small
+    // toggle button on its outer edge hides/shows it entirely instead of
+    // letting it be dragged narrower/wider.
+    const [leftPanelOpen, setLeftPanelOpen]   = useState(true)
+    const [rightPanelOpen, setRightPanelOpen] = useState(true)
     const [showSettings, setShowSettings]       = useState(false)
     const [settingsDraft, setSettingsDraft]     = useState(null)
     const [confirmDelete, setConfirmDelete]     = useState(false)
@@ -315,6 +330,7 @@ export default function ProjectClient({ projectId }) {
     const [savedTick, setSavedTick]             = useState(false)
     const pendingDeletesRef = useRef([])   // storage URLs to remove once the save lands
     const [copied, setCopied]                   = useState(false)
+    const [showEmbedModal, setShowEmbedModal]   = useState(false)
 
     // ── Overlays ───────────────────────────────────────────────────────────
     // logos    — screen-anchored, each scoped to one scene or all
@@ -331,6 +347,7 @@ export default function ProjectClient({ projectId }) {
     const [hotspotSize, setHotspotSize]         = useState(90)
     const [hotspotToDelete, setHotspotToDelete] = useState(null)
     const [deletingHotspot, setDeletingHotspot] = useState(false)
+    const [polygonToDelete, setPolygonToDelete] = useState(null) // set by requestDeletePolygon; confirmed via the modal near the other delete confirmations
     const [savingView, setSavingView]           = useState(false)
     const [savedViewTick, setSavedViewTick]     = useState(false)
 
@@ -344,30 +361,45 @@ export default function ProjectClient({ projectId }) {
     const [polygons, setPolygons]               = useState([])
     const [drawingPolygon, setDrawingPolygon]   = useState(null)
     const [polygonPopup, setPolygonPopup]       = useState(null)
-    const [polygonPopupScreen, setPolygonPopupScreen] = useState(null)
     const [polygonVertexScreens, setPolygonVertexScreens] = useState([]) // [{x,y}, ...] — this frame's screen position of each corner handle while editing a zone's shape
     const [isDraggingVertex, setIsDraggingVertex]     = useState(false)
     const [savingPolygon, setSavingPolygon]     = useState(false)
+    const [justSavedPolygon, setJustSavedPolygon] = useState(false) // brief "Saved" confirmation after an auto-save lands
     const [deletingPolygon, setDeletingPolygon] = useState(false)
     const [polygonError, setPolygonError]       = useState('')
 
-    // popupState modes: 'new' | 'edit-existing' | 'saved'
+    // popupState modes: 'new' | 'edit-existing' — null means nothing is
+    // being created/edited, and the right panel shows its normal palette
+    // + saved-hotspots list instead of the form (see HotspotPanel).
     const [popupState, setPopupState] = useState(null)
 
     scenesRef.current         = scenes
     popupRef.current          = popupState
+    hotspotSizeRef.current    = hotspotSize
+    handleSaveRef.current     = handleSave
     coverupsRef.current       = coverups
     selectedOverlayRef.current = selectedOverlay
     polygonsRef.current       = polygons
+    hotspotsRef.current       = hotspots
     drawingPolygonRef.current = drawingPolygon
     polygonPopupRef.current   = polygonPopup
     polygonVertexScreensRef.current = polygonVertexScreens
 
     // What the ACTIVE scene displays: every-scene overlays + those scoped here.
-    const visibleLogos    = overlaysForScene(logos,    activeScene?.id)
-    const visibleCoverups = overlaysForScene(coverups, activeScene?.id)
+    // Memoized — these feed the marker-sync effect's dependency array below,
+    // and an unmemoized .filter()/map() returns a brand-new array reference
+    // on every render regardless of whether logos/coverups/polygons actually
+    // changed. That meant the effect (and its mp.setMarkers() full rebuild)
+    // reran on EVERY render — including every single popupState update while
+    // dragging a hotspot's resize/rotate handle or, worse, a floor decal's
+    // rotation sliders — constantly wiping the imperative live-preview
+    // marker built for it in mainLoop and fighting over it every frame: the
+    // exact cause of both "all hotspots flicker" and "the decal isn't
+    // visible while editing."
+    const visibleLogos    = useMemo(() => overlaysForScene(logos,    activeScene?.id), [logos, activeScene?.id])
+    const visibleCoverups = useMemo(() => overlaysForScene(coverups, activeScene?.id), [coverups, activeScene?.id])
     // Zones are always scene-scoped — no "every scene" concept.
-    const visiblePolygons = polygons.filter(p => p.scene_id === activeScene?.id)
+    const visiblePolygons = useMemo(() => polygons.filter(p => p.scene_id === activeScene?.id), [polygons, activeScene?.id])
 
     // Id of the hotspot currently being edited (stable primitive for effect deps)
     const editingId = popupState?.mode === 'edit-existing' ? popupState.hotspot?.id : null
@@ -456,6 +488,69 @@ export default function ProjectClient({ projectId }) {
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [])
 
+    // Delete/Esc while a hotspot or zone form is open — Delete asks to
+    // delete it (same confirmation the form's own Delete button opens, never
+    // an immediate delete), Esc saves whatever's pending and backs out to
+    // the list (the same thing the header's Save button does). Delete is
+    // ignored while focus is inside a text field (an input/textarea/select,
+    // or anything contentEditable) — otherwise deleting text in the label
+    // field would delete the whole hotspot/zone the moment it hit the end of
+    // the string. Esc has no such normal in-field meaning, so it isn't
+    // guarded the same way — pressing it while still focused in the
+    // (autoFocus'd) label field still saves and exits, which is the point.
+    useEffect(() => {
+        function isTextField(el) {
+            if (!el) return false
+            const tag = el.tagName
+            return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+        }
+        function onKeyDown(e) {
+            // Never hijack the key while some other modal (a delete
+            // confirmation, settings, preview) already owns the keyboard.
+            if (hotspotToDelete || polygonToDelete || confirmDelete || showSettings || previewHtml) return
+            if (e.key === 'Delete') {
+                if (isTextField(document.activeElement)) return
+                if (popupState?.mode === 'edit-existing') { e.preventDefault(); requestDeleteHotspot(popupState.hotspot.id) }
+                else if (polygonPopup?.mode === 'edit') { e.preventDefault(); requestDeletePolygon(polygonPopup.polygon.id) }
+            } else if (e.key === 'Escape') {
+                if (popupState?.mode === 'new' || popupState?.mode === 'edit-existing') { e.preventDefault(); handleSave() }
+                else if (polygonPopup?.mode === 'edit') { e.preventDefault(); saveZoneNow() }
+            }
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+    }, [popupState, polygonPopup, hotspotToDelete, polygonToDelete, confirmDelete, showSettings, previewHtml])
+
+    // Clicking away from an open hotspot form (placing a new one, or
+    // editing an existing one — the form itself now lives in the right
+    // panel, see HotspotPanel/HotspotForm, not floating next to the pin)
+    // auto-saves instead of requiring an explicit Save click — Cancel still
+    // discards deliberately. A document-level mousedown, not a click, so it
+    // fires (and commits the save) even when the "elsewhere" is itself the
+    // start of a new interaction — e.g. clicking straight onto a different
+    // hotspot's marker to edit that one instead, or clicking a different
+    // right-panel tab (Overlays/Zones), which unmounts HotspotPanel's form
+    // entirely — the save has to already be in flight before that happens.
+    // Every interactive control inside the form and the pin's own drag/
+    // resize/rotate box already calls stopPropagation on its own mousedown
+    // (see startPinResize/startPinRotate/startAxisRotate etc.), so this only
+    // ever fires for genuine outside clicks; the ref .contains() checks are
+    // a second line of defense for the form's plain controls (inputs, the
+    // scene <select>, sliders), which don't stop propagation — without them,
+    // clicking into the Label field to type would itself count as "outside"
+    // and immediately save-and-close.
+    useEffect(() => {
+        function onDocMouseDown(e) {
+            const ps = popupRef.current
+            if (!ps || (ps.mode !== 'new' && ps.mode !== 'edit-existing')) return
+            if (hotspotFormRef.current?.contains(e.target)) return
+            if (pinBoxRef.current?.contains(e.target)) return
+            handleSaveRef.current?.()
+        }
+        document.addEventListener('mousedown', onDocMouseDown)
+        return () => document.removeEventListener('mousedown', onDocMouseDown)
+    }, [])
+
     // ── Load natural aspect ratio for each cover-up ─────────────────────────
     // PSV image markers need an explicit {width,height} (unlike a plain <img>,
     // which can leave height:auto) — so the natural ratio has to be known up
@@ -489,6 +584,12 @@ export default function ProjectClient({ projectId }) {
     onHotspotClickRef.current = (hotspotId) => {
         const h = hotspots.find(x => x.id === hotspotId)
         if (!h) return
+        // A zone form open on the 'zones' tab must be flushed (not just
+        // abandoned) before switching to 'directions' here — otherwise
+        // activeRightTab changes but polygonPopup doesn't, and the render
+        // below (gated on activeRightTab === 'directions' && !polygonPopup)
+        // would keep showing the zone form under a "Directions" tab label.
+        closePolygonPopup()
         // Straight into edit mode — the bounding box on the canvas already
         // doubles as the confirmation that you're about to change something,
         // so a separate "Edit this hotspot?" step was just extra friction.
@@ -507,11 +608,17 @@ export default function ProjectClient({ projectId }) {
             rotation: h.rotation ?? 0,
             color: h.color || DEFAULT_HOTSPOT_COLOR,
             label_color: h.label_color || DEFAULT_LABEL_COLOR,
+            rotate_x: h.rotate_x ?? 90, rotate_y: h.rotate_y ?? 0,
+            action_type: h.action_type || 'navigate',
+            link_url: h.link_url || '', info_body: h.info_body || '', info_image_url: h.info_image_url || '',
+            toggle_target_id: h.toggle_target_id || '', start_hidden: !!h.start_hidden,
+            animate_line: h.animate_line !== false,
         })
         setActiveRightTab('directions')
     }
     onCoverupClickRef.current = (coverupId) => {
         if (!coverupId) return
+        closePolygonPopup() // see onHotspotClickRef's comment on this
         setSelectedOverlay(coverupId)
         setEditOverlay(null)
         setActiveRightTab('overlays')
@@ -519,7 +626,7 @@ export default function ProjectClient({ projectId }) {
     onPolygonClickRef.current = (polygonId) => {
         const p = polygons.find(x => x.id === polygonId)
         if (!p) return
-        setPolygonPopup({ mode: 'view', polygon: p })
+        closePolygonPopup(polygonEditState(p))
         setActiveRightTab('zones')
     }
 
@@ -576,14 +683,14 @@ export default function ProjectClient({ projectId }) {
             if (!marker.id.startsWith('poly_')) return
             const p = polygonsRef.current.find(x => x.id === marker.data?.polygonId)
             if (!p) return
-            const c = colorForStatus(p.status)
+            const c = colorForStatus(p.status, p.custom_color)
             mp.updateMarker({ id: marker.id, svgStyle: { fill: c + '99', stroke: c, strokeWidth: '3' } })
         })
         mp.addEventListener('leave-marker', ({ marker }) => {
             if (!marker.id.startsWith('poly_')) return
             const p = polygonsRef.current.find(x => x.id === marker.data?.polygonId)
             if (!p) return
-            const c = colorForStatus(p.status)
+            const c = colorForStatus(p.status, p.custom_color)
             mp.updateMarker({ id: marker.id, svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' } })
         })
         // Click-to-place-vertex while drawing a zone. A raw viewer click (not
@@ -685,7 +792,12 @@ export default function ProjectClient({ projectId }) {
                 const loop = idxInOpen !== -1 ? currentPts.slice(idxInOpen) : [...currentPts, selfSnapped]
                 if (loop.length >= 3) {
                     saveAutoPolygon(loop)
-                    setDrawingPolygon({ points: [selfSnapped] })
+                    // Stops here, one zone per "Draw zone" click — drawing
+                    // used to re-arm itself with the closing point as the
+                    // next shape's first vertex so several zones could be
+                    // chained without pressing "Draw zone" again, but that
+                    // read as it "not stopping" after a shape completed.
+                    setDrawingPolygon(null)
                     lastVertexRef.current = null
                     return
                 }
@@ -761,7 +873,56 @@ export default function ProjectClient({ projectId }) {
                         data: { hotspotDbId: h.id },
                     }
                 }
+                // Floor decal is a genuinely surface-embedded `imageLayer`
+                // marker — a real 3D plane on the sphere, not a screen-
+                // facing billboard like every other arrow type — placed as
+                // a single point + a real 3-axis rotation object (confirmed
+                // from PSV's own Marker3D source: rotation.yaw/pitch/roll
+                // map to Y/X/Z axis rotation respectively, and the base
+                // orientation before rotation is applied is the same
+                // regardless of where on the sphere the marker sits, so a
+                // given rotate_x/rotate_y/rotation value looks the same
+                // everywhere). size/100 is PSV's own world-scale factor
+                // against the fixed sphere radius — a genuinely different
+                // unit than every other arrow type's screen-space pixel
+                // size, and the raw 40-400 slider range reads as far too
+                // small once actually rendered that way, so
+                // FLOOR_SIZE_MULTIPLIER scales it up here (and nowhere the
+                // raw draggable value itself is used, so the resize-handle
+                // feel stays identical to every other type).
+                if (h.arrow_type === 'floor') {
+                    const arrow = ARROWS.find(a => a.type === 'floor')
+                    return {
+                        id: `hs_${h.id}`,
+                        type: 'imageLayer',
+                        imageLayer: arrow.gif,
+                        position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
+                        size: { width: size * FLOOR_SIZE_MULTIPLIER, height: size * FLOOR_SIZE_MULTIPLIER },
+                        rotation: {
+                            yaw:  `${h.rotate_y ?? 0}deg`,
+                            pitch: `${h.rotate_x ?? 90}deg`,
+                            roll: `${h.rotation ?? 0}deg`,
+                        },
+                        data: { hotspotDbId: h.id },
+                    }
+                }
                 const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
+                // Pulse ring stays a plain billboard (see the pulse-vs-3D
+                // tradeoff — a true 3D-embedded marker would freeze its
+                // pulse animation to one static frame), but X/Y still get a
+                // real visible effect here via a CSS transform on the
+                // marker's own element: `transform` (unlike `rotate`, which
+                // PSV's own 2D markers already use for Z, and `translate`,
+                // which they use for position) is never touched by PSV's
+                // marker code for this type, so it's free to use for a
+                // perspective tilt without fighting PSV's own positioning.
+                // It's a cosmetic tilt on a flat billboard, not genuine 3D
+                // embedding — it won't warp with the actual camera angle the
+                // way floor decal's real 3D plane does, but it does mean X/Y
+                // aren't just inert numbers for this type.
+                const tilt = h.arrow_type === 'pulse'
+                    ? { style: { transform: `perspective(600px) rotateX(${h.rotate_x ?? 0}deg) rotateY(${h.rotate_y ?? 0}deg)` } }
+                    : {}
                 return {
                     id: `hs_${h.id}`,
                     type: 'image',
@@ -771,6 +932,7 @@ export default function ProjectClient({ projectId }) {
                     rotation: `${h.rotation ?? 0}deg`,
                     tooltip: h.label || undefined,
                     data: { hotspotDbId: h.id },
+                    ...tilt,
                 }
             })
 
@@ -806,7 +968,7 @@ export default function ProjectClient({ projectId }) {
         const polygonMarkers = visiblePolygons
             .filter(p => p.id !== editingPolygonId)
             .map(p => {
-                const c = colorForStatus(p.status)
+                const c = colorForStatus(p.status, p.custom_color)
                 return {
                     id: `poly_${p.id}`,
                     type: 'polygon',
@@ -842,13 +1004,21 @@ export default function ProjectClient({ projectId }) {
         const ps     = popupRef.current
 
         let pitch, yaw
-        if      (ps?.mode === 'new' || ps?.mode === 'edit-existing')  { pitch = ps.pitch;          yaw = ps.yaw }
-        else if (ps?.mode === 'saved') { pitch = ps.hotspot?.pitch;  yaw = ps.hotspot?.yaw }
+        if (ps?.mode === 'new' || ps?.mode === 'edit-existing') { pitch = ps.pitch; yaw = ps.yaw }
 
         if (viewer && pitch != null && yaw != null) {
             try {
-                const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD })
-                setPinPos(pt || null)
+                const pt   = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD })
+                // hfov rides along so the floor decal's edit-time drag box
+                // (a flat DOM overlay) can be scaled the same way the
+                // selected cover-up's already is (see coverupPopupScreen
+                // below) — real 3D content's on-screen size changes with
+                // zoom, but this box was a fixed pixel size regardless of
+                // zoom, so it drifted out of sync with the actual decal the
+                // moment you zoomed away from whatever level it happened to
+                // be tuned to look right at.
+                const hfov = viewer.dataHelper.zoomLevelToFov(viewer.getZoomLevel())
+                setPinPos(pt ? { x: pt.x, y: pt.y, hfov } : null)
             } catch { setPinPos(null) }
         } else {
             setPinPos(null)
@@ -868,23 +1038,7 @@ export default function ProjectClient({ projectId }) {
             setCoverupPopupScreen(null)
         }
 
-        // Polygon popup ('new' before it's saved, 'view', or 'edit' on an
-        // existing zone) is anchored to the shape's centroid. In 'edit' mode
-        // pp.points is the live (possibly mid-drag) working copy, so the
-        // popup and the centroid it's anchored to follow a dragged corner
-        // immediately rather than staying pinned to the shape's original
-        // shape while you're changing it.
-        const pp  = polygonPopupRef.current
-        const pts = pp ? (pp.mode === 'new' || pp.mode === 'edit' ? pp.points : pp.polygon?.points) : null
-        if (viewer && pts?.length) {
-            try {
-                const c  = centroidOf(pts)
-                const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: c.yaw * RAD, pitch: c.pitch * RAD })
-                setPolygonPopupScreen(pt || null)
-            } catch { setPolygonPopupScreen(null) }
-        } else {
-            setPolygonPopupScreen(null)
-        }
+        const pp = polygonPopupRef.current
 
         // Corner-handle screen positions while editing a zone's shape — a
         // plain DOM/SVG overlay (not a PSV marker) projected fresh every
@@ -951,6 +1105,79 @@ export default function ProjectClient({ projectId }) {
             try { mp.removeMarker('poly_preview') } catch {}
         }
 
+        // Floor decal live preview while placing/editing — a REAL imageLayer
+        // marker updated imperatively from popupState, not a flat CSS-
+        // transform approximation. A true 3D rotation can't be faithfully
+        // previewed that way: the marker's actual baseline orientation
+        // (before any rotation is applied — see the arrowMarkers comment
+        // below) is nothing like a flat, camera-facing icon's, so a modest-
+        // looking slider change in a CSS preview could correspond to a
+        // drastically different real result — exactly a "looks right while
+        // editing, wrong after Save" bug. This is the one true source of
+        // truth for what it'll actually look like.
+        //
+        // Only actually calls updateMarker when the values changed since
+        // the last frame (floorPreviewKeyRef) — unlike the zone-drawing
+        // preview line (a cheap SVG polyline), this is a real WebGL/three.js
+        // object: updateMarker rebuilds its mesh transform AND fires a
+        // set-markers event every single call, and doing that unconditionally
+        // 60 times a second (even while nothing was actually being dragged)
+        // was heavy enough to visibly flicker every OTHER marker in the
+        // scene too, not just this one.
+        const isFloorEdit = ps && (ps.mode === 'new' || ps.mode === 'edit-existing') && ps.arrow_type === 'floor'
+        if (viewer && mp && isFloorEdit) {
+            const size = ps.size ?? hotspotSizeRef.current
+            const key  = `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}`
+            // The declarative marker-sync effect (editingId changing when
+            // "Edit" is clicked, or any of its other deps) calls
+            // mp.setMarkers() — a full clear-and-rebuild that doesn't know
+            // about this imperative preview marker, so it silently wipes it
+            // out whenever that effect happens to rerun after this frame's
+            // add/update. Trusting the key comparison alone then means it's
+            // never re-added, since from this code's perspective nothing
+            // "changed" — exactly why the decal vanished after briefly
+            // existing. Checking real existence every frame (not just
+            // whether the inputs changed) makes this self-healing the same
+            // way the poly_preview line already is.
+            let exists = true
+            try { mp.getMarker('hs_floor_preview') } catch { exists = false }
+            if (!exists) floorPreviewKeyRef.current = null
+            if (floorPreviewKeyRef.current !== key) {
+                const arrow = ARROWS.find(a => a.type === 'floor')
+                const floorCfg = {
+                    id: 'hs_floor_preview',
+                    type: 'imageLayer',
+                    imageLayer: arrow.gif,
+                    position: { yaw: `${ps.yaw}deg`, pitch: `${ps.pitch}deg` },
+                    size: { width: size * FLOOR_SIZE_MULTIPLIER, height: size * FLOOR_SIZE_MULTIPLIER },
+                    rotation: {
+                        yaw:   `${ps.rotate_y ?? 0}deg`,
+                        pitch: `${ps.rotate_x ?? 90}deg`,
+                        roll:  `${ps.rotation ?? 0}deg`,
+                    },
+                }
+                // Only recorded as "applied" once one of the two calls
+                // actually succeeds — marking it applied unconditionally
+                // (before knowing whether either call worked) meant a
+                // failed FIRST attempt (e.g. right when entering edit mode,
+                // before the marker exists yet) was never retried on later
+                // frames, since the key would already "match" forever after
+                // — exactly why the decal stayed invisible (only the DOM
+                // bounding box showed) until Save handed off to the
+                // declarative marker-sync effect instead.
+                try { mp.updateMarker(floorCfg); floorPreviewKeyRef.current = key }
+                catch {
+                    try { mp.addMarker(floorCfg); floorPreviewKeyRef.current = key }
+                    catch {}
+                }
+            }
+        } else if (mp && !isFloorEdit) {
+            if (floorPreviewKeyRef.current !== null) {
+                floorPreviewKeyRef.current = null
+                try { mp.removeMarker('hs_floor_preview') } catch {}
+            }
+        }
+
         rafRef.current = requestAnimationFrame(mainLoop)
     }, []) // eslint-disable-line
 
@@ -982,7 +1209,40 @@ export default function ProjectClient({ projectId }) {
             if (drawingPolygon) return // drawing a zone takes priority over placing a new arrow
             const coords = sampleAt(e.clientX, e.clientY)
             if (!coords) return
-            setPopupState({ mode: 'new', arrow_type: hotspotType, ...coords, label: '', target_scene_id: '', size: null, rotation: 0, color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR })
+            // "Hotspot N" instead of leaving it blank (which fell back to
+            // literally "Untitled" everywhere it's displayed) — numbered
+            // per scene, same "Zone N" auto-naming convention already used
+            // for polygon zones. Read from refs (hotspotsRef/
+            // viewerSceneIdRef), not `hotspots`/`activeScene` directly —
+            // this callback's deps don't include either, so those would be
+            // stale snapshots from whenever it was last recreated.
+            //
+            // Landmark gets its own "Landmark N" counter (numbered among
+            // just the scene's other landmarks, not every hotspot type) —
+            // it reads as a distinct kind of marker on canvas (stick+dot+
+            // label), so a generic "Hotspot N" name felt mismatched.
+            const sceneId = viewerSceneIdRef.current
+            const sceneHotspots = hotspotsRef.current.filter(h => h.scene_id === sceneId)
+            const label = hotspotType === 'landmark'
+                ? `Landmark ${sceneHotspots.filter(h => h.arrow_type === 'landmark').length + 1}`
+                : `Hotspot ${sceneHotspots.length + 1}`
+            setPopupState({
+                mode: 'new', arrow_type: hotspotType, ...coords, label, target_scene_id: '', size: null, rotation: 0,
+                color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR,
+                // rotate_x defaults to 90 ONLY for floor, so a freshly-
+                // placed floor decal starts lying flat, matching its old
+                // locked-flat behavior, before the user tilts it further via
+                // the sliders. Every other type (including pulse, which now
+                // gives rotate_x/rotate_y a real visible CSS-tilt effect —
+                // see the arrowMarkers builder) defaults to 0/0: rotate_x:90
+                // on a flat billboard would render it perfectly edge-on
+                // (invisible) the instant it's placed, the same "default
+                // that vanishes" bug already hit and fixed for floor's own
+                // edit-preview.
+                rotate_x: hotspotType === 'floor' ? 90 : 0, rotate_y: 0,
+                action_type: 'navigate', link_url: '', info_body: '', info_image_url: '',
+                toggle_target_id: '', start_hidden: false, animate_line: true,
+            })
         }
     }, [sampleAt, drawingPolygon])
 
@@ -1018,6 +1278,29 @@ export default function ProjectClient({ projectId }) {
         setIsDraggingPin(true)
     }
 
+    // Floor decal's 3-ring gizmo (one ring per axis) — same corner-drag
+    // pattern as startPinResize/startPinRotate, but delta-based instead of
+    // absolute-angle: with three overlapping rings you grab from wherever
+    // that ring happens to be, so snapping straight to "wherever the cursor
+    // currently is" (what the single Z-only handle above does) would jump
+    // the instant you click down. Recording the start angle AND the axis's
+    // current value lets onOverlayMouseMove apply only the swept delta.
+    const AXIS_FIELD = { x: 'rotate_x', y: 'rotate_y', z: 'rotation' }
+    function startAxisRotate(e, axis) {
+        e.preventDefault(); e.stopPropagation()
+        if (!pinPos || !viewerRef.current || !popupState) return
+        const rect = viewerRef.current.getBoundingClientRect()
+        const cxPage = rect.left + pinPos.x
+        const cyPage = rect.top  + pinPos.y
+        const field = AXIS_FIELD[axis]
+        pinGestureRef.current = {
+            mode: 'axisRotate', axis, field, cxPage, cyPage,
+            startAngle: Math.atan2(e.clientY - cyPage, e.clientX - cxPage) * 180 / Math.PI,
+            startValue: popupState[field] ?? (field === 'rotate_x' ? 90 : 0),
+        }
+        setIsDraggingPin(true)
+    }
+
     const onOverlayMouseMove = useCallback(e => {
         if (!isDraggingPin) return
 
@@ -1035,6 +1318,15 @@ export default function ProjectClient({ projectId }) {
             const wrapped  = ((angleDeg + 180) % 360 + 360) % 360 - 180
             setPopupState(prev =>
                 (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, rotation: roundTo2(wrapped) } : prev
+            )
+            return
+        }
+        if (g?.mode === 'axisRotate') {
+            const angleDeg = Math.atan2(e.clientY - g.cyPage, e.clientX - g.cxPage) * 180 / Math.PI
+            const delta    = angleDeg - g.startAngle
+            const wrapped  = ((g.startValue + delta + 180) % 360 + 360) % 360 - 180
+            setPopupState(prev =>
+                (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, [g.field]: roundTo2(wrapped) } : prev
             )
             return
         }
@@ -1349,7 +1641,27 @@ export default function ProjectClient({ projectId }) {
 
     // ── API: create hotspot ────────────────────────────────────────────────
     async function saveHotspot() {
-        if (popupState?.mode !== 'new' || !popupState.target_scene_id || !project) return
+        if (popupState?.mode !== 'new' || !project) return
+        // Re-entrancy guard — handleSave (and so this) can be triggered from
+        // several independent places for what's really one user action: the
+        // document-level click-away auto-save, the Escape key, Enter in the
+        // Label field, and the header's own Save button. Two of those firing
+        // in quick succession — e.g. dragging the placement box to reposition
+        // it, then pressing Escape right as the mouseup's click-away also
+        // registers — both read popupState.mode as 'new' before the first
+        // POST's response lands and closes the popup, so both went ahead and
+        // created a separate row: a genuine duplicate hotspot from one
+        // placement. This flag makes every call after the first, while a
+        // save is still in flight, a no-op.
+        if (savingNewHotspotRef.current) return
+        savingNewHotspotRef.current = true
+        // Captured so the success handler can check it's still the SAME
+        // in-progress popup before clearing it — auto-save-on-click-away
+        // means this can now be triggered by the very click that opens a
+        // DIFFERENT hotspot's edit popup. Without this check, this save's
+        // response landing after that new popup opened would wipe it back
+        // to null out from under the user.
+        const savingFor = popupState
         dispatchFlag('savingHotspot')
         try {
             const res = await fetch('/api/hotspots', {
@@ -1358,30 +1670,41 @@ export default function ProjectClient({ projectId }) {
                     project_id: project.id, scene_id: activeScene.id,
                     pitch: roundTo2(popupState.pitch), yaw: roundTo2(popupState.yaw),
                     arrow_type: popupState.arrow_type, label: popupState.label || '',
-                    target_scene_id: popupState.target_scene_id,
+                    // '' (the <select>'s unset state) has to become null, not
+                    // get sent as-is — Postgres rejects '' for a uuid column
+                    // outright, it's not just "no link" the way null is.
+                    target_scene_id: popupState.target_scene_id || null,
                     size: popupState.size, rotation: popupState.rotation, color: popupState.color,
                     label_color: popupState.label_color,
+                    rotate_x: popupState.rotate_x, rotate_y: popupState.rotate_y,
+                    action_type: popupState.action_type || 'navigate',
+                    link_url: popupState.link_url || null, info_body: popupState.info_body || null,
+                    info_image_url: popupState.info_image_url || null,
+                    toggle_target_id: popupState.toggle_target_id || null,
+                    start_hidden: !!popupState.start_hidden,
+                    animate_line: popupState.animate_line !== false,
                 }),
             })
             if (res.ok) {
                 const { hotspot } = await res.json()
                 setHotspots(prev => [...prev, hotspot])
-                setPopupState(null)
+                setPopupState(prev => prev === savingFor ? null : prev)
             }
-        } finally { dispatchFlag('savingHotspot') }
+        } finally { dispatchFlag('savingHotspot'); savingNewHotspotRef.current = false }
     }
 
     // ── API: update hotspot ────────────────────────────────────────────────
     async function updateHotspot() {
-        if (popupState?.mode !== 'edit-existing' || !popupState.target_scene_id) return
+        if (popupState?.mode !== 'edit-existing') return
         const hotspotId = popupState.hotspot.id
+        const savingFor = popupState // see saveHotspot's comment on this
         dispatchFlag('savingHotspot')
         try {
             const res = await fetch(`/api/hotspots/${hotspotId}`, {
                 method: 'PATCH', headers: {'Content-Type':'application/json'},
                 body: JSON.stringify({
                     label:           popupState.label || '',
-                    target_scene_id: popupState.target_scene_id,
+                    target_scene_id: popupState.target_scene_id || null,
                     pitch:           roundTo2(popupState.pitch),
                     yaw:             roundTo2(popupState.yaw),
                     arrow_type:      popupState.arrow_type,
@@ -1389,12 +1712,21 @@ export default function ProjectClient({ projectId }) {
                     rotation:        popupState.rotation,
                     color:           popupState.color,
                     label_color:     popupState.label_color,
+                    rotate_x:        popupState.rotate_x,
+                    rotate_y:        popupState.rotate_y,
+                    action_type:      popupState.action_type || 'navigate',
+                    link_url:         popupState.link_url || null,
+                    info_body:        popupState.info_body || null,
+                    info_image_url:   popupState.info_image_url || null,
+                    toggle_target_id: popupState.toggle_target_id || null,
+                    start_hidden:     !!popupState.start_hidden,
+                    animate_line:     popupState.animate_line !== false,
                 }),
             })
             if (res.ok) {
                 const { hotspot } = await res.json()
                 setHotspots(prev => prev.map(h => h.id === hotspot.id ? hotspot : h))
-                setPopupState(null)
+                setPopupState(prev => prev === savingFor ? null : prev)
             } else {
                 const err = await res.json().catch(() => ({}))
                 console.error('PATCH hotspot failed:', res.status, err?.error)
@@ -1461,66 +1793,146 @@ export default function ProjectClient({ projectId }) {
             const json = await res.json().catch(() => ({}))
             if (!res.ok) { setPolygonError(json.error || 'Could not save a zone.'); return }
             setPolygons(prev => [...prev, json.polygon])
+            // Same landing spot as the Finish-button path (finishDrawingPolygon)
+            // — straight into the new zone's edit form, not back to the list.
+            setPolygonPopup(polygonEditState(json.polygon))
+            setActiveRightTab('zones')
         } catch {
             setPolygonError('Network error — a zone was not saved.')
         }
     }
 
-    function finishDrawingPolygon() {
-        if (!drawingPolygon || drawingPolygon.points.length < 3) return
-        const label = `Zone ${zoneNumberRef.current}`
-        zoneNumberRef.current += 1
-        setPolygonPopup({ mode: 'new', points: drawingPolygon.points, status: 'available', label, detail: {} })
-        setDrawingPolygon(null)
+    // A shape's last edge already connects back to its first point
+    // automatically — it never needed a literal closing point equal to point
+    // 1 stored in the array. Some earlier-drawn zones have one anyway (from
+    // before the corner-drag tool existed, when closing meant re-clicking
+    // point 1 as an actual extra vertex), which put two drag handles exactly
+    // on top of each other: dragging one visibly left the other behind.
+    // Collapse that duplicate back into one point here, whenever a saved
+    // zone is opened for editing — the next auto-save writes the deduped
+    // version back and it stays fixed.
+    function dedupedPoints(points) {
+        let pts = points.map(([yaw, pitch]) => [yaw, pitch])
+        if (pts.length > 3) {
+            const [fy, fp] = pts[0]
+            const [ly, lp] = pts[pts.length - 1]
+            if (Math.abs(fy - ly) < 1e-6 && Math.abs(fp - lp) < 1e-6) pts = pts.slice(0, -1)
+        }
+        return pts
     }
 
-    async function savePolygon() {
-        if (polygonPopup?.mode !== 'new' || !project || !activeScene) return
-        setSavingPolygon(true)
+    // The editable working copy of a saved zone — status/label/detail/points
+    // all start as plain copies of the saved row, then diverge as the form
+    // (or a corner drag) edits them; _dirty tracks whether anything actually
+    // has, so opening a zone just to look at it doesn't fire a pointless
+    // auto-save with unchanged values (see the auto-save effect below).
+    function polygonEditState(p) {
+        return {
+            mode: 'edit', polygon: p,
+            status: p.status, label: p.label, detail: p.detail, custom_color: p.custom_color || null,
+            points: dedupedPoints(p.points), _dirty: false,
+            edge_lengths: normalizeEdgeLengths(p.edge_lengths, dedupedPoints(p.points).length),
+            action_type: p.action_type || 'info',
+            target_scene_id: p.target_scene_id || '',
+            link_url: p.link_url || '', info_body: p.info_body || '', info_image_url: p.info_image_url || '',
+            toggle_target_id: p.toggle_target_id || '', start_hidden: !!p.start_hidden,
+        }
+    }
+
+    // Closes (or switches to a different) zone popup, flushing any dirty,
+    // not-yet-auto-saved edit first — without this, closing/switching within
+    // the debounce window (see the auto-save effect) would silently drop
+    // the last few edits: the effect's cleanup cancels the pending timer as
+    // soon as polygonPopup changes, so nothing would ever fire it.
+    function closePolygonPopup(nextState = null) {
+        clearTimeout(polygonSaveTimerRef.current)
+        if (polygonPopup?.mode === 'edit' && polygonPopup._dirty) updatePolygon()
+        setPolygonPopup(nextState)
+    }
+
+    // Debounced auto-save — no more explicit Save/Finish button. Waits for a
+    // pause in editing (typing, picking a status, dragging a corner) rather
+    // than saving on every keystroke/frame; dirty gates it so merely opening
+    // a zone to look at it never fires a no-op PATCH with unchanged values.
+    useEffect(() => {
+        if (!polygonPopup || polygonPopup.mode !== 'edit' || !polygonPopup._dirty) return
+        clearTimeout(polygonSaveTimerRef.current)
+        polygonSaveTimerRef.current = setTimeout(() => { updatePolygon() }, 700)
+        return () => clearTimeout(polygonSaveTimerRef.current)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        polygonPopup?._dirty, polygonPopup?.label, polygonPopup?.status, polygonPopup?.detail, polygonPopup?.points,
+        polygonPopup?.custom_color, polygonPopup?.edge_lengths?.join('|'),
+        polygonPopup?.action_type, polygonPopup?.target_scene_id, polygonPopup?.link_url,
+        polygonPopup?.info_body, polygonPopup?.info_image_url, polygonPopup?.toggle_target_id, polygonPopup?.start_hidden,
+    ])
+
+    async function finishDrawingPolygon() {
+        if (!drawingPolygon || drawingPolygon.points.length < 3 || !project || !activeScene) return
+        const label = `Zone ${zoneNumberRef.current}`
+        zoneNumberRef.current += 1
+        const points = drawingPolygon.points
+        setDrawingPolygon(null)
         setPolygonError('')
         try {
             const res = await fetch('/api/polygons', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     project_id: project.id, scene_id: activeScene.id,
-                    points: polygonPopup.points,
-                    status: polygonPopup.status, label: polygonPopup.label, detail: polygonPopup.detail,
+                    points, status: 'available', label, detail: {},
                 }),
             })
             const json = await res.json().catch(() => ({}))
-            if (!res.ok) { setPolygonError(json.error || 'Could not save the zone.'); return }
+            if (!res.ok) {
+                setPolygonError(json.error || 'Could not save the zone.')
+                setDrawingPolygon({ points }) // keep the shape so Finish can be retried, not lost
+                return
+            }
             setPolygons(prev => [...prev, json.polygon])
-            setPolygonPopup(null)
-            // Re-arm drawing mode right away — Finish already drew the line
-            // between "this shape" and "the next one" unambiguously, so
-            // starting the next zone shouldn't need "Start Drawing" pressed
-            // again. Only after a successful save, not on error: a failed
-            // save should leave the points/popup alone so nothing is lost.
-            setDrawingPolygon({ points: [] })
+            setPolygonPopup(polygonEditState(json.polygon))
+            setActiveRightTab('zones')
             lastVertexRef.current = null
         } catch {
-            setPolygonError('Network error — the zone was not saved.')
-        } finally {
-            setSavingPolygon(false)
+            setPolygonError('Network error — a zone was not saved.')
+            setDrawingPolygon({ points })
         }
     }
 
     async function updatePolygon() {
         if (polygonPopup?.mode !== 'edit' || !polygonPopup.polygon) return
+        const savingFor = polygonPopup
         setSavingPolygon(true)
         setPolygonError('')
         try {
-            const res = await fetch(`/api/polygons/${polygonPopup.polygon.id}`, {
+            const res = await fetch(`/api/polygons/${savingFor.polygon.id}`, {
                 method: 'PATCH', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    status: polygonPopup.status, label: polygonPopup.label, detail: polygonPopup.detail,
-                    points: polygonPopup.points,
+                    status: savingFor.status, label: savingFor.label, detail: savingFor.detail,
+                    custom_color: savingFor.custom_color || null,
+                    edge_lengths: savingFor.edge_lengths || [],
+                    points: savingFor.points,
+                    action_type: savingFor.action_type || 'info',
+                    target_scene_id: savingFor.target_scene_id || null,
+                    link_url: savingFor.link_url || null, info_body: savingFor.info_body || null,
+                    info_image_url: savingFor.info_image_url || null,
+                    toggle_target_id: savingFor.toggle_target_id || null,
+                    start_hidden: !!savingFor.start_hidden,
                 }),
             })
             const json = await res.json().catch(() => ({}))
             if (!res.ok) { setPolygonError(json.error || 'Could not save the zone.'); return }
             setPolygons(prev => prev.map(p => p.id === json.polygon.id ? json.polygon : p))
-            setPolygonPopup(null)
+            // Still editing the SAME zone (not one closePolygonPopup already
+            // moved on from while this request was in flight) — merge the
+            // saved row back in and clear dirty, but stay open: auto-save
+            // never closes the form on its own, only an explicit close does.
+            setPolygonPopup(prev => prev === savingFor ? { ...prev, polygon: json.polygon, _dirty: false } : prev)
+            // Brief "Saved" confirmation — typing alone (cursor still
+            // blinking) reads as ambiguous, so auto-save reports its own
+            // success rather than leaving it to be inferred.
+            clearTimeout(polygonSavedFlashTimerRef.current)
+            setJustSavedPolygon(true)
+            polygonSavedFlashTimerRef.current = setTimeout(() => setJustSavedPolygon(false), 1600)
         } catch {
             setPolygonError('Network error — the zone was not saved.')
         } finally {
@@ -1528,9 +1940,15 @@ export default function ProjectClient({ projectId }) {
         }
     }
 
-    function handlePolygonSave() {
-        if (polygonPopup?.mode === 'new')  savePolygon()
-        if (polygonPopup?.mode === 'edit') updatePolygon()
+    // The zone form's explicit Save button — same "commit and go back to the
+    // list" shape as the hotspot form's Save, layered on top of the auto-save
+    // that already runs in the background: flush whatever's pending right
+    // now (don't wait on the debounce) and close once it lands, rather than
+    // requiring a separate click just to leave.
+    async function saveZoneNow() {
+        clearTimeout(polygonSaveTimerRef.current)
+        await updatePolygon()
+        closePolygonPopup()
     }
 
     // Corner-handle drag on a zone being edited — same shape as the hotspot
@@ -1553,7 +1971,7 @@ export default function ProjectClient({ projectId }) {
         setPolygonPopup(prev => {
             if (prev?.mode !== 'edit') return prev
             const points = prev.points.map((pt, i) => i === index ? [coords.yaw, coords.pitch] : pt)
-            return { ...prev, points }
+            return { ...prev, points, _dirty: true }
         })
     }, [sampleAt])
 
@@ -1562,46 +1980,27 @@ export default function ProjectClient({ projectId }) {
         setIsDraggingVertex(false)
     }
 
-    // Panel row click / re-click toggles the view card, same affordance as the
-    // overlay panel's rows.
+    // Panel row click / re-click toggles the zone's form, same affordance as
+    // the overlay panel's rows — straight into the editable form, no
+    // separate read-only "view" step in between.
     function selectPolygon(id) {
-        if (polygonPopup?.polygon?.id === id && polygonPopup.mode === 'view') { setPolygonPopup(null); return }
+        if (polygonPopup?.polygon?.id === id) { closePolygonPopup(); return }
         const p = polygons.find(x => x.id === id)
         if (!p) return
-        setPolygonPopup({ mode: 'view', polygon: p })
+        closePolygonPopup(polygonEditState(p))
     }
 
-    function editPolygon() {
-        setPolygonPopup(prev => {
-            if (!prev?.polygon) return prev
-            // A working copy of the points, dragged live via the corner
-            // handles (see startVertexDrag/onVertexDragMove) — the original
-            // polygon.points stays untouched until Save actually writes it,
-            // so Cancel just discards this copy for free.
-            let points = prev.polygon.points.map(([yaw, pitch]) => [yaw, pitch])
-            // A shape's last edge already connects back to its first point
-            // automatically — it never needed a literal closing point equal
-            // to point 1 stored in the array. Some earlier-drawn zones have
-            // one anyway (from before this drag tool existed, when closing
-            // meant re-clicking point 1 as an actual extra vertex), which
-            // put two drag handles exactly on top of each other: dragging
-            // one visibly left the other behind. Collapse that duplicate
-            // back into one point here — first time this shape is edited,
-            // Finish writes the deduped version back and it stays fixed.
-            if (points.length > 3) {
-                const [fy, fp] = points[0]
-                const [ly, lp] = points[points.length - 1]
-                if (Math.abs(fy - ly) < 1e-6 && Math.abs(fp - lp) < 1e-6) points = points.slice(0, -1)
-            }
-            return {
-                mode: 'edit', polygon: prev.polygon,
-                status: prev.polygon.status, label: prev.polygon.label, detail: prev.polygon.detail,
-                points,
-            }
-        })
+    // Opens the confirmation modal (below, near hotspotToDelete's) rather
+    // than deleting immediately — same "ask first" rule the hotspot list's
+    // trash icon already followed; the zone form's own Delete button and
+    // the list row's trash icon both route through this now instead of
+    // calling deletePolygon directly.
+    function requestDeletePolygon(id) {
+        setPolygonToDelete(polygons.find(p => p.id === id) || { id })
     }
 
     async function deletePolygon(id) {
+        clearTimeout(polygonSaveTimerRef.current)
         setDeletingPolygon(true)
         try {
             await fetch(`/api/polygons/${id}`, { method: 'DELETE' })
@@ -1610,6 +2009,12 @@ export default function ProjectClient({ projectId }) {
         } finally {
             setDeletingPolygon(false)
         }
+    }
+
+    async function confirmDeletePolygon() {
+        if (!polygonToDelete) return
+        await deletePolygon(polygonToDelete.id)
+        setPolygonToDelete(null)
     }
 
     // Captures wherever you've currently panned/zoomed to and saves it as this
@@ -1746,6 +2151,7 @@ export default function ProjectClient({ projectId }) {
         setTimeout(() => setCopied(false), 1800)
     }
 
+
     if (loading) return (
         <div className="h-screen flex items-center justify-center bg-editor-canvas">
             <Spinner size={20}/>
@@ -1840,6 +2246,11 @@ export default function ProjectClient({ projectId }) {
                                 ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Copied</>
                                 : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy link</>}
                         </button>
+                        <button onClick={() => setShowEmbedModal(true)}
+                                title="Get an <iframe> snippet a client can paste into their own site"
+                                className="flex items-center gap-1 h-6 px-2 rounded-lg border border-editor-border bg-white text-[11px] font-medium text-editor-ink-muted hover:text-editor-ink transition-colors shrink-0">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>Embed
+                        </button>
                         <a href={openUrl()} target="_blank" rel="noreferrer"
                            className="flex items-center gap-1 h-6 px-2 rounded-lg border border-editor-border bg-white text-[11px] font-medium text-editor-ink-muted hover:text-editor-ink transition-colors shrink-0">
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>Open
@@ -1860,12 +2271,24 @@ export default function ProjectClient({ projectId }) {
                 <div className="flex-1 flex overflow-hidden">
 
                     {/* Left — scenes */}
-                    <div className="w-[180px] shrink-0 relative overflow-hidden">
-                        <ScenePanel projectId={projectId} scenes={scenes}
-                                    activeSceneId={activeScene?.id}
-                                    onSelectScene={setActiveScene}
-                                    onScenesChange={updated => { setScenes(updated); if (!activeScene && updated.length) setActiveScene(updated[0]) }}/>
-                    </div>
+                    {leftPanelOpen && (
+                        <div className="w-[180px] shrink-0 relative overflow-hidden">
+                            <ScenePanel projectId={projectId} scenes={scenes}
+                                        activeSceneId={activeScene?.id}
+                                        onSelectScene={setActiveScene}
+                                        onScenesChange={updated => { setScenes(updated); if (!activeScene && updated.length) setActiveScene(updated[0]) }}/>
+                        </div>
+                    )}
+
+                    {/* Hide/show toggle — collapses the scene list entirely
+                        rather than letting it be dragged narrower/wider. */}
+                    <button onClick={() => setLeftPanelOpen(o => !o)}
+                            title={leftPanelOpen ? 'Hide scene list' : 'Show scene list'}
+                            className="w-4 shrink-0 flex items-center justify-center border-x border-editor-border bg-white hover:bg-editor-primary/8 text-editor-icon-idle hover:text-editor-primary transition-colors">
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                            {leftPanelOpen ? <path d="M15 18l-6-6 6-6"/> : <path d="M9 18l6-6-6-6"/>}
+                        </svg>
+                    </button>
 
                     {/* Middle — viewer */}
                     <div className="flex-1 relative overflow-hidden bg-editor-subtle">
@@ -2045,7 +2468,87 @@ export default function ProjectClient({ projectId }) {
                                     // regardless (no special-casing the drag math itself) — its
                                     // value is just harmlessly unused for this type.
                                     const isLandmark = popupState.arrow_type === 'landmark'
-                                    const rot = isLandmark ? 0 : (popupState.rotation ?? 0)
+                                    const isFloor    = popupState.arrow_type === 'floor'
+                                    const isPulse    = popupState.arrow_type === 'pulse'
+                                    // Pulse ring stays a plain billboard (see the earlier tradeoff:
+                                    // a true 3D-embedded marker would freeze its pulse animation to
+                                    // one static frame) — it doesn't get floor's other special
+                                    // treatment below (invisible drag target, shrunk/zoom-scaled box,
+                                    // live imageLayer preview), just the SAME 3-ring gizmo UI/drag
+                                    // interaction instead of the plain single Z-only dot. X/Y DO give
+                                    // a real visible effect for pulse — a CSS perspective tilt, same
+                                    // formula as the saved marker's own `style.transform` (see the
+                                    // arrowMarkers builder) — it's cosmetic (a flat billboard doesn't
+                                    // actually warp with camera angle the way floor's real 3D plane
+                                    // does), but it's not just an inert number either.
+                                    const showGizmo = isFloor || isPulse
+                                    const rot = isLandmark || isFloor ? 0 : (popupState.rotation ?? 0)
+                                    // Floor decal's real look (a true 3D-rotated plane) is shown by
+                                    // an actual imageLayer marker, live-updated every frame straight
+                                    // from popupState (see mainLoop's 'hs_floor_preview' block) — a
+                                    // flat CSS 3D transform here was tried and abandoned: its
+                                    // baseline orientation doesn't match the real marker's (three.js
+                                    // aims the plane relative to the sphere, not straight at a fixed
+                                    // CSS camera), so a modest-looking slider change in the CSS
+                                    // approximation could correspond to a drastically different real
+                                    // result — the exact "looks right while editing, wrong after
+                                    // Save" bug that preview was supposed to prevent. This box is
+                                    // now just an (invisible) drag/resize/rotate handle target.
+                                    //
+                                    // Pulse has no such conflict — its saved marker's tilt IS this
+                                    // same CSS formula (not a different 3D engine), so previewing it
+                                    // this way can't disagree with the real result the way it did
+                                    // for floor.
+                                    const boxTransform = isFloor
+                                        ? 'none'
+                                        : isPulse
+                                            ? `perspective(600px) rotateX(${popupState.rotate_x ?? 0}deg) rotateY(${popupState.rotate_y ?? 0}deg) rotate(${rot}deg)`
+                                            : `rotate(${rot}deg)`
+                                    // `size` for floor isn't a screen-space pixel count like every
+                                    // other type — it's a 3D scale factor (size/100, times
+                                    // FLOOR_SIZE_MULTIPLIER — see arrowMarkers/mainLoop) against the
+                                    // fixed sphere radius, rendered as a foreshortened plane, not a
+                                    // size-px flat sprite. This box is purely an invisible drag/
+                                    // resize/rotate hit target (see boxTransform above) — the real
+                                    // look comes from the live 'hs_floor_preview' 3D marker — but its
+                                    // size still has to roughly track that real decal, because it's
+                                    // what the corner handles and gizmo rings are drawn around, and
+                                    // because startPinResize's startDist (the corner handle's
+                                    // distance from center at mousedown) is what the resize ratio
+                                    // (dist / startDist) is relative to: too small a box makes a tiny
+                                    // mouse move saturate the 40-400 clamp instantly (the earlier
+                                    // "starts tiny, barely enlarges before maxing out" bug), too big
+                                    // a box (plain `size`, unscaled) makes the handles balloon far
+                                    // outside the actual decal's footprint. There's no single correct
+                                    // conversion (real projected size depends on zoom/distance/angle
+                                    // too), so 0.25 * FLOOR_SIZE_MULTIPLIER is a tuned empirical
+                                    // factor — same as before FLOOR_SIZE_MULTIPLIER existed, just
+                                    // scaled up to match the now-bigger real decal.
+                                    //
+                                    // zoomScale corrects for the OTHER half of that: real 3D content
+                                    // (the actual decal) grows/shrinks on screen as you zoom, but a
+                                    // plain DOM box has no concept of camera FOV, so it stayed a fixed
+                                    // pixel size — drifting out of sync with the real decal the moment
+                                    // you zoomed away from wherever the factor happened to be tuned
+                                    // for. Same baseHfov/currentHfov formula already used for the
+                                    // selected cover-up's own edit box (coverupPopupScreen below).
+                                    const zoomScale = isFloor
+                                        ? (activeScene.initial_hfov ?? DEFAULT_HFOV) / (pinPos.hfov || activeScene.initial_hfov || DEFAULT_HFOV)
+                                        : 1
+                                    const boxSize = isFloor ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
+                                    // Gizmo ring geometry, hoisted up here (not just computed inside
+                                    // the gizmo's own render below) because the drag/reposition hit
+                                    // target right below needs to know gizmoFlat too — it has to stay
+                                    // SMALLER than where the X/Y ellipses' own hit-strokes start, or
+                                    // it swallows most of the ellipse for anything but the smallest
+                                    // boxSize (pulse ring's default size (90px) is bigger than a
+                                    // flattened ellipse's own short axis, so a naive "reposition hit
+                                    // target = the whole box" would cover nearly the entire X/Y ring,
+                                    // leaving only Z clickable — exactly the "red/green don't
+                                    // respond, only blue does" bug this fixes).
+                                    const gizmoR    = Math.max(55, boxSize / 2 + 20)
+                                    const gizmoFlat = gizmoR * 0.42
+                                    const gizmoHit  = 14
                                     // The real landmark marker is anchored 'bottom center' — its
                                     // dot sits exactly on pinPos, with the line+label rising above.
                                     // The box below is centered on pinPos for every other type
@@ -2053,8 +2556,8 @@ export default function ProjectClient({ projectId }) {
                                     // instead (translate(-50%,-100%)) so this preview's dot lands
                                     // on the real point too, not size/2 px below it.
                                     return (
-                                        <div className="absolute z-30" style={{ left: pinPos.x, top: pinPos.y, transform: isLandmark ? 'translate(-50%,-100%)' : 'translate(-50%,-50%)' }}>
-                                            <div style={{ width: size, height: size, position: 'relative', transform: `rotate(${rot}deg)`, transformOrigin: 'center center' }}>
+                                        <div ref={pinBoxRef} className="absolute z-30" style={{ left: pinPos.x, top: pinPos.y, transform: isLandmark ? 'translate(-50%,-100%)' : 'translate(-50%,-50%)' }}>
+                                            <div style={{ width: boxSize, height: boxSize, position: 'relative', transform: boxTransform, transformOrigin: 'center center' }}>
                                                 {isLandmark ? (
                                                     <div
                                                         onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
@@ -2077,12 +2580,80 @@ export default function ProjectClient({ projectId }) {
                                                         onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
                                                         style={{
                                                             width: '100%', height: '100%', display: 'block',
-                                                            outline: '2px solid var(--editor-indigo-700)',
+                                                            // Needed for zIndex (below) to have any effect at
+                                                            // all — a statically-positioned element ignores
+                                                            // z-index entirely.
+                                                            position: 'relative',
+                                                            // Invisible for floor — the real, live-updating
+                                                            // imageLayer marker (mainLoop's
+                                                            // 'hs_floor_preview') shows the actual look;
+                                                            // this stays purely as the drag/resize hit target,
+                                                            // so an outlined flat sticker doesn't float on
+                                                            // top of the true 3D-tilted decal underneath it.
+                                                            opacity: isFloor ? 0 : 1,
+                                                            // No outline wherever the gizmo shows (floor or
+                                                            // pulse) — a solid square border sitting right
+                                                            // where the rings pass near the corners competed
+                                                            // with them visually and made it easy to miss a
+                                                            // ring and land on a resize handle instead. The
+                                                            // gizmo itself is enough of a "this is being
+                                                            // edited" indicator, same as floor already relies
+                                                            // on with no outline at all.
+                                                            outline: showGizmo ? 'none' : '2px solid var(--editor-indigo-700)',
                                                             outlineOffset: '2px',
+                                                            // NOT elevated above the gizmo (that was tried and
+                                                            // reverted — see the dedicated drag-dot below):
+                                                            // raising the whole image's z-index worked for
+                                                            // floor's small box, but pulse's default box is
+                                                            // BIGGER than the X/Y ellipses' own short axis, so
+                                                            // it ended up covering nearly the entire red/green
+                                                            // ring, leaving only blue (a true circle, always
+                                                            // safely outside the image's square) clickable.
                                                         }}
-                                                        className={`object-contain select-none drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)] ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
+                                                        className={`object-contain select-none ${showGizmo ? '' : 'drop-shadow-[0_3px_12px_rgba(0,0,0,0.85)]'} ${isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}`}
                                                     />
                                                 )}
+                                            </div>
+                                            {/* Interactive controls — corner handles, drag-dot, and
+                                                (for floor/pulse) the 3-ring gizmo — live in their own,
+                                                UNtransformed layer, separate from the div above that
+                                                carries boxTransform. For pulse specifically, boxTransform
+                                                includes a real perspective/rotateX/rotateY 3D tilt (the
+                                                whole point of that CSS transform is to make the glyph
+                                                itself visibly tilt) — nesting the gizmo inside that same
+                                                transform made the red/green/blue reference rings tilt
+                                                right along with the object, so at any real rotation they
+                                                visually collapsed into/behind the glyph instead of staying
+                                                a fixed frame you rotate the object relative to (the actual
+                                                Unreal/Blender convention this gizmo is modeled on: the
+                                                rings stay put, only the object spins). For every other
+                                                type this div still gets boxTransform applied directly
+                                                below, so the corner handles / single Z dot+line keep
+                                                rotating with the box exactly as before — only floor/pulse
+                                                (where boxTransform is either 'none' already, or a real 3D
+                                                tilt that must NOT leak into the gizmo) skip it. */}
+                                            <div className="absolute" style={{ left: 0, top: 0, width: boxSize, height: boxSize, transform: showGizmo ? 'none' : boxTransform, transformOrigin: 'center center' }}>
+                                                {showGizmo && (() => {
+                                                    // Dedicated small reposition-drag target, centered —
+                                                    // sized to stay safely INSIDE where the X/Y ellipses'
+                                                    // own hit-stroke starts (gizmoFlat), so it can sit
+                                                    // above the gizmo's hit-paths (guaranteeing a center
+                                                    // click always repositions) without swallowing the
+                                                    // ring itself the way giving the whole image that same
+                                                    // priority did.
+                                                    const dotR = Math.max(10, gizmoFlat - gizmoHit / 2 - 4)
+                                                    return (
+                                                        <div
+                                                            onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
+                                                            className={isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}
+                                                            style={{
+                                                                position: 'absolute', left: '50%', top: '50%',
+                                                                width: dotR * 2, height: dotR * 2, borderRadius: '50%',
+                                                                transform: 'translate(-50%,-50%)', zIndex: 1,
+                                                            }}
+                                                        />
+                                                    )
+                                                })()}
                                                 <div onMouseDown={startPinResize}
                                                      className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
                                                      style={{ left: 0, top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
@@ -2095,11 +2666,116 @@ export default function ProjectClient({ projectId }) {
                                                 <div onMouseDown={startPinResize}
                                                      className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
                                                      style={{ left: '100%', top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
-                                                <div className="absolute pointer-events-none"
-                                                     style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-indigo-700)' }}/>
-                                                <div onMouseDown={startPinRotate}
-                                                     className="absolute w-3 h-3 bg-white border-2 border-editor-primary rounded-full"
-                                                     style={{ left: '50%', top: -28, transform: 'translate(-50%,-50%)', zIndex: 2, cursor: ROTATE_CURSOR }}/>
+                                                {showGizmo ? (() => {
+                                                    // Unreal/Blender-style 3-ring gizmo — the on-canvas
+                                                    // drag counterpart to the Rotate X/Y/Z sliders (see
+                                                    // startAxisRotate). Purely a 2D DOM/SVG overlay like
+                                                    // every other edit-time control here (PSV markers can't
+                                                    // be dragged natively), so it can't be dynamically
+                                                    // perspective-correct — instead it uses the same static
+                                                    // convention every 3D tool's gizmo relies on for
+                                                    // legibility: a plain circle for the ring facing the
+                                                    // screen (Z), fixed-aspect ellipses for the other two
+                                                    // (X/Y), red/green/blue (the universal X/Y/Z color
+                                                    // convention — a deliberate one-off departure from this
+                                                    // app's indigo theme, since that convention is the
+                                                    // whole point of "gizmo style like Unreal"). Each ring
+                                                    // is drawn twice: a wide invisible stroke for a
+                                                    // comfortable grab target, then the thin visible one on
+                                                    // top (pointer-events:none, so it doesn't shrink the
+                                                    // hit area to the visible line's own width).
+                                                    // Floored at 55px radius — a tiny/zoomed-out decal was
+                                                    // shrinking the rings right along with the box down to
+                                                    // a few px, at which point a thin colored line is
+                                                    // basically imperceptible. The rings are a control, not
+                                                    // a size indicator (that's the box itself), so they stay
+                                                    // comfortably grabbable regardless of how small the
+                                                    // decal currently looks.
+                                                    // r/flat/HIT are the hoisted gizmoR/gizmoFlat/gizmoHit
+                                                    // above — shared with the dedicated drag-dot, which
+                                                    // needs the exact same geometry to stay safely clear
+                                                    // of these rings.
+                                                    const r    = gizmoR
+                                                    const flat = gizmoFlat
+                                                    const HIT  = gizmoHit
+                                                    // A real width/height + viewBox, not the "0×0 element
+                                                    // with overflow:visible" trick used elsewhere in this
+                                                    // file (e.g. the dashed connector lines) — that trick
+                                                    // works fine for plain strokes, but a CSS filter (the
+                                                    // drop-shadow below, for contrast against bright floors)
+                                                    // computes its effect region from the element's OWN box,
+                                                    // not from overflow: on a genuinely 0×0 SVG, browsers
+                                                    // clip the filtered output to nothing — the invisible
+                                                    // hit-target strokes still registered clicks (SVG
+                                                    // geometry, unaffected by the filter), which is exactly
+                                                    // why dragging worked while nothing was ever visible.
+                                                    const box = r * 2 + HIT
+                                                    const cx = box / 2, cy = box / 2
+                                                    // Each ring is drawn as two half-arcs rather than one
+                                                    // closed ellipse — solid on one side, faint + dashed on
+                                                    // the other. Purely a legibility trick (this is a flat
+                                                    // 2D overlay, not a genuinely perspective-correct 3D gizmo, same
+                                                    // as everywhere else in this preview), but it's the same
+                                                    // "near/far half" convention real 3D gizmos use, and it
+                                                    // reads as a ring wrapping around the object instead of
+                                                    // a flat circle sitting on top of it — thinner and less
+                                                    // visually loud than solid rings, which is what made the
+                                                    // full-strength version feel heavy.
+                                                    const solid = { strokeWidth: 1.75, pointerEvents: 'none' }
+                                                    const faint = { strokeWidth: 1.25, strokeOpacity: 0.4, strokeDasharray: '2.5,3', pointerEvents: 'none' }
+                                                    const hit   = axis => ({
+                                                        onMouseDown: e => startAxisRotate(e, axis),
+                                                        style: { cursor: ROTATE_CURSOR, pointerEvents: 'stroke' },
+                                                    })
+                                                    const svgPos = { left: `calc(50% - ${cx}px)`, top: `calc(50% - ${cy}px)` }
+                                                    // Split across TWO svg elements, sandwiching the
+                                                    // drag/resize image (zIndex 1) between them, rather than
+                                                    // one svg at a single z-index — floor's image is
+                                                    // invisible so this wouldn't have mattered there, but
+                                                    // pulse's is a real visible billboard, often bigger than
+                                                    // the gizmo's flattened X/Y ellipses at default size, so
+                                                    // the two need to interleave correctly:
+                                                    //  - hit-paths BELOW the image (zIndex 0): wherever the
+                                                    //    image covers them, the image — being on top — wins
+                                                    //    hit-testing, so a drag click there repositions the
+                                                    //    hotspot instead of grabbing a ring. Outside the
+                                                    //    image's footprint they're uncovered and still work
+                                                    //    normally.
+                                                    //  - visible strokes ABOVE the image (zIndex 2), with
+                                                    //    pointer-events:none — they paint on top so the rings
+                                                    //    stay fully visible even where they cross the image,
+                                                    //    but being non-interactive there, clicks fall through
+                                                    //    to whatever's underneath instead of being swallowed.
+                                                    return (
+                                                        <>
+                                                            <svg className="absolute" width={box} height={box} viewBox={`0 0 ${box} ${box}`} style={{ ...svgPos, zIndex: 0 }}>
+                                                                <ellipse cx={cx} cy={cy} rx={r} ry={flat} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('x')}/>
+                                                                <ellipse cx={cx} cy={cy} rx={flat} ry={r} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('y')}/>
+                                                                <circle cx={cx} cy={cy} r={r} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('z')}/>
+                                                            </svg>
+                                                            <svg className="absolute" width={box} height={box} viewBox={`0 0 ${box} ${box}`}
+                                                                 style={{ ...svgPos, zIndex: 2, pointerEvents: 'none', filter: 'drop-shadow(0 0 2.5px rgba(0,0,0,.85))' }}>
+                                                                {/* X — red, wide/short ellipse (tilt around the horizontal axis) */}
+                                                                <path d={`M ${cx - r} ${cy} A ${r} ${flat} 0 0 1 ${cx + r} ${cy}`} fill="none" stroke="#ef4444" style={solid}/>
+                                                                <path d={`M ${cx + r} ${cy} A ${r} ${flat} 0 0 1 ${cx - r} ${cy}`} fill="none" stroke="#ef4444" style={faint}/>
+                                                                {/* Y — green, narrow/tall ellipse (turn around the vertical axis) */}
+                                                                <path d={`M ${cx} ${cy - r} A ${flat} ${r} 0 0 1 ${cx} ${cy + r}`} fill="none" stroke="#22c55e" style={solid}/>
+                                                                <path d={`M ${cx} ${cy + r} A ${flat} ${r} 0 0 1 ${cx} ${cy - r}`} fill="none" stroke="#22c55e" style={faint}/>
+                                                                {/* Z — blue, full circle (spin in the screen plane) */}
+                                                                <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`} fill="none" stroke="#3b82f6" style={solid}/>
+                                                                <path d={`M ${cx + r} ${cy} A ${r} ${r} 0 0 1 ${cx - r} ${cy}`} fill="none" stroke="#3b82f6" style={faint}/>
+                                                            </svg>
+                                                        </>
+                                                    )
+                                                })() : (
+                                                    <>
+                                                        <div className="absolute pointer-events-none"
+                                                             style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-indigo-700)' }}/>
+                                                        <div onMouseDown={startPinRotate}
+                                                             className="absolute w-3 h-3 bg-white border-2 border-editor-primary rounded-full"
+                                                             style={{ left: '50%', top: -28, transform: 'translate(-50%,-50%)', zIndex: 2, cursor: ROTATE_CURSOR }}/>
+                                                    </>
+                                                )}
                                             </div>
                                         </div>
                                     )
@@ -2133,42 +2809,28 @@ export default function ProjectClient({ projectId }) {
                                                  className="absolute z-30 w-3.5 h-3.5 bg-white border-2 border-editor-primary rounded-full cursor-grab active:cursor-grabbing"
                                                  style={{ left: p.x, top: p.y, transform: 'translate(-50%,-50%)' }}/>
                                         ))}
+                                        {/* Plot-dimension labels — one per edge, at its screen
+                                            midpoint, only where a length was actually typed in
+                                            (the panel's "Plot dimensions" section). Read-only here;
+                                            editing happens in the panel, not on the canvas. */}
+                                        {polygonVertexScreens.map((p, i) => {
+                                            const q = polygonVertexScreens[(i + 1) % polygonVertexScreens.length]
+                                            const label = polygonPopup.edge_lengths?.[i]
+                                            if (!p || !q || !label) return null
+                                            return (
+                                                <div key={`el-${i}`}
+                                                     className="absolute z-30 pointer-events-none bg-black/70 backdrop-blur text-white text-[10px] font-medium px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                                                     style={{ left: (p.x + q.x) / 2, top: (p.y + q.y) / 2, transform: 'translate(-50%,-50%)' }}>
+                                                    {label}
+                                                </div>
+                                            )
+                                        })}
                                     </>
-                                )}
-
-                                {hasPopup && (
-                                    <HotspotPopup
-                                        pos={pinPos}
-                                        viewerSize={viewerSize}
-                                        state={popupState}
-                                        scenes={scenes}
-                                        activeSceneId={activeScene?.id}
-                                        halfSize={isEditing ? (popupState.size ?? hotspotSize) / 2 : 0}
-                                        onUpdate={setPopupState}
-                                        onSave={handleSave}
-                                        onCancel={() => setPopupState(null)}
-                                        saving={flags.savingHotspot}
-                                    />
-                                )}
-
-                                {polygonPopup && (
-                                    <PolygonPopup
-                                        pos={polygonPopupScreen}
-                                        viewerSize={viewerSize}
-                                        state={polygonPopup}
-                                        onUpdate={setPolygonPopup}
-                                        onSave={handlePolygonSave}
-                                        onEdit={editPolygon}
-                                        onDelete={() => deletePolygon(polygonPopup.polygon.id)}
-                                        onCancel={() => setPolygonPopup(null)}
-                                        saving={savingPolygon}
-                                        deleting={deletingPolygon}
-                                    />
                                 )}
 
                                 {isEditing && !isDraggingPin && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">
-                                        Drag the arrow to adjust · fill form in popup
+                                        Drag the arrow to adjust · fill form in the panel
                                     </div>
                                 )}
                                 {isDraggingPin && (
@@ -2212,25 +2874,51 @@ export default function ProjectClient({ projectId }) {
                         )}
                     </div>
 
+                    {/* Hide/show toggle — collapses the Directions/Overlays/
+                        Zones column entirely rather than letting it be
+                        dragged narrower/wider. */}
+                    <button onClick={() => setRightPanelOpen(o => !o)}
+                            title={rightPanelOpen ? 'Hide panel' : 'Show panel'}
+                            className="w-4 shrink-0 flex items-center justify-center border-x border-editor-border bg-white hover:bg-editor-primary/8 text-editor-icon-idle hover:text-editor-primary transition-colors">
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                            {rightPanelOpen ? <path d="M9 18l6-6-6-6"/> : <path d="M15 18l-6-6 6-6"/>}
+                        </svg>
+                    </button>
+
                     {/* Right — Directions / Overlays / Zones share one column now,
                         switched via tabs, instead of three sections hard-stacked in
                         fixed-height blocks (that stacking is what silently clipped
                         the arrow palette on shorter viewports). */}
+                    {rightPanelOpen && (
                     <div className="w-[240px] shrink-0 relative overflow-hidden flex flex-col">
                         <PanelTabs
                             active={activeRightTab}
-                            onChange={setActiveRightTab}
+                            // A zone's form now lives in this same column
+                            // (see PolygonPanel below) instead of floating
+                            // over the canvas independent of whatever tab
+                            // was active. It auto-saves (see
+                            // closePolygonPopup/the debounce effect), so a
+                            // tab click just flushes whatever's pending and
+                            // moves on, rather than needing to block the
+                            // switch outright the way an unsaved form would.
+                            onChange={tab => { closePolygonPopup(); setActiveRightTab(tab) }}
                             tabs={[
                                 { key: 'directions', label: 'Directions', count: hotspots.filter(h => h.scene_id === activeScene?.id).length },
                                 { key: 'overlays',   label: 'Overlays',   count: logos.length + coverups.length, dot: dirtyLogos || dirtyCoverups },
                                 { key: 'zones',      label: 'Zones',      count: visiblePolygons.length },
                             ]}/>
                         <div className="flex-1 min-h-0 relative overflow-hidden">
-                            {activeRightTab === 'directions' && (
+                            {activeRightTab === 'directions' && !polygonPopup && (
                                 <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
-                                              hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}/>
+                                              hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}
+                                              popupState={popupState} onUpdatePopup={setPopupState}
+                                              onSavePopup={handleSave} onCancelPopup={() => setPopupState(null)}
+                                              onSelectHotspot={id => onHotspotClickRef.current?.(id)}
+                                              onUploadImage={uploadOverlayImage} savingHotspot={flags.savingHotspot}
+                                              deletingHotspot={deletingHotspot}
+                                              formRef={hotspotFormRef}/>
                             )}
-                            {activeRightTab === 'overlays' && (
+                            {activeRightTab === 'overlays' && !polygonPopup && (
                                 <OverlayPanel
                                     logos={logos}
                                     coverups={coverups}
@@ -2247,18 +2935,30 @@ export default function ProjectClient({ projectId }) {
                                     saved={savedTick}
                                     onSave={saveOverlays}/>
                             )}
-                            {activeRightTab === 'zones' && (
+                            {(activeRightTab === 'zones' || polygonPopup) && (
                                 <PolygonPanel
                                     polygons={visiblePolygons}
                                     selectedId={polygonPopup?.polygon?.id ?? null}
                                     activeSceneId={activeScene?.id}
+                                    scenes={scenes}
+                                    hotspots={hotspots}
                                     drawing={!!drawingPolygon}
                                     onStartDraw={startDrawingPolygon}
                                     onSelect={selectPolygon}
-                                    onDelete={deletePolygon}/>
+                                    onDelete={requestDeletePolygon}
+                                    polygonPopup={polygonPopup}
+                                    onUpdatePopup={next => { setJustSavedPolygon(false); setPolygonPopup({ ...next, _dirty: true }) }}
+                                    onDeletePopup={() => requestDeletePolygon(polygonPopup.polygon.id)}
+                                    onCancelPopup={() => closePolygonPopup()}
+                                    onSaveNowPopup={saveZoneNow}
+                                    onUploadImage={uploadOverlayImage}
+                                    savingPolygon={savingPolygon}
+                                    justSavedPolygon={justSavedPolygon}
+                                    deletingPolygon={deletingPolygon}/>
                             )}
                         </div>
                     </div>
+                    )}
                 </div>
             </div>
 
@@ -2266,6 +2966,9 @@ export default function ProjectClient({ projectId }) {
                 <SettingsModal draft={settingsDraft} onChange={setSettingsDraft}
                                onSave={saveSettings} onClose={() => setShowSettings(false)}
                                saving={flags.savingSettings}/>
+            )}
+            {showEmbedModal && publicUrl && (
+                <EmbedModal url={publicUrl} onClose={() => setShowEmbedModal(false)}/>
             )}
             {confirmDelete && (
                 <ConfirmDeleteModal
@@ -2288,6 +2991,15 @@ export default function ProjectClient({ projectId }) {
                         deleting={deletingHotspot}/>
                 )
             })()}
+            {polygonToDelete && (
+                <ConfirmDeleteModal
+                    title="Delete this zone?"
+                    description={`${polygonToDelete.label ? `"${polygonToDelete.label}"` : 'This zone'} will be removed from this scene.`}
+                    confirmLabel="Delete"
+                    onConfirm={confirmDeletePolygon}
+                    onClose={() => setPolygonToDelete(null)}
+                    deleting={deletingPolygon}/>
+            )}
             {previewHtml && (
                 <TourPreviewModal html={previewHtml} projectName={project?.name}
                                   onClose={() => { previewOpenRef.current = false; setPreviewHtml(null) }}/>

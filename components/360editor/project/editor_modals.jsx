@@ -2,6 +2,8 @@
 // components/360editor/project/editor_modals.jsx
 // Small shared UI + modal dialogs used by the editor (middle.jsx).
 
+import { useState } from 'react'
+
 export function Spinner({ size = 12 }) {
     return (
         <svg className="animate-spin" width={size} height={size} viewBox="0 0 24 24"
@@ -11,8 +13,8 @@ export function Spinner({ size = 12 }) {
     )
 }
 
-// Single labeled slider row — shared by OverlayPopup (cover-up/logo Size,
-// Opacity, Rotate) and HotspotPopup (arrow Size, Rotation).
+// Single labeled slider row — used by OverlayPopup (cover-up/logo Size,
+// Opacity, Rotate).
 export function OverlayRow({ label, value, min, max, step = 1, suffix = '', onChange }) {
     return (
         <div className="flex items-center gap-2">
@@ -142,6 +144,77 @@ export function ConfirmDeleteModal({ title, description, confirmLabel = 'Delete'
                     <button onClick={onConfirm} disabled={deleting}
                             className="flex-1 h-9 text-editor-base rounded-xl bg-red-500 text-white font-semibold hover:bg-red-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5">
                         {deleting ? <><Spinner/>Deleting…</> : confirmLabel}
+                    </button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+// Lets a client grab a ready-to-paste <iframe> snippet from inside the app
+// itself, rather than that snippet only ever existing as something silently
+// dropped on the clipboard — the height is adjustable here (the one thing
+// worth tweaking per site) and the snippet updates live as it changes, with
+// a real live preview underneath so it's obvious this is exactly the
+// published tour, not a separate embed-only variant of it.
+export function EmbedModal({ url, onClose }) {
+    const [height, setHeight] = useState(600)
+    const [copied, setCopied] = useState(false)
+
+    // allow="fullscreen" (+ the older allowfullscreen attribute) is what lets
+    // the tour's own fullscreen button work once embedded — without it the
+    // browser silently blocks requestFullscreen() inside a cross-origin
+    // iframe, same as any other site's embedded video/map.
+    const snippet = `<iframe src="${url}" width="100%" height="${height}" style="border:0" allow="fullscreen" allowfullscreen loading="lazy"></iframe>`
+
+    async function copySnippet() {
+        try { await navigator.clipboard.writeText(snippet) }
+        catch {
+            const ta = Object.assign(document.createElement('textarea'), { value: snippet })
+            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove()
+        }
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1800)
+    }
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-2xl border border-editor-border shadow-2xl p-6 w-full max-w-[560px] max-h-[90vh] overflow-y-auto space-y-4">
+                <div className="flex items-center justify-between">
+                    <p className="text-editor-lg font-semibold text-editor-ink">Embed this tour</p>
+                    <button onClick={onClose} className="text-editor-ink-dim hover:text-editor-ink transition-colors">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <p className="text-editor-sm text-editor-ink-muted -mt-2">
+                    Paste this into any page on the client's own site — it renders the exact same live tour as the published link.
+                </p>
+
+                <div className="flex items-center gap-2.5">
+                    <label className="text-editor-sm text-editor-ink-muted shrink-0">Height</label>
+                    <input type="number" min="200" step="10" value={height}
+                           onChange={e => setHeight(Math.max(200, Number(e.target.value) || 600))}
+                           className="w-24 h-8 border border-editor-border rounded-lg px-2.5 text-editor-base focus:outline-none focus:border-editor-primary"/>
+                    <span className="text-editor-xs text-editor-ink-muted">px — width always fills its container</span>
+                </div>
+
+                <textarea readOnly value={snippet} rows={3} onFocus={e => e.target.select()}
+                          className="w-full font-mono text-[11px] leading-relaxed border border-editor-border rounded-lg p-3 bg-editor-subtle text-editor-ink resize-none focus:outline-none focus:border-editor-primary"/>
+
+                <div className="rounded-xl overflow-hidden border border-editor-border bg-editor-subtle">
+                    <iframe src={url} style={{ width: '100%', height: 260, border: 0, display: 'block' }} allow="fullscreen" allowFullScreen loading="lazy"/>
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                    <button onClick={onClose}
+                            className="flex-1 h-9 text-editor-base rounded-xl border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors">
+                        Close
+                    </button>
+                    <button onClick={copySnippet}
+                            className="flex-1 h-9 text-editor-base rounded-xl bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover transition-colors flex items-center justify-center gap-1.5">
+                        {copied
+                            ? <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Copied</>
+                            : <><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy code</>}
                     </button>
                 </div>
             </div>

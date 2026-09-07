@@ -132,11 +132,9 @@ SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
 │   │       ├── editor_utils.js          # Pure helpers: roundTo2/clampPct, the flags reducer
 │   │       ├── editor_modals.jsx        # Spinner, CameraControls, Settings/Delete/HotspotDelete modals
 │   │       ├── scene_panel.jsx          # LEFT panel — scene list, upload, reorder, active scene
-│   │       ├── hotspot_panel.jsx        # RIGHT panel — arrow palette, hotspot size, logo size, list
-│   │       ├── hotspot_overlay.jsx      # Floating hotspot editor popup (HotspotPopup)
+│   │       ├── hotspot_panel.jsx        # RIGHT panel — arrow palette + list, OR the new/edit hotspot form in place of them
 │   │       ├── overlay_panel.jsx        # Logos + cover-ups list panel (OverlayPanel)
-│   │       ├── polygon_panel.jsx        # Polygon zones list panel + "Draw zone" (PolygonPanel)
-│   │       ├── polygon_overlay.jsx      # Floating zone popup — new/view/edit (PolygonPopup)
+│   │       ├── polygon_panel.jsx        # RIGHT panel — zone list + "Draw zone", OR the new/view/edit zone card in place of them
 │   │       ├── preview.jsx              # Full-screen live preview modal (TourPreviewModal)
 │   │       └── export.jsx               # buildTourHtml() — standalone HTML tour exporter
 │   │
@@ -233,7 +231,7 @@ Key behaviours inside `middle.jsx`:
 - **Hotspot size** is one project-level value (`projects.hotspot_size`) applied to every arrow, adjusted like logo size (live drag → save on release).
 - Hovering an arrow reveals its **label tooltip** (PSV's native marker tooltip), both in the editor and in the exported tour.
 - Deleting a hotspot opens a **styled confirmation modal** (no more instant delete).
-- **Polygon zones** (`polygon_panel.jsx` / `polygon_overlay.jsx`): click "Draw zone", click 3+ points on the panorama (a live dashed preview line grows with each click, same interaction pattern validated end-to-end before the viewer migration), then Finish opens a form for label/status/detail. Points are immutable once saved — the popup only edits status/label/detail afterward. Status drives fill color (`lib/polygons.js`'s `colorForStatus`); hovering an existing zone brightens it via `enter-marker`/`leave-marker` + `updateMarker()`.
+- **Polygon zones** (`polygon_panel.jsx`): click "Draw zone", click 3+ points on the panorama (a live dashed preview line grows with each click, same interaction pattern validated end-to-end before the viewer migration), then Finish opens a form for label/status/detail in the right panel. Points are immutable once saved — the form only edits status/label/detail afterward. Status drives fill color (`lib/polygons.js`'s `colorForStatus`); hovering an existing zone brightens it via `enter-marker`/`leave-marker` + `updateMarker()`.
 
 ---
 
