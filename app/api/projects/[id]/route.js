@@ -13,7 +13,7 @@ export async function GET(_req, { params }) {
         const [projectRes, scenesRes, hotspotsRes, polygonsRes] = await Promise.all([
             supabase
                 .from('projects')
-                .select('id, name, created_at, show_intro, auto_rotate, hotspot_size, overlays, coverups, slug, published_at')
+                .select('id, name, created_at, show_intro, auto_rotate, hotspot_size, overlays, coverups, slug, published_at, publish_cycle_started_at')
                 .eq('id', id)
                 .eq('user_id', user.id)
                 .single(),

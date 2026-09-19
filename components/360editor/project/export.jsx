@@ -15,7 +15,7 @@ const THREE_VERSION = '0.185.1'
 // published tour's opening view matches what the editor showed. Lower = more
 // zoomed in; 70deg reads as a closer, more immersive opening view than the
 // old 90deg default without going so narrow it hides the room's edges.
-const DEFAULT_HFOV = 70
+const DEFAULT_HFOV = 62
 
 export function escapeHtml(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
@@ -165,12 +165,21 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #viewer{width:100vw;height:100vh}
 .wm{position:fixed;transform:translate(-50%,-50%);z-index:15000;pointer-events:none;max-width:90vw;}
 .wm img{display:block;width:100%;height:auto;filter:drop-shadow(0 2px 8px rgba(0,0,0,.5));}
-#sceneSidebar{position:fixed;top:50%;right:14px;transform:translateY(-50%);z-index:20000;max-height:90vh;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;display:flex;flex-direction:column;gap:7px;padding:4px 0;}
+#sceneSidebar{position:fixed;top:50%;right:8px;transform:translateY(-50%);z-index:20000;max-height:80vh;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;display:flex;flex-direction:column;gap:7px;padding:6px 8px;opacity:1;transition:opacity .28s ease,transform .28s ease;}
 #sceneSidebar::-webkit-scrollbar{display:none}
-.ss-item{cursor:pointer;text-align:center;transition:transform .25s ease}.ss-item:hover{transform:scale(1.06)}
+#sceneSidebar.hidden{opacity:0;transform:translateY(-50%) translateX(10px);pointer-events:none;}
+/* Neutral dark glass -- NOT saturate()'d, which was pulling in whatever warm
+   tone the panorama behind it happened to be (that's what read as "orange"). */
+#sbToggle{position:fixed;top:18px;right:8px;z-index:20001;width:38px;height:38px;border-radius:50%;border:1px solid rgba(255,255,255,.22);cursor:pointer;background:rgba(15,15,18,.4);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 18px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.18);transition:background .2s ease,transform .2s ease;}
+#sbToggle:hover{background:rgba(15,15,18,.58);transform:scale(1.07)}
+#sbToggle:active{transform:scale(.94)}
+/* Fixed to the image's own width so a long scene name never widens the
+   item past it -- the name is what gets trimmed (ellipsis), never the
+   image's flush position against the right edge. */
+.ss-item{cursor:pointer;text-align:center;transition:transform .25s ease;width:78px;}.ss-item:hover{transform:scale(1.06)}
 .ss-item img{width:78px;height:49px;object-fit:cover;border-radius:8px;display:block;box-shadow:0 2px 10px rgba(0,0,0,.5);border:2px solid transparent;transition:border-color .2s ease;}
 .ss-item.active img{border-color:#3730a3}
-.ss-item span{display:block;margin-top:3px;font-size:10px;color:#fff;font-weight:600;text-shadow:0 1px 4px rgba(0,0,0,.75);}
+.ss-item span{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font-size:10px;color:#fff;font-weight:600;text-shadow:0 1px 4px rgba(0,0,0,.75);}
 #controls{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:20000;display:flex;gap:5px;}
 .ctrl{width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:15px;font-weight:700;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);color:#1a1a18;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.28);transition:background .15s ease;}.ctrl:hover{background:#fff}
 #loadOverlay{position:fixed;inset:0;background:#0a0a0a;color:#fff;display:flex;justify-content:center;align-items:center;flex-direction:column;z-index:100001;}
@@ -230,6 +239,9 @@ ${introHtml}
 ${logoHtml}
 <div id="zoneCard"><div class="zc-head"><span class="zc-dot" id="zcDot"></span><span class="zc-title" id="zcTitle"></span><button class="zc-close" onclick="hideZoneCard()">&#10005;</button></div><div class="zc-status" id="zcStatus"></div><div id="zcDetail"></div></div>
 <div id="imgLightbox"><div id="imgLbFrame"><img id="imgLbImg" alt=""><button id="imgLbClose" aria-label="Close">&#10005;</button></div></div>
+<button id="sbToggle" onclick="toggleSceneSidebar()" title="Hide scene list" aria-label="Hide scene list">
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+</button>
 <div id="sceneSidebar"></div>
 <div id="controls">
   <button class="ctrl" onclick="move('up')">▲</button><button class="ctrl" onclick="move('dn')">▼</button>
@@ -536,7 +548,21 @@ function move(d){var s=10*Math.PI/180;var p=viewer.getPosition();if(d==='up')vie
 window.move=move;
 function toggleFS(){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(e){console.warn('Fullscreen request was blocked:',e&&e.message);});}else{document.exitFullscreen();}}
 window.toggleFS=toggleFS;
-document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zc=document.getElementById('zoneCard'),lb=document.getElementById('imgLightbox');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zc&&!fs.contains(zc))fs.appendChild(zc);if(lb&&!fs.contains(lb))fs.appendChild(lb);}else{if(sb)document.body.appendChild(sb);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zc)document.body.appendChild(zc);if(lb)document.body.appendChild(lb);}});
+// Eye / eye-off -- swapped in place rather than kept as two separate nodes,
+// so the single button's own icon always matches what a click does next.
+var _EYE='<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+var _EYE_OFF='<path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a21.8 21.8 0 0 1 5.06-6.06M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a21.8 21.8 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+var _sidebarHidden=false;
+function toggleSceneSidebar(){
+  _sidebarHidden=!_sidebarHidden;
+  var sb=document.getElementById('sceneSidebar'),btn=document.getElementById('sbToggle');
+  sb.classList.toggle('hidden',_sidebarHidden);
+  btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">'+(_sidebarHidden?_EYE_OFF:_EYE)+'</svg>';
+  var label=_sidebarHidden?'Show scene list':'Hide scene list';
+  btn.title=label;btn.setAttribute('aria-label',label);
+}
+window.toggleSceneSidebar=toggleSceneSidebar;
+document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),sbt=document.getElementById('sbToggle'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zc=document.getElementById('zoneCard'),lb=document.getElementById('imgLightbox');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(sbt&&!fs.contains(sbt))fs.appendChild(sbt);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zc&&!fs.contains(zc))fs.appendChild(zc);if(lb&&!fs.contains(lb))fs.appendChild(lb);}else{if(sb)document.body.appendChild(sb);if(sbt)document.body.appendChild(sbt);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zc)document.body.appendChild(zc);if(lb)document.body.appendChild(lb);}});
 function _chk(){var l=window.innerWidth>window.innerHeight;document.getElementById('rotateOverlay').style.display=l?'none':'flex';}
 window.addEventListener('orientationchange',function(){setTimeout(_chk,300);});window.addEventListener('resize',function(){setTimeout(_chk,300);});setTimeout(_chk,300);
 </script></body></html>`

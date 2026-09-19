@@ -15,7 +15,7 @@ export default async function Page() {
     const [{ data: projects }, credits] = await Promise.all([
         supabase
             .from('projects')
-            .select('id, name, created_at')
+            .select('id, name, created_at, published_at, publish_cycle_started_at')
             .eq('user_id', user.id)
             .order('created_at', { ascending: false }),
         getCredits(user.id),

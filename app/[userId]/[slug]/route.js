@@ -13,6 +13,7 @@
 
 import { createAdminClient } from '@/lib/supabase-admin'
 import { buildTourHtml } from '@/components/360editor/project/export'
+import { isPublishCycleExpired } from '@/lib/publish-cycle'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,13 +47,21 @@ export async function GET(_req, { params }) {
         const admin = createAdminClient()
         const { data, error } = await admin
             .from('projects')
-            .select('published_payload')
+            .select('published_payload, publish_cycle_started_at')
             .eq('user_id', userId)
             .eq('slug', slug)
             .not('published_payload', 'is', null)
             .maybeSingle()
 
         if (error || !data?.published_payload) return notFound()
+
+        // One credit buys a project a 1-year publishing window, not
+        // unlimited hosting forever (see lib/publish-cycle.js) — past that,
+        // the link goes dark exactly like an unpublished/deleted tour until
+        // POST /api/projects/[id]/renew spends another credit. Nothing is
+        // actually deleted here; this is a lazy check on every request, not
+        // a cron job.
+        if (isPublishCycleExpired(data.publish_cycle_started_at)) return notFound()
 
         // `polygons` is only present on v2+ snapshots — a v1 snapshot published
         // before this feature existed has no such key, and must still render.

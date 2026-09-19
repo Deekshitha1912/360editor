@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import {Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,} from '@/components/ui/dialog'
 import {DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,} from '@/components/ui/dropdown-menu'
 import Credits_badge from '@/components/360editor/project/payment/credits_badge'
+import { isPublishCycleExpired } from '@/lib/publish-cycle'
 
 // Deterministic gradient + accent per project so each card thumbnail feels distinct
 const THUMBS = [
@@ -288,6 +289,7 @@ export default function DashboardClient({ user, projects: initialProjects, credi
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                         {projects.map((p, i) => {
                             const [c1, c2, accent] = thumbFor(p.id)
+                            const hostingExpired = !!p.published_at && isPublishCycleExpired(p.publish_cycle_started_at)
                             return (
                                 <div
                                     key={p.id}
@@ -313,6 +315,12 @@ export default function DashboardClient({ user, projects: initialProjects, credi
                                             <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                                         </svg>
                                         <span className="absolute top-2.5 right-2.5 text-[9px] font-bold tracking-wider text-white/90 bg-black/30 backdrop-blur px-2 py-0.5 rounded">360°</span>
+                                        {hostingExpired && (
+                                            <span className="absolute bottom-2.5 right-2.5 flex items-center gap-1 text-[9px] font-bold tracking-wider text-white bg-red-600/90 backdrop-blur px-2 py-0.5 rounded" title="This tour's 1-year hosting window has ended — visitors see 'not available' until it's renewed.">
+                                                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="10"/></svg>
+                                                Hosting expired
+                                            </span>
+                                        )}
                                         {/* open hint on hover */}
                                         <span className="absolute bottom-2.5 left-3 text-[11px] font-medium text-white/0 group-hover:text-white/85 transition-colors flex items-center gap-1">
                                             Open editor

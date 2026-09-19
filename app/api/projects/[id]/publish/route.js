@@ -12,6 +12,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import { uniqueSlug } from '@/lib/slug'
+import { isPublishCycleExpired } from '@/lib/publish-cycle'
 
 // Fields the public renderer needs — nothing else is snapshotted.
 const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, overlays, coverups'
@@ -33,11 +34,22 @@ export async function POST(req, { params }) {
         // Ownership + current publish state (RLS also scopes this to the user).
         const { data: project } = await supabase
             .from('projects')
-            .select(`${PROJECT_FIELDS}, slug, published_at`)
+            .select(`${PROJECT_FIELDS}, slug, published_at, publish_cycle_started_at`)
             .eq('id', id)
             .eq('user_id', user.id)
             .single()
         if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
+
+        // One credit buys this project a 1-year publishing window, not
+        // unlimited hosting forever — see lib/publish-cycle.js. Past that,
+        // publishing (and republishing) is blocked until POST
+        // /api/projects/[id]/renew spends another credit to reset the clock.
+        if (isPublishCycleExpired(project.publish_cycle_started_at)) {
+            return NextResponse.json(
+                { error: "This tour's 1-year hosting window has ended. Renew it to keep publishing.", code: 'cycle_expired' },
+                { status: 402 }
+            )
+        }
 
         const [{ data: scenes }, { data: hotspots }, polygonsRes] = await Promise.all([
             supabase
@@ -72,6 +84,10 @@ export async function POST(req, { params }) {
 
         // Slug is assigned once and then frozen — renaming must not break links.
         const slug = project.slug || await uniqueSlug(supabase, user.id, project.name, id)
+        // Set ONCE, on the very first publish — every later republish leaves
+        // it untouched, since it's the 1-year window's anchor, not a
+        // "last published" timestamp (published_at already is that).
+        const cycleStart = project.publish_cycle_started_at || new Date().toISOString()
 
         const published_payload = {
             v: 2, // v2 adds `polygons` — readers must treat it as optional (?? [])
@@ -92,10 +108,10 @@ export async function POST(req, { params }) {
 
         const { data: updated, error } = await supabase
             .from('projects')
-            .update({ slug, published_at: new Date().toISOString(), published_payload })
+            .update({ slug, published_at: new Date().toISOString(), published_payload, publish_cycle_started_at: cycleStart })
             .eq('id', id)
             .eq('user_id', user.id)
-            .select('slug, published_at')
+            .select('slug, published_at, publish_cycle_started_at')
             .single()
 
         if (error) {
@@ -105,15 +121,16 @@ export async function POST(req, { params }) {
                 const retrySlug = `${slug}-${Date.now().toString(36)}`
                 const { data: retry, error: retryErr } = await supabase
                     .from('projects')
-                    .update({ slug: retrySlug, published_at: new Date().toISOString(), published_payload })
+                    .update({ slug: retrySlug, published_at: new Date().toISOString(), published_payload, publish_cycle_started_at: cycleStart })
                     .eq('id', id)
                     .eq('user_id', user.id)
-                    .select('slug, published_at')
+                    .select('slug, published_at, publish_cycle_started_at')
                     .single()
                 if (retryErr) return NextResponse.json({ error: retryErr.message }, { status: 500 })
                 return NextResponse.json({
                     slug: retry.slug,
                     published_at: retry.published_at,
+                    publish_cycle_started_at: retry.publish_cycle_started_at,
                     url: `${siteOrigin(req)}/${user.id}/${retry.slug}`,
                 })
             }
@@ -123,6 +140,7 @@ export async function POST(req, { params }) {
         return NextResponse.json({
             slug: updated.slug,
             published_at: updated.published_at,
+            publish_cycle_started_at: updated.publish_cycle_started_at,
             url: `${siteOrigin(req)}/${user.id}/${updated.slug}`,
         })
     } catch (err) {

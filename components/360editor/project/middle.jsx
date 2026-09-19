@@ -20,6 +20,7 @@ import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
 import { Spinner, CameraControls, SettingsModal, ConfirmDeleteModal, ErrorBanner, OverlayRow, EmbedModal } from '@/components/360editor/project/editor_modals'
+import { isPublishCycleExpired, publishCycleEndsAt } from '@/lib/publish-cycle'
 
 // Radians <-> degrees. Hotspot/overlay data is stored in degrees everywhere
 // (DB, API, React state) exactly as before the viewer swap — PSV's Position
@@ -57,7 +58,7 @@ function findSnapPoint(viewer, candidates, screenX, screenY) {
 // stay consistent with the cover-up scale-with-zoom math, which anchors to
 // the same "opening FOV" — and must match export.jsx's own DEFAULT_HFOV so
 // a published tour's opening view matches what the editor showed.
-const DEFAULT_HFOV = 70
+const DEFAULT_HFOV = 62
 
 // Markup for the 'landmark' arrow_type — a PSV `html` marker (unlike every
 // other arrow type, which is a plain `image` marker), because the floating
@@ -319,6 +320,10 @@ export default function ProjectClient({ projectId }) {
     const [publicUrl, setPublicUrl]             = useState(null)   // live tour URL — null until published
     const [publishError, setPublishError]       = useState('')
     const [overlayError, setOverlayError]       = useState('')
+    const [downloadingZip, setDownloadingZip]   = useState(false)
+    const [zipError, setZipError]               = useState('')
+    const [renewing, setRenewing]               = useState(false)
+    const [renewError, setRenewError]           = useState('')
 
     // Overlays are edited freely and written once, on Save. Dragging used to
     // PATCH on every drop, which meant a round trip mid-gesture — the pause you
@@ -2170,6 +2175,45 @@ export default function ProjectClient({ projectId }) {
         } finally { dispatchFlag('publishing') }
     }
 
+    // ── Download as a self-hostable zip ────────────────────────────────────
+    // The API route reads live from scenes/hotspots/polygons (same as
+    // Publish), so any edit still sitting in an open, unsaved form has to be
+    // flushed first — identical reasoning to publishTour's own flush above.
+    async function downloadZip() {
+        if (!scenes.length || !project || downloadingZip) return
+        setZipError('')
+        setDownloadingZip(true)
+        try {
+            if (dirtyLogos || dirtyCoverups) {
+                const ok = await saveOverlays()
+                if (!ok) { setZipError('Your overlay changes could not be saved, so the zip was not built.'); return }
+            }
+            if (popupState?.mode === 'new' || popupState?.mode === 'edit-existing') await handleSave()
+            if (polygonPopup?.mode === 'edit' && polygonPopup._dirty) await updatePolygon()
+
+            // POST, not GET — this spends a credit (see the route's own
+            // comment for why: nothing stops a downloaded zip being reused
+            // outside this app, so each portable copy costs something).
+            const res = await fetch(`/api/projects/${project.id}/export-zip`, { method: 'POST' })
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}))
+                setZipError(json.error || 'Could not build the zip.')
+                return
+            }
+            const blob = await res.blob()
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `${(project.name || 'tour').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'tour'}.zip`
+            document.body.appendChild(a)
+            a.click()
+            a.remove()
+            URL.revokeObjectURL(url)
+        } catch {
+            setZipError('Network error — the zip was not built.')
+        } finally { setDownloadingZip(false) }
+    }
+
     // Takes the tour offline. The slug is kept, so re-publishing later restores
     // the exact same link.
     async function unpublishTour() {
@@ -2188,6 +2232,27 @@ export default function ProjectClient({ projectId }) {
         } catch {
             setPublishError('Network error — the tour is still live.')
         } finally { dispatchFlag('unpublishing') }
+    }
+
+    // ── 1-year publishing window (see lib/publish-cycle.js) ────────────────
+    // publish_cycle_started_at is set once, on the tour's very first publish
+    // — null means "never published", which is never expired (nothing to
+    // renew yet). hostingEndsAt is only meaningful once it's non-null.
+    const hostingExpired = isPublishCycleExpired(project?.publish_cycle_started_at)
+    const hostingEndsAt  = publishCycleEndsAt(project?.publish_cycle_started_at)
+
+    async function renewProject() {
+        if (!project || renewing) return
+        setRenewError('')
+        setRenewing(true)
+        try {
+            const res  = await fetch(`/api/projects/${project.id}/renew`, { method: 'POST' })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) { setRenewError(json.error || 'Could not renew.'); return }
+            setProject(p => p ? { ...p, publish_cycle_started_at: json.publish_cycle_started_at } : p)
+        } catch {
+            setRenewError('Network error — the tour was not renewed.')
+        } finally { setRenewing(false) }
     }
 
     // Clean link for display and copy; freshly cache-busted only when opened, so
@@ -2275,9 +2340,21 @@ export default function ProjectClient({ projectId }) {
                         Preview
                     </button>
 
+                    {/* Download zip — a self-hostable copy: this same HTML plus
+                        every image it references, bundled under /assets and
+                        rewritten to point at them, so it runs on any static
+                        host with no dependency on this app staying up. */}
+                    <button onClick={downloadZip} disabled={downloadingZip || !scenes.length}
+                            title="Download a self-hostable .zip (HTML + all images) — upload it anywhere. Costs 1 credit per download."
+                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-editor-border text-editor-ink-muted text-[12px] font-medium hover:bg-editor-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                        {downloadingZip
+                            ? <><Spinner/>Building…</>
+                            : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download zip</>}
+                    </button>
+
                     {/* Publish — creates (or refreshes) the permanent public link */}
-                    <button onClick={publishTour} disabled={flags.publishing || !scenes.length}
-                            title={publicUrl ? 'Push the current version to the live link' : 'Host this tour on a permanent public link'}
+                    <button onClick={publishTour} disabled={flags.publishing || !scenes.length || hostingExpired}
+                            title={hostingExpired ? "This tour's 1-year hosting window has ended — renew it below to publish again" : (publicUrl ? 'Push the current version to the live link' : 'Host this tour on a permanent public link')}
                             className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-editor-primary text-white text-[12px] font-semibold hover:bg-editor-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         {flags.publishing
                             ? <><Spinner/>{publicUrl ? 'Updating…' : 'Publishing…'}</>
@@ -2285,11 +2362,32 @@ export default function ProjectClient({ projectId }) {
                     </button>
                 </header>
 
+                {/* ── Hosting-expired alert — the public link now serves "not
+                    available" to visitors (see lib/publish-cycle.js); only a
+                    renewal (1 credit) resets the 1-year window and brings it
+                    back. Shown above the live-link bar so it's the first
+                    thing noticed, not buried among the other controls. */}
+                {hostingExpired && (
+                    <div className="flex items-center gap-2 px-5 py-2 border-b border-red-200 bg-red-50 shrink-0">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-red-500 shrink-0"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="10"/></svg>
+                        <span className="text-[12px] font-medium text-red-700">
+                            This tour's 1-year hosting window has ended — visitors now see "not available".
+                        </span>
+                        <button onClick={renewProject} disabled={renewing}
+                                className="ml-auto flex items-center gap-1.5 h-7 px-3 rounded-lg bg-red-600 text-white text-[11.5px] font-semibold hover:bg-red-700 disabled:opacity-40 transition-colors shrink-0">
+                            {renewing ? <><Spinner size={11}/>Renewing…</> : 'Renew (2 credits)'}
+                        </button>
+                    </div>
+                )}
+                {renewError && <ErrorBanner message={renewError} onDismiss={() => setRenewError('')}/>}
+
                 {/* ── Live link bar — appears once the tour has been published ── */}
                 {publicUrl && (
                     <div className="h-9 flex items-center gap-2 px-5 border-b border-editor-border bg-editor-subtle shrink-0">
-                        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 shrink-0">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"/>Live
+                        <span className={`flex items-center gap-1.5 text-[11px] font-semibold shrink-0 ${hostingExpired ? 'text-red-600' : 'text-emerald-700'}`}
+                              title={hostingExpired ? undefined : (hostingEndsAt ? `Hosting active until ${hostingEndsAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : undefined)}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${hostingExpired ? 'bg-red-500' : 'bg-emerald-500'}`}/>
+                            {hostingExpired ? 'Expired' : 'Live'}
                         </span>
                         <a href={openUrl()} target="_blank" rel="noreferrer"
                            className="text-[12px] text-editor-primary hover:underline truncate font-medium">
@@ -2321,6 +2419,7 @@ export default function ProjectClient({ projectId }) {
                 {publishError && <ErrorBanner message={publishError} onDismiss={() => setPublishError('')}/>}
                 {overlayError && <ErrorBanner message={overlayError} onDismiss={() => setOverlayError('')}/>}
                 {polygonError && <ErrorBanner message={polygonError} onDismiss={() => setPolygonError('')}/>}
+                {zipError && <ErrorBanner message={zipError} onDismiss={() => setZipError('')}/>}
 
                 {/* ── Body ── */}
                 <div className="flex-1 flex overflow-hidden">
@@ -2696,6 +2795,25 @@ export default function ProjectClient({ projectId }) {
                                                 (where boxTransform is either 'none' already, or a real 3D
                                                 tilt that must NOT leak into the gizmo) skip it. */}
                                             <div className="absolute" style={{ left: 0, top: 0, width: boxSize, height: boxSize, transform: showGizmo ? 'none' : boxTransform, transformOrigin: 'center center' }}>
+                                                {/* This whole div sits ON TOP of the image above (any
+                                                    absolutely-positioned box paints after in-flow content
+                                                    regardless of DOM order) — for floor/pulse that's fine,
+                                                    they drag via the dedicated gizmo center-dot below. Every
+                                                    OTHER type (forward/left/up-left/up-right/circle/custom)
+                                                    has no gizmo and therefore no dot, so without this their
+                                                    own mousedown handler on the <img> underneath was
+                                                    unreachable — a click anywhere except the 4 tiny corner
+                                                    handles hit this empty div and did nothing. This is that
+                                                    bug's actual fix: a full-box reposition target, sat BELOW
+                                                    the corner handles (z-index 1 vs their 2) so resize still
+                                                    wins exactly at the corners. */}
+                                                {!showGizmo && (
+                                                    <div
+                                                        onMouseDown={e => { e.preventDefault(); e.stopPropagation(); pinGestureRef.current = null; setIsDraggingPin(true) }}
+                                                        className={isDraggingPin ? 'cursor-grabbing' : 'cursor-grab'}
+                                                        style={{ position: 'absolute', inset: 0, zIndex: 1 }}
+                                                    />
+                                                )}
                                                 {showGizmo && (() => {
                                                     // Dedicated small reposition-drag target, centered —
                                                     // sized to stay safely INSIDE where the X/Y ellipses'
