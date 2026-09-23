@@ -100,6 +100,16 @@ export function SettingsModal({ draft, onChange, onSave, onClose, saving }) {
                            className="w-4 h-4 accent-editor-primary"/>
                     <span className="text-editor-base text-editor-ink">Show "tap to move" intro tip on first load</span>
                 </label>
+                {/* Master switch for the plot-number badges — the per-zone
+                    checkbox in the zone form stays as the per-plot exception.
+                    Labels also hide themselves when a plot gets too small on
+                    screen to hold one, which needs no setting. */}
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                    <input type="checkbox" checked={draft.show_zone_labels !== false}
+                           onChange={e => onChange({ ...draft, show_zone_labels: e.target.checked })}
+                           className="w-4 h-4 accent-editor-primary"/>
+                    <span className="text-editor-base text-editor-ink">Show zone labels on the map</span>
+                </label>
                 <div className="flex gap-2 pt-1">
                     <button onClick={onClose} disabled={saving}
                             className="flex-1 h-9 text-editor-base rounded-xl border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors disabled:opacity-40">

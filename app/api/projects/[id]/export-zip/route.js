@@ -28,7 +28,7 @@ import { buildTourHtml } from '@/components/360editor/project/export'
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups } from '@/lib/overlays'
 
-const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, overlays, coverups'
+const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups'
 
 function isHttpUrl(u) {
     return typeof u === 'string' && /^https?:\/\//i.test(u)
@@ -173,7 +173,7 @@ export async function POST(_req, { params }) {
                 .eq('project_id', id),
             supabase
                 .from('polygons')
-                .select('id, scene_id, project_id, points, status, label, detail, custom_color, edge_lengths, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
+                .select('id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
                 .eq('project_id', id),
         ])
         const polygons = polygonsRes.error ? [] : (polygonsRes.data ?? [])

@@ -12,10 +12,11 @@ import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
 import PolygonPanel from '@/components/360editor/project/polygon_panel'
 import PanelTabs from '@/components/360editor/project/panel_tabs'
-import { ARROWS, FLOOR_SIZE_MULTIPLIER } from '@/lib/arrows'
+import { ARROWS, FLOOR_SIZE_MULTIPLIER, textDecalImage, textDecalSize } from '@/lib/arrows'
 import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus, normalizeEdgeLengths } from '@/lib/polygons'
+import { colorForStatus, borderColorFor, hoverColorFor, centroidOf, normalizeEdgeLengths, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, alphaHex } from '@/lib/polygons'
+import { buildTransform, projectPlan, planVertices, residualDegrees } from '@/lib/reference-plan'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
@@ -29,6 +30,41 @@ import { isPublishCycleExpired, publishCycleEndsAt } from '@/lib/publish-cycle'
 // entirely by using PSV's degree-suffixed string form ("12.3deg").
 const RAD = Math.PI / 180
 const DEG = 180 / Math.PI
+
+// A zone's plot-number badge is shown only while the zone is actually big
+// enough on screen to hold it — zoom out over a 150-plot site plan and every
+// badge would otherwise pile into unreadable mush. Measuring the zone's own
+// projected size (rather than thresholding the camera's zoom level) means
+// this needs no setting and no tuning per tour: it adapts to how big each
+// individual plot happens to be at the current zoom, so badges fade in as
+// you zoom into a block and out again as you pull back.
+//
+// The badge's own footprint, estimated from the label's length — .zone-label
+// is 12px/700 with 9px of side padding, so ~7.2px per character plus 20px of
+// chrome is close enough for a fits/doesn't-fit test.
+const LABEL_BADGE_H_PX = 22
+function labelBadgeWidthPx(label) {
+    return (label?.length || 1) * 7.2 + 20
+}
+
+// true when the zone's projected bounding box can hold its badge. A point
+// that fails to project (behind the camera, mid-scene-change) returns true —
+// erring toward showing the label, since PSV already culls markers outside
+// the viewport and a briefly-wrong badge beats a silently missing one.
+function zoneFitsLabel(viewer, points, label) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    for (const [yaw, pitch] of points) {
+        let pt
+        try { pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD }) }
+        catch { return true }
+        if (!pt) return true
+        if (pt.x < minX) minX = pt.x
+        if (pt.x > maxX) maxX = pt.x
+        if (pt.y < minY) minY = pt.y
+        if (pt.y > maxY) maxY = pt.y
+    }
+    return (maxX - minX) >= labelBadgeWidthPx(label) && (maxY - minY) >= LABEL_BADGE_H_PX
+}
 
 // While drawing a zone, a click within this many screen px of an existing
 // vertex (another saved zone's, or the shape currently being drawn) snaps
@@ -47,6 +83,57 @@ function findSnapPoint(viewer, candidates, screenX, screenY) {
         } catch {}
     }
     return best
+}
+
+// Soft edge-snap — a click/cursor within SNAP_PX of another zone's EDGE (not
+// just its corners) snaps onto the nearest point along that edge, so a new
+// zone's side can run flush against a neighbor's without either sharing an
+// actual vertex. Checked only after findSnapPoint's own corner-snap comes up
+// empty (see both call sites) — an exact shared corner is always the more
+// useful match when both are in range.
+//
+// Edges are matched in SCREEN space, not sphere space: PSV itself draws a
+// polygon/polyline's edges as straight screen-projected chords between
+// vertices (no great-circle interpolation — see lib/reference-plan.js's own
+// comment on this same PSV behavior), so snapping to the visually-drawn line
+// means projecting both endpoints, finding the closest point on that 2D
+// segment, and projecting back — not interpolating in yaw/pitch, which
+// would drift off the line actually rendered.
+function findEdgeSnapPoint(viewer, edges, screenX, screenY) {
+    let bestPt = null, bestDist = SNAP_PX
+    for (const [a, b] of edges) {
+        try {
+            const pa = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: a[0] * RAD, pitch: a[1] * RAD })
+            const pb = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: b[0] * RAD, pitch: b[1] * RAD })
+            if (!pa || !pb) continue
+            const abx = pb.x - pa.x, aby = pb.y - pa.y
+            const len2 = abx * abx + aby * aby
+            let t = len2 === 0 ? 0 : ((screenX - pa.x) * abx + (screenY - pa.y) * aby) / len2
+            t = Math.max(0, Math.min(1, t))
+            const cx = pa.x + t * abx, cy = pa.y + t * aby
+            const d = Math.hypot(cx - screenX, cy - screenY)
+            if (d < bestDist) { bestDist = d; bestPt = { cx, cy } }
+        } catch {}
+    }
+    if (!bestPt) return null
+    try {
+        const sph = viewer.dataHelper.viewerCoordsToSphericalCoords({ x: bestPt.cx, y: bestPt.cy })
+        return sph ? [sph.yaw * DEG, sph.pitch * DEG] : null
+    } catch { return null }
+}
+
+// Every edge (consecutive vertex pair, wrapping around — zones are always
+// closed) of every saved zone in this scene, as [pointA, pointB] pairs in
+// degrees. Not scene-filtered by anything else (matches the existing
+// corner-snap candidate list's own scoping).
+function zoneEdgesInScene(polygons, sceneId) {
+    const edges = []
+    for (const p of polygons) {
+        if (p.scene_id !== sceneId) continue
+        const pts = p.points
+        for (let i = 0; i < pts.length; i++) edges.push([pts[i], pts[(i + 1) % pts.length]])
+    }
+    return edges
 }
 
 // Fallback opening horizontal FOV when a scene has no saved initial_hfov —
@@ -257,6 +344,12 @@ export default function ProjectClient({ projectId }) {
     const hotspotFormRef   = useRef(null)    // wraps the hotspot form now rendered inside HotspotPanel (right column) — same reason: clicks inside it must not count as "outside" either
     const savingNewHotspotRef = useRef(false) // re-entrancy guard for saveHotspot — see its own comment
     const hotspotSizeRef    = useRef(90)     // mirrors hotspotSize, read inside the rAF loop's floor-decal live preview
+    // Zone-label auto-hide (see zoneFitsLabel): the zones that currently have
+    // a badge marker, each one's last-applied visibility, and a cheap camera
+    // fingerprint so the whole check is skipped on frames where nothing moved.
+    const labeledZonesRef    = useRef([])
+    const labelVisRef        = useRef(new Map())
+    const labelCamKeyRef     = useRef(null)
     const floorPreviewKeyRef = useRef(null)  // last-applied {yaw,pitch,size,rotate_x,rotate_y,rotation} snapshot for 'hs_floor_preview' — skips the (expensive, WebGL-flickering) updateMarker call on frames where nothing actually changed
     const onHotspotClickRef = useRef(null)
     const onCoverupClickRef = useRef(null)
@@ -296,6 +389,11 @@ export default function ProjectClient({ projectId }) {
     const polygonSaveTimerRef = useRef(null) // debounce timer for the zone form's auto-save (see the useEffect below)
     const polygonSavedFlashTimerRef = useRef(null) // clears the "Saved" confirmation a moment after it appears
     const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
+    // ── DXF reference plan (a tracing guide for zones; editor-only) ──
+    const planSnapRef        = useRef([])    // projected plan vertices, read by the click handler + rAF preview as extra snap candidates
+    const pendingPlanPointRef = useRef(null) // plan-space [u,v] waiting for its matching click in the photo
+    const onCalibrationClickRef = useRef(null) // set during render, called from the mount-time viewer click listener
+    const planSaveTimerRef   = useRef(null)  // debounce for PATCH /api/scenes/[id] { reference_plan }
 
     const [project, setProject]                 = useState(null)
     const [scenes, setScenes]                   = useState([])
@@ -324,6 +422,11 @@ export default function ProjectClient({ projectId }) {
     const [zipError, setZipError]               = useState('')
     const [renewing, setRenewing]               = useState(false)
     const [renewError, setRenewError]           = useState('')
+    // The active scene's reference plan, mirrored out of `scenes` so edits
+    // are instant; persisted back on a debounce (see patchReferencePlan).
+    const [referencePlan, setReferencePlan]     = useState(null)
+    const [pendingPlanPoint, setPendingPlanPoint] = useState(null)
+    const [planError, setPlanError]             = useState('')
 
     // Overlays are edited freely and written once, on Save. Dragging used to
     // PATCH on every drop, which meant a round trip mid-gesture — the pause you
@@ -405,6 +508,36 @@ export default function ProjectClient({ projectId }) {
     const visibleCoverups = useMemo(() => overlaysForScene(coverups, activeScene?.id), [coverups, activeScene?.id])
     // Zones are always scene-scoped — no "every scene" concept.
     const visiblePolygons = useMemo(() => polygons.filter(p => p.scene_id === activeScene?.id), [polygons, activeScene?.id])
+
+    // ── Reference plan, derived ──
+    // The plan→ground transform is re-fitted from the calibration pairs
+    // rather than stored, so the pairs stay the single source of truth and
+    // adding/removing one simply re-fits. Null until two usable pairs exist.
+    const planTransform = useMemo(
+        () => (referencePlan ? buildTransform(referencePlan.pairs, referencePlan.mirror) : null),
+        [referencePlan]
+    )
+    const planShown = !!(referencePlan?.visible && planTransform)
+    const planRuns = useMemo(
+        () => (planShown ? projectPlan(referencePlan.shapes, planTransform) : []),
+        [planShown, referencePlan, planTransform]
+    )
+    // Plan corners double as snap targets while drawing a zone — tracing
+    // locks onto the plan instead of relying on a steady hand.
+    const planSnapPoints = useMemo(
+        () => (planShown ? planVertices(referencePlan.shapes, planTransform) : []),
+        [planShown, referencePlan, planTransform]
+    )
+    // Two pairs are solved exactly and so always report ~0 — the readout
+    // only means anything from three up.
+    const planResidual = useMemo(
+        () => (planTransform && (referencePlan?.pairs?.length ?? 0) > 2
+            ? residualDegrees(referencePlan.pairs, planTransform)
+            : null),
+        [referencePlan, planTransform]
+    )
+    planSnapRef.current = planSnapPoints
+    pendingPlanPointRef.current = pendingPlanPoint
 
     // Id of the hotspot currently being edited (stable primitive for effect deps)
     const editingId = popupState?.mode === 'edit-existing' ? popupState.hotspot?.id : null
@@ -691,14 +824,20 @@ export default function ProjectClient({ projectId }) {
             const p = polygonsRef.current.find(x => x.id === marker.data?.polygonId)
             if (!p) return
             const c = colorForStatus(p.status, p.custom_color)
-            mp.updateMarker({ id: marker.id, svgStyle: { fill: c + '99', stroke: c, strokeWidth: '3' } })
+            const bc = borderColorFor(c, p.border_color)
+            // Hover colour and opacity are both the zone's own settings now,
+            // each falling back to "same as the fill" / the shared default —
+            // not the fill colour plus a fixed opacity bump.
+            const hc = hoverColorFor(c, p.hover_color)
+            mp.updateMarker({ id: marker.id, svgStyle: { fill: hc + alphaHex(p.hover_opacity ?? DEFAULT_HOVER_OPACITY), stroke: bc, strokeWidth: '3' } })
         })
         mp.addEventListener('leave-marker', ({ marker }) => {
             if (!marker.id.startsWith('poly_')) return
             const p = polygonsRef.current.find(x => x.id === marker.data?.polygonId)
             if (!p) return
             const c = colorForStatus(p.status, p.custom_color)
-            mp.updateMarker({ id: marker.id, svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' } })
+            const bc = borderColorFor(c, p.border_color)
+            mp.updateMarker({ id: marker.id, svgStyle: { fill: c + alphaHex(p.fill_opacity ?? DEFAULT_FILL_OPACITY), stroke: bc, strokeWidth: '2' } })
         })
         // Click-to-place-vertex while drawing a zone. A raw viewer click (not
         // a marker select), fired regardless of what's under the cursor.
@@ -730,6 +869,13 @@ export default function ProjectClient({ projectId }) {
         // instances for a moment, each registering its own listener against
         // the same shared setDrawingPolygon.
         viewer.addEventListener('click', ({ data }) => {
+            // Calibrating the reference plan: a plan vertex is already
+            // selected and waiting for its match in the photo, so this click
+            // completes the pair and does nothing else.
+            if (pendingPlanPointRef.current) {
+                onCalibrationClickRef.current?.(data.yaw * DEG, data.pitch * DEG)
+                return
+            }
             if (!drawingPolygonRef.current) return
             // Straight off the click event, same as the standalone spike that
             // validated this whole drawing flow — that comparison is what
@@ -772,8 +918,18 @@ export default function ProjectClient({ projectId }) {
 
             let snapped = selfSnapped
             if (!snapped) {
+                // Saved zone corners, plus the reference plan's own vertices
+                // when one is calibrated and shown — tracing a plan should
+                // lock onto its corners rather than depend on a steady hand.
                 const otherPoints = polygonsRef.current.filter(p => p.scene_id === activeScene.id).flatMap(p => p.points)
-                snapped = findSnapPoint(viewer, otherPoints, data.viewerX, data.viewerY)
+                snapped = findSnapPoint(viewer, otherPoints.concat(planSnapRef.current), data.viewerX, data.viewerY)
+            }
+            if (!snapped) {
+                // No exact corner in range — try a soft snap onto another
+                // zone's EDGE, so a new zone's side can run flush against a
+                // neighbor's without needing to share a literal vertex.
+                const edges = zoneEdgesInScene(polygonsRef.current, activeScene.id)
+                snapped = findEdgeSnapPoint(viewer, edges, data.viewerX, data.viewerY)
             }
             if (snapped) { [yaw, pitch] = snapped }
 
@@ -913,6 +1069,30 @@ export default function ProjectClient({ projectId }) {
                         data: { hotspotDbId: h.id },
                     }
                 }
+                // Text decal — the SAME surface-embedded imageLayer mechanism
+                // as floor above (same rotate_x/rotate_y/rotation columns,
+                // same gizmo), except the "sprite" is generated on the fly
+                // from this hotspot's own label/color (textDecalImage) instead
+                // of a fixed file. The generated image's aspect ratio isn't
+                // 1:1 like floor's — width/height below preserve it so the
+                // text doesn't stretch or squash.
+                if (h.arrow_type === 'text') {
+                    const { width: w, height: hgt } = textDecalSize(h.label)
+                    const aspect = w / hgt
+                    return {
+                        id: `hs_${h.id}`,
+                        type: 'imageLayer',
+                        imageLayer: textDecalImage(h.label, h.color || DEFAULT_HOTSPOT_COLOR),
+                        position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
+                        size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect, height: size * FLOOR_SIZE_MULTIPLIER },
+                        rotation: {
+                            yaw:  `${h.rotate_y ?? 0}deg`,
+                            pitch: `${h.rotate_x ?? 90}deg`,
+                            roll: `${h.rotation ?? 0}deg`,
+                        },
+                        data: { hotspotDbId: h.id },
+                    }
+                }
                 const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
                 // Pulse ring stays a plain billboard (see the pulse-vs-3D
                 // tradeoff — a true 3D-embedded marker would freeze its
@@ -972,23 +1152,80 @@ export default function ProjectClient({ projectId }) {
                 }
             })
 
+        // The calibrated reference plan — vector geometry welded to the
+        // ground, drawn UNDER the zones so a zone traced over it reads on
+        // top. pointerEvents:none matters: these lines cover a lot of the
+        // view, and without it they'd swallow the very zone-drawing clicks
+        // they exist to guide. Already subdivided by projectPlan, because
+        // PSV joins polyline vertices with straight screen-space chords.
+        const planMarkers = planRuns.map((pts, i) => ({
+            id: `plan_${i}`,
+            type: 'polyline',
+            polyline: pts.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
+            svgStyle: {
+                stroke: '#22d3ee',
+                strokeWidth: '2',
+                strokeDasharray: '6,4',
+                fill: 'none',
+                pointerEvents: 'none',
+            },
+        }))
+
         // Zones. The one currently being corner-dragged (editingPolygonId) is
         // excluded here — its live shape is drawn separately, from
         // polygonPopup.points, in the JSX corner-handle overlay, so this
         // marker (still holding the pre-edit points) would otherwise sit
         // behind/beside it looking like a second, stale copy of the zone.
-        const polygonMarkers = visiblePolygons
+        // Sorted by z_index ASCENDING, because PSV paints markers in plain
+        // array order — lower draws first, i.e. underneath. That's what lets
+        // a road/common-area strip drawn across a row of plots sit BEHIND
+        // them instead of covering them, which is otherwise impossible: the
+        // unsorted order is just however the rows came back from the API.
+        // Sort is stable, so zones sharing a z_index (every zone, until one
+        // is deliberately moved) keep the exact order they had before.
+        const orderedPolygons = [...visiblePolygons].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
+
+        const polygonMarkers = orderedPolygons
             .filter(p => p.id !== editingPolygonId)
             .map(p => {
                 const c = colorForStatus(p.status, p.custom_color)
+                const bc = borderColorFor(c, p.border_color)
                 return {
                     id: `poly_${p.id}`,
                     type: 'polygon',
                     polygon: p.points.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
-                    svgStyle: { fill: c + '55', stroke: c, strokeWidth: '2' },
+                    svgStyle: { fill: c + alphaHex(p.fill_opacity ?? DEFAULT_FILL_OPACITY), stroke: bc, strokeWidth: '2' },
                     data: { polygonId: p.id },
                 }
             })
+
+        // The zone's own label, drawn as an always-visible badge at its
+        // centre — the plot-number pill a site plan lives on. Built for the
+        // zone being corner-dragged too (unlike the shape marker above,
+        // which is excluded because its stale points would double up with
+        // the live JSX overlay): a label at the pre-drag centroid is a few
+        // pixels off at most, where a stale outline would read as a second
+        // copy of the whole zone.
+        // pointerEvents:none so it never swallows the click that belongs to
+        // the zone underneath it.
+        // Gated by the tour-wide switch (project settings) AND the zone's own
+        // flag — the switch turns the whole layer off, the per-zone flag is
+        // the per-plot exception. A third gate runs every camera change in
+        // mainLoop: a badge hides itself whenever its plot is too small on
+        // screen to hold it, so 150 plots zoomed out don't turn to mush.
+        const labeledZones = (project?.show_zone_labels === false ? [] : orderedPolygons)
+            .filter(p => p.show_label !== false && p.label)
+        const zoneLabelMarkers = labeledZones.map(p => {
+            const { yaw, pitch } = centroidOf(p.points)
+            return {
+                id: `zlabel_${p.id}`,
+                type: 'html',
+                html: `<div class="zone-label">${escapeHtml(p.label)}</div>`,
+                anchor: 'center center',
+                position: { yaw: `${yaw}deg`, pitch: `${pitch}deg` },
+                style: { pointerEvents: 'none' },
+            }
+        })
 
         // The live drawing-preview line is NOT built here — it needs to
         // follow the cursor every frame (a rubber band from the last placed
@@ -996,7 +1233,7 @@ export default function ProjectClient({ projectId }) {
         // zones list on every mousemove if driven from this effect. It's
         // managed imperatively in mainLoop instead, the same way the
         // placement pin and selected cover-up already are.
-        const next = [...coverupMarkers, ...polygonMarkers, ...arrowMarkers]
+        const next = [...coverupMarkers, ...planMarkers, ...polygonMarkers, ...zoneLabelMarkers, ...arrowMarkers]
         try {
             mp.setMarkers(next)
         } catch {
@@ -1004,7 +1241,17 @@ export default function ProjectClient({ projectId }) {
             mp.clearMarkers()
             for (const m of next) { try { mp.addMarker(m) } catch {} }
         }
-    }, [hotspots, visibleCoverups, visiblePolygons, activeScene, hotspotSize, editingId, editingPolygonId, selectedOverlay, coverupAspect])
+
+        // Hand the fresh badge list to mainLoop's auto-hide pass, and clear
+        // its camera fingerprint so it re-evaluates on the very next frame:
+        // setMarkers above just replaced every badge with a default-visible
+        // one, so the visibility it had last frame no longer holds — without
+        // this, a badge that was hidden stays wrongly visible until the
+        // camera happens to move again.
+        labeledZonesRef.current = labeledZones.map(p => ({ id: p.id, points: p.points, label: p.label }))
+        labelVisRef.current = new Map()
+        labelCamKeyRef.current = null
+    }, [hotspots, visibleCoverups, visiblePolygons, planRuns, activeScene, hotspotSize, editingId, editingPolygonId, selectedOverlay, coverupAspect, project?.show_zone_labels])
 
     // ── rAF — keeps the placement pin + selected cover-up projected on screen
     const mainLoop = useCallback(() => {
@@ -1014,6 +1261,32 @@ export default function ProjectClient({ projectId }) {
 
         const viewer = psvRef.current
         const ps     = popupRef.current
+
+        // Zone-label auto-hide. Gated on a camera fingerprint so the
+        // projection work only happens on frames where the view actually
+        // moved (the camera is static most of the time), and updateMarker is
+        // called ONLY when a badge's visibility actually flips — it's a real
+        // marker mutation that fires a set-markers event, so calling it
+        // unconditionally would be the same performance trap the floor-decal
+        // preview already hit.
+        const mpl = markersPluginRef.current
+        if (viewer && mpl && labeledZonesRef.current.length) {
+            let camKey = null
+            try {
+                const pos = viewer.getPosition()
+                camKey = `${Math.round(pos.yaw * 1e3)}|${Math.round(pos.pitch * 1e3)}|${Math.round(viewer.getZoomLevel() * 100)}`
+            } catch {}
+            if (camKey && camKey !== labelCamKeyRef.current) {
+                labelCamKeyRef.current = camKey
+                for (const z of labeledZonesRef.current) {
+                    const fits = zoneFitsLabel(viewer, z.points, z.label)
+                    if (labelVisRef.current.get(z.id) !== fits) {
+                        labelVisRef.current.set(z.id, fits)
+                        try { mpl.updateMarker({ id: `zlabel_${z.id}`, visible: fits }) } catch {}
+                    }
+                }
+            }
+        }
 
         let pitch, yaw
         if (ps?.mode === 'new' || ps?.mode === 'edit-existing') { pitch = ps.pitch; yaw = ps.yaw }
@@ -1101,8 +1374,13 @@ export default function ProjectClient({ projectId }) {
                     const candidates = [
                         ...polygonsRef.current.filter(p => p.scene_id === sceneId).flatMap(p => p.points),
                         ...dp.points,
+                        ...planSnapRef.current,   // reference-plan corners, same as the click handler
                     ]
+                    // Same two-stage corner-then-edge order as the click
+                    // handler, so the rubber-band line always previews
+                    // exactly where a click would actually land.
                     const snapped = findSnapPoint(viewer, candidates, screenX, screenY)
+                        || findEdgeSnapPoint(viewer, zoneEdgesInScene(polygonsRef.current, sceneId), screenX, screenY)
                     const cursorPoint = snapped || [sph.yaw * DEG, sph.pitch * DEG]
                     const markerCfg = {
                         id: 'poly_preview',
@@ -1136,10 +1414,19 @@ export default function ProjectClient({ projectId }) {
         // 60 times a second (even while nothing was actually being dragged)
         // was heavy enough to visibly flicker every OTHER marker in the
         // scene too, not just this one.
+        // Text decal shares this exact same live-preview mechanism as floor
+        // (same imageLayer marker, same rotate_x/rotate_y/rotation columns) —
+        // the only difference is its key/image also depend on label+color,
+        // since (unlike floor's fixed sprite) its "image" is generated from
+        // those on the fly.
         const isFloorEdit = ps && (ps.mode === 'new' || ps.mode === 'edit-existing') && ps.arrow_type === 'floor'
-        if (viewer && mp && isFloorEdit) {
+        const isTextEdit  = ps && (ps.mode === 'new' || ps.mode === 'edit-existing') && ps.arrow_type === 'text'
+        const isDecalEdit = isFloorEdit || isTextEdit
+        if (viewer && mp && isDecalEdit) {
             const size = ps.size ?? hotspotSizeRef.current
-            const key  = `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}`
+            const key  = isTextEdit
+                ? `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}|${ps.label}|${ps.color}`
+                : `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}`
             // The declarative marker-sync effect (editingId changing when
             // "Edit" is clicked, or any of its other deps) calls
             // mp.setMarkers() — a full clear-and-rebuild that doesn't know
@@ -1155,13 +1442,16 @@ export default function ProjectClient({ projectId }) {
             try { mp.getMarker('hs_floor_preview') } catch { exists = false }
             if (!exists) floorPreviewKeyRef.current = null
             if (floorPreviewKeyRef.current !== key) {
-                const arrow = ARROWS.find(a => a.type === 'floor')
+                const image = isTextEdit
+                    ? textDecalImage(ps.label, ps.color || DEFAULT_HOTSPOT_COLOR)
+                    : ARROWS.find(a => a.type === 'floor').gif
+                const aspect = isTextEdit ? (textDecalSize(ps.label).width / textDecalSize(ps.label).height) : 1
                 const floorCfg = {
                     id: 'hs_floor_preview',
                     type: 'imageLayer',
-                    imageLayer: arrow.gif,
+                    imageLayer: image,
                     position: { yaw: `${ps.yaw}deg`, pitch: `${ps.pitch}deg` },
-                    size: { width: size * FLOOR_SIZE_MULTIPLIER, height: size * FLOOR_SIZE_MULTIPLIER },
+                    size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect, height: size * FLOOR_SIZE_MULTIPLIER },
                     rotation: {
                         yaw:   `${ps.rotate_y ?? 0}deg`,
                         pitch: `${ps.rotate_x ?? 90}deg`,
@@ -1183,7 +1473,7 @@ export default function ProjectClient({ projectId }) {
                     catch {}
                 }
             }
-        } else if (mp && !isFloorEdit) {
+        } else if (mp && !isDecalEdit) {
             if (floorPreviewKeyRef.current !== null) {
                 floorPreviewKeyRef.current = null
                 try { mp.removeMarker('hs_floor_preview') } catch {}
@@ -1237,21 +1527,23 @@ export default function ProjectClient({ projectId }) {
             const sceneHotspots = hotspotsRef.current.filter(h => h.scene_id === sceneId)
             const label = hotspotType === 'landmark'
                 ? `Landmark ${sceneHotspots.filter(h => h.arrow_type === 'landmark').length + 1}`
-                : `Hotspot ${sceneHotspots.length + 1}`
+                : hotspotType === 'text'
+                    ? 'Text'
+                    : `Hotspot ${sceneHotspots.length + 1}`
             setPopupState({
                 mode: 'new', arrow_type: hotspotType, ...coords, label, target_scene_id: '', size: null, rotation: 0,
                 color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR,
-                // rotate_x defaults to 90 ONLY for floor, so a freshly-
-                // placed floor decal starts lying flat, matching its old
-                // locked-flat behavior, before the user tilts it further via
-                // the sliders. Every other type (including pulse, which now
-                // gives rotate_x/rotate_y a real visible CSS-tilt effect —
-                // see the arrowMarkers builder) defaults to 0/0: rotate_x:90
-                // on a flat billboard would render it perfectly edge-on
-                // (invisible) the instant it's placed, the same "default
-                // that vanishes" bug already hit and fixed for floor's own
-                // edit-preview.
-                rotate_x: hotspotType === 'floor' ? 90 : 0, rotate_y: 0,
+                // rotate_x defaults to 90 for floor AND text (both real
+                // imageLayer planes), so a freshly-placed decal starts lying
+                // flat, matching floor's old locked-flat behavior, before the
+                // user tilts it further via the sliders. Every other type
+                // (including pulse, which now gives rotate_x/rotate_y a real
+                // visible CSS-tilt effect — see the arrowMarkers builder)
+                // defaults to 0/0: rotate_x:90 on a flat billboard would
+                // render it perfectly edge-on (invisible) the instant it's
+                // placed, the same "default that vanishes" bug already hit
+                // and fixed for floor's own edit-preview.
+                rotate_x: (hotspotType === 'floor' || hotspotType === 'text') ? 90 : 0, rotate_y: 0,
                 action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
                 toggle_target_id: '', start_hidden: false, animate_line: true,
                 custom_icon_url: '',
@@ -1851,6 +2143,10 @@ export default function ProjectClient({ projectId }) {
         return {
             mode: 'edit', polygon: p,
             status: p.status, label: p.label, detail: p.detail, custom_color: p.custom_color || null,
+            border_color: p.border_color || null, hover_color: p.hover_color || null,
+            hover_opacity: p.hover_opacity ?? DEFAULT_HOVER_OPACITY,
+            z_index: p.z_index ?? 0, show_label: p.show_label !== false,
+            fill_opacity: p.fill_opacity ?? DEFAULT_FILL_OPACITY,
             points: dedupedPoints(p.points), _dirty: false,
             edge_lengths: normalizeEdgeLengths(p.edge_lengths, dedupedPoints(p.points).length),
             action_type: p.action_type || 'info',
@@ -1884,7 +2180,9 @@ export default function ProjectClient({ projectId }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         polygonPopup?._dirty, polygonPopup?.label, polygonPopup?.status, polygonPopup?.detail, polygonPopup?.points,
-        polygonPopup?.custom_color, polygonPopup?.edge_lengths?.join('|'),
+        polygonPopup?.custom_color, polygonPopup?.border_color, polygonPopup?.hover_color,
+        polygonPopup?.z_index, polygonPopup?.show_label,
+        polygonPopup?.fill_opacity, polygonPopup?.hover_opacity, polygonPopup?.edge_lengths?.join('|'),
         polygonPopup?.action_type, polygonPopup?.target_scene_id, polygonPopup?.link_url,
         polygonPopup?.info_body, polygonPopup?.info_image_url, polygonPopup?.toggle_target_id, polygonPopup?.start_hidden,
         polygonPopup?.info_fields,
@@ -1932,6 +2230,12 @@ export default function ProjectClient({ projectId }) {
                 body: JSON.stringify({
                     status: savingFor.status, label: savingFor.label, detail: savingFor.detail,
                     custom_color: savingFor.custom_color || null,
+                    border_color: savingFor.border_color || null,
+                    hover_color: savingFor.hover_color || null,
+                    hover_opacity: savingFor.hover_opacity ?? DEFAULT_HOVER_OPACITY,
+                    z_index: savingFor.z_index ?? 0,
+                    show_label: savingFor.show_label !== false,
+                    fill_opacity: savingFor.fill_opacity ?? DEFAULT_FILL_OPACITY,
                     edge_lengths: savingFor.edge_lengths || [],
                     points: savingFor.points,
                     action_type: savingFor.action_type || 'info',
@@ -2044,6 +2348,114 @@ export default function ProjectClient({ projectId }) {
     // Captures wherever you've currently panned/zoomed to and saves it as this
     // scene's opening view. The column and PATCH /api/scenes/[id] support have
     // existed since the start; this is the first thing that actually calls it.
+    // ── Reference plan (imported DXF used as a tracing guide) ──────────────
+    // Editor-only by design: it is never snapshotted into published_payload,
+    // never reaches export.jsx, and never lands in the downloaded zip. The
+    // workflow is import → calibrate by clicking point pairs → trace zones
+    // over it → delete it. See lib/reference-plan.js for the geometry.
+
+    async function savePlan(sceneId, plan) {
+        try {
+            const res = await fetch(`/api/scenes/${sceneId}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reference_plan: plan }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) { setPlanError(json.error || 'Could not save the reference plan.'); return }
+            // Same scene id, so the viewer-init/marker-sync effects that
+            // depend on activeScene keep their guard and don't reload the
+            // panorama — exactly the reasoning saveCurrentViewAsOpening
+            // relies on below.
+            const saved = json.scene?.reference_plan ?? null
+            setScenes(prev => prev.map(s => (s.id === sceneId ? { ...s, reference_plan: saved } : s)))
+            setActiveScene(prev => (prev && prev.id === sceneId ? { ...prev, reference_plan: saved } : prev))
+        } catch {
+            setPlanError('Network error — the reference plan was not saved.')
+        }
+    }
+
+    // The timer carries the scene id it was scheduled for, so a pending save
+    // can never land on a different scene after a switch.
+    function flushPlanSave() {
+        const pending = planSaveTimerRef.current
+        if (!pending) return
+        clearTimeout(pending.timer)
+        planSaveTimerRef.current = null
+        savePlan(pending.sceneId, pending.plan)
+    }
+
+    // Debounced: calibration is a burst of small edits (add a pair, flip
+    // mirror, toggle visibility) and each one shouldn't be its own round trip.
+    function patchReferencePlan(next) {
+        setReferencePlan(next)
+        setPlanError('')
+        const sceneId = activeScene?.id
+        if (!sceneId) return
+        if (planSaveTimerRef.current) clearTimeout(planSaveTimerRef.current.timer)
+        const timer = setTimeout(() => { planSaveTimerRef.current = null; savePlan(sceneId, next) }, 600)
+        planSaveTimerRef.current = { timer, sceneId, plan: next }
+    }
+
+    // dxf-parser is only pulled in when a file is actually imported, so it
+    // stays out of the editor's main bundle.
+    async function importPlanFile(file) {
+        if (!activeScene) return 'Open a scene first.'
+        try {
+            const { dxfTextToShapes } = await import('@/lib/dxf')
+            const { shapes, bbox } = dxfTextToShapes(await file.text())
+            setPendingPlanPoint(null)
+            patchReferencePlan({ name: file.name, shapes, bbox, pairs: [], mirror: false, visible: true })
+        } catch (e) {
+            return e?.message || 'Could not read this DXF file.'
+        }
+    }
+
+    function addCalibrationPair(planPt, yaw, pitch) {
+        setPendingPlanPoint(null)
+        if (!referencePlan || !Array.isArray(planPt)) return
+        patchReferencePlan({
+            ...referencePlan,
+            pairs: [...(referencePlan.pairs || []), { plan: planPt, yaw: roundTo2(yaw), pitch: roundTo2(pitch) }],
+        })
+    }
+
+    function removeCalibrationPair(index) {
+        if (!referencePlan) return
+        patchReferencePlan({ ...referencePlan, pairs: (referencePlan.pairs || []).filter((_, i) => i !== index) })
+    }
+
+    function updatePlanFlags(fields) {
+        if (!referencePlan) return
+        patchReferencePlan({ ...referencePlan, ...fields })
+    }
+
+    function deleteReferencePlan() {
+        setPendingPlanPoint(null)
+        setReferencePlan(null)
+        const sceneId = activeScene?.id
+        if (!sceneId) return
+        if (planSaveTimerRef.current) { clearTimeout(planSaveTimerRef.current.timer); planSaveTimerRef.current = null }
+        savePlan(sceneId, null)
+    }
+
+    // Called from the mount-time viewer click listener, which can't see this
+    // render's closure any other way.
+    onCalibrationClickRef.current = (yaw, pitch) => addCalibrationPair(pendingPlanPointRef.current, yaw, pitch)
+
+    // Hydrate when the active scene changes, flushing anything still pending
+    // for the scene being left behind.
+    useEffect(() => {
+        flushPlanSave()
+        setReferencePlan(activeScene?.reference_plan ?? null)
+        setPendingPlanPoint(null)
+        setPlanError('')
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeScene?.id])
+
+    // Don't silently drop an edit made in the last few hundred ms before the
+    // editor unmounts.
+    useEffect(() => () => flushPlanSave(), []) // eslint-disable-line react-hooks/exhaustive-deps
+
     async function saveCurrentViewAsOpening() {
         const viewer = psvRef.current
         if (!viewer || !activeScene) return
@@ -2309,7 +2721,7 @@ export default function ProjectClient({ projectId }) {
 
                     {/* Settings */}
                     <button
-                        onClick={() => { setSettingsDraft({ show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3 }); setShowSettings(true) }}
+                        onClick={() => { setSettingsDraft({ show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3, show_zone_labels: project?.show_zone_labels!==false }); setShowSettings(true) }}
                         title="Project settings"
                         className="flex items-center justify-center w-8 h-8 rounded-lg border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors shrink-0">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -2631,6 +3043,7 @@ export default function ProjectClient({ projectId }) {
                                     // value is just harmlessly unused for this type.
                                     const isLandmark = popupState.arrow_type === 'landmark'
                                     const isFloor    = popupState.arrow_type === 'floor'
+                                    const isText     = popupState.arrow_type === 'text'
                                     const isPulse    = popupState.arrow_type === 'pulse'
                                     // Pulse ring stays a plain billboard (see the earlier tradeoff:
                                     // a true 3D-embedded marker would freeze its pulse animation to
@@ -2643,8 +3056,8 @@ export default function ProjectClient({ projectId }) {
                                     // arrowMarkers builder) — it's cosmetic (a flat billboard doesn't
                                     // actually warp with camera angle the way floor's real 3D plane
                                     // does), but it's not just an inert number either.
-                                    const showGizmo = isFloor || isPulse
-                                    const rot = isLandmark || isFloor ? 0 : (popupState.rotation ?? 0)
+                                    const showGizmo = isFloor || isText || isPulse
+                                    const rot = isLandmark || isFloor || isText ? 0 : (popupState.rotation ?? 0)
                                     // Floor decal's real look (a true 3D-rotated plane) is shown by
                                     // an actual imageLayer marker, live-updated every frame straight
                                     // from popupState (see mainLoop's 'hs_floor_preview' block) — a
@@ -2661,7 +3074,7 @@ export default function ProjectClient({ projectId }) {
                                     // same CSS formula (not a different 3D engine), so previewing it
                                     // this way can't disagree with the real result the way it did
                                     // for floor.
-                                    const boxTransform = isFloor
+                                    const boxTransform = (isFloor || isText)
                                         ? 'none'
                                         : isPulse
                                             ? `perspective(600px) rotateX(${popupState.rotate_x ?? 0}deg) rotateY(${popupState.rotate_y ?? 0}deg) rotate(${rot}deg)`
@@ -2694,10 +3107,10 @@ export default function ProjectClient({ projectId }) {
                                     // you zoomed away from wherever the factor happened to be tuned
                                     // for. Same baseHfov/currentHfov formula already used for the
                                     // selected cover-up's own edit box (coverupPopupScreen below).
-                                    const zoomScale = isFloor
+                                    const zoomScale = (isFloor || isText)
                                         ? (activeScene.initial_hfov ?? DEFAULT_HFOV) / (pinPos.hfov || activeScene.initial_hfov || DEFAULT_HFOV)
                                         : 1
-                                    const boxSize = isFloor ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
+                                    const boxSize = (isFloor || isText) ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
                                     // Gizmo ring geometry, hoisted up here (not just computed inside
                                     // the gizmo's own render below) because the drag/reposition hit
                                     // target right below needs to know gizmoFlat too — it has to stay
@@ -2752,7 +3165,7 @@ export default function ProjectClient({ projectId }) {
                                                             // this stays purely as the drag/resize hit target,
                                                             // so an outlined flat sticker doesn't float on
                                                             // top of the true 3D-tilted decal underneath it.
-                                                            opacity: isFloor ? 0 : 1,
+                                                            opacity: (isFloor || isText) ? 0 : 1,
                                                             // No outline wherever the gizmo shows (floor or
                                                             // pulse) — a solid square border sitting right
                                                             // where the rings pass near the corners competed
@@ -3139,6 +3552,19 @@ export default function ProjectClient({ projectId }) {
                                     onCancelPopup={() => closePolygonPopup()}
                                     onSaveNowPopup={saveZoneNow}
                                     onUploadImage={uploadOverlayImage}
+                                    referencePlan={{
+                                        plan: referencePlan,
+                                        pendingPoint: pendingPlanPoint,
+                                        residual: planResidual,
+                                        hasActiveScene: !!activeScene,
+                                        error: planError,
+                                        onImport: importPlanFile,
+                                        onPickPlanPoint: setPendingPlanPoint,
+                                        onCancelPending: () => setPendingPlanPoint(null),
+                                        onRemovePair: removeCalibrationPair,
+                                        onUpdateFlags: updatePlanFlags,
+                                        onDelete: deleteReferencePlan,
+                                    }}
                                     savingPolygon={savingPolygon}
                                     justSavedPolygon={justSavedPolygon}
                                     deletingPolygon={deletingPolygon}/>

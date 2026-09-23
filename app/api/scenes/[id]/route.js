@@ -1,10 +1,11 @@
 ﻿// app/api/scenes/[id]/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
+import { normalizeReferencePlan } from '@/lib/reference-plan'
 
 // Everything the editor needs back after a write.
 const SCENE_FIELDS =
-    'id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, created_at'
+    'id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, created_at, reference_plan'
 
 // Ownership is checked with its own SELECT, then the write is a plain update.
 //
@@ -38,6 +39,13 @@ export async function PATCH(req, { params }) {
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
         )
+
+        // The DXF reference plan is a jsonb blob, so it gets sanitised rather
+        // than whitelisted straight through — same split the projects route
+        // uses for overlays/coverups. normalizeReferencePlan returns null for
+        // anything unusable, which doubles as the delete path: PATCH
+        // { reference_plan: null } clears it.
+        if ('reference_plan' in body) updates.reference_plan = normalizeReferencePlan(body.reference_plan)
 
         if (Object.keys(updates).length === 0)
             return NextResponse.json({ error: 'No valid fields.' }, { status: 400 })

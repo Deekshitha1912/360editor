@@ -38,15 +38,19 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
 
     const isLandmarkForm = state.arrow_type === 'landmark'
     const isCustomForm = state.arrow_type === 'custom'
-    // Both 'floor' (a real 3D-embedded plane) and 'pulse' (a plain animated
-    // billboard) get the same Rotate X/Y/Z sliders, matching the same 3-ring
-    // gizmo shown for both on-canvas (middle.jsx) — X/Y are cosmetically
-    // inert for pulse (a flat billboard can't tilt), same "present but
-    // harmless" precedent as landmark's own unused rotation.
-    const showAxisSliders = state.arrow_type === 'floor' || state.arrow_type === 'pulse'
+    const isTextForm = state.arrow_type === 'text'
+    // 'floor' and 'text' (both real 3D-embedded imageLayer planes) and
+    // 'pulse' (a plain animated billboard) all get the same Rotate X/Y/Z
+    // sliders, matching the same 3-ring gizmo shown for all three on-canvas
+    // (middle.jsx) — X/Y are cosmetically inert for pulse (a flat billboard
+    // can't tilt), same "present but harmless" precedent as landmark's own
+    // unused rotation.
+    const showAxisSliders = state.arrow_type === 'floor' || state.arrow_type === 'pulse' || isTextForm
     const actionType = state.action_type || 'navigate'
     const arrow = ARROWS.find(a => a.type === state.arrow_type)
-    const headerLabel = state.mode === 'edit-existing' ? 'Edit direction' : 'New direction'
+    const headerLabel = state.mode === 'edit-existing'
+        ? (isTextForm ? 'Edit text' : 'Edit direction')
+        : (isTextForm ? 'New text' : 'New direction')
     // Custom's own uploaded image stands in for the fixed sprite everywhere
     // that would otherwise show `arrow.gif` — the placeholder glyph only
     // shows until one's actually uploaded.
@@ -77,18 +81,41 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
             {/* ── Form ── */}
             <div className="px-3 py-3 space-y-2.5">
                 <div className="space-y-1">
-                    <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Label</label>
+                    <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">
+                        {isTextForm ? 'Text' : 'Label'}
+                    </label>
                     <input
                         autoFocus
                         value={state.label}
                         onChange={e => onUpdate({ ...state, label: e.target.value })}
                         onKeyDown={e => { if (e.key === 'Enter') onSave() }}
-                        placeholder="e.g. Go to Kitchen"
+                        placeholder={isTextForm ? 'Text to display on the surface' : 'e.g. Go to Kitchen'}
                         className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5
                                    text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary
                                    placeholder:text-editor-ink-muted"
                     />
+                    {isTextForm && (
+                        <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                            Rendered directly onto the surface — drag/resize/rotate it with the handles on the canvas, same as a floor decal.
+                        </p>
+                    )}
                 </div>
+
+                {isTextForm && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Text color</label>
+                        <div className="flex gap-1.5">
+                            {HOTSPOT_COLORS.map(c => (
+                                <button key={c} type="button" onClick={() => onUpdate({ ...state, color: c })}
+                                        aria-label={c}
+                                        className={`w-6 h-6 rounded-full border-2 transition-transform ${
+                                            (state.color || HOTSPOT_COLORS[0]) === c ? 'border-editor-ink scale-110' : 'border-white/60 hover:scale-105'
+                                        }`}
+                                        style={{ background: c, boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}/>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 <div className="space-y-1">
                     <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">On click</label>

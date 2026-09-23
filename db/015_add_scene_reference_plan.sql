@@ -1,0 +1,37 @@
+-- db/015_add_scene_reference_plan.sql
+--
+-- A per-scene "reference plan": an imported DXF site/floor plan, calibrated
+-- against the photo, drawn on the ground as a tracing guide for zone
+-- drawing. Purely an EDITOR aid -- it is never published, never written into
+-- projects.published_payload, and never lands in the exported zip. You trace
+-- zones over it and then delete it.
+--
+-- Nullable rather than the `not null default '[]'::jsonb` house style used
+-- for jsonb ARRAYS (db/009, db/012): this is an object-or-absent, and null
+-- reads honestly as "this scene has no plan". db/013 and db/014 set the
+-- nullable-column precedent.
+--
+-- Shape (sanitized by normalizeReferencePlan in lib/reference-plan.js, which
+-- is what the PATCH /api/scenes/[id] route runs every write through):
+--
+--   {
+--     name:    "site-plan.dxf",
+--     shapes:  [ { tag: 'polyline'|'polygon', pts: [[x,y], ...] }, ... ],
+--     bbox:    { minX, minY, maxX, maxY },
+--     pairs:   [ { plan: [u,v], yaw: <deg>, pitch: <deg> }, ... ],
+--     mirror:  false,
+--     visible: true
+--   }
+--
+-- `shapes` holds RAW DXF model coordinates -- un-flipped, un-scaled, and
+-- NOT subdivided (subdivision happens at render time in the client, and
+-- baking it in here would balloon the row). `pairs` are the calibration
+-- correspondences, and are the single source of truth: the plan-to-ground
+-- transform is re-fitted from them on load and is deliberately never stored,
+-- so adding or removing a pair simply re-fits.
+--
+-- Idempotent -- apply by hand against dev, then production Supabase, same as
+-- every prior migration in this file (no migration runner exists).
+
+alter table public.scenes
+    add column if not exists reference_plan jsonb;

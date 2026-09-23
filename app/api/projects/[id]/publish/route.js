@@ -15,7 +15,7 @@ import { uniqueSlug } from '@/lib/slug'
 import { isPublishCycleExpired } from '@/lib/publish-cycle'
 
 // Fields the public renderer needs — nothing else is snapshotted.
-const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, overlays, coverups'
+const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups'
 
 function siteOrigin(req) {
     const configured = process.env.NEXT_PUBLIC_SITE_URL
@@ -74,7 +74,7 @@ export async function POST(req, { params }) {
             // publish (with zero zones), not fail the whole request.
             supabase
                 .from('polygons')
-                .select('id, scene_id, project_id, points, status, label, detail, custom_color, edge_lengths, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
+                .select('id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
                 .eq('project_id', id),
         ])
         const polygons = polygonsRes.error ? [] : (polygonsRes.data ?? [])
@@ -98,6 +98,7 @@ export async function POST(req, { params }) {
                 show_intro:   project.show_intro,
                 auto_rotate:  project.auto_rotate,
                 hotspot_size: project.hotspot_size,
+                show_zone_labels: project.show_zone_labels !== false,
                 overlays:     project.overlays ?? [],
                 coverups:     project.coverups ?? [],
             },

@@ -65,3 +65,32 @@
     70%  { box-shadow: 0 0 0 14px color-mix(in srgb, var(--lm-color, #3730a3) 0%, transparent); }
     100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--lm-color, #3730a3) 0%, transparent); }
 }
+/* Zone label -- the always-visible plot-number badge at a zone centre.
+   Neutral light pill rather than the zone own color, so one style stays
+   legible on every fill (green/red/blue alike) instead of needing a
+   contrasting variant per status. Non-interactive so it never steals the
+   click that belongs to the zone underneath it. */
+.zone-label {
+    pointer-events: none;
+    background: rgba(255, 255, 255, .92);
+    color: #14141a;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 4px 9px;
+    border-radius: 20px;
+    white-space: nowrap;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+}
+
+/* Mild hover fade for zones. Costs no JavaScript: the markers plugin sets
+   fill/stroke with setAttributeNS on an element it REUSES across updates,
+   and a presentation attribute participates in the cascade, so changing it
+   transitions like any other computed style change. Only the one zone under
+   the pointer is ever animating, so this is a repaint of a single polygon.
+   Properties are listed explicitly and never as `all` -- the polygon's
+   points attribute is rewritten every frame as the camera moves, and
+   transitioning THAT would smear every zone across the screen on each pan. */
+.psv-marker--poly {
+    transition: fill .16s ease-out, stroke .16s ease-out, stroke-width .16s ease-out;
+}

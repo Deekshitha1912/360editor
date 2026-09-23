@@ -1,7 +1,7 @@
 // app/api/polygons/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
-import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeEdgeLengths, MAX_POLYGONS_PER_SCENE } from '@/lib/polygons'
+import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeBorderColor, normalizeHoverColor, normalizeZIndex, normalizeEdgeLengths, normalizeFillOpacity, normalizeHoverOpacity, MAX_POLYGONS_PER_SCENE } from '@/lib/polygons'
 import { normalizeActionType, clampText, normalizeInfoFields } from '@/lib/actions'
 
 export async function POST(req) {
@@ -12,7 +12,7 @@ export async function POST(req) {
 
         const body = await req.json()
         const {
-            project_id, scene_id, points, status, label, detail, custom_color, edge_lengths,
+            project_id, scene_id, points, status, label, detail, custom_color, border_color, hover_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity,
             action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden,
         } = body
 
@@ -67,7 +67,16 @@ export async function POST(req) {
                 label:  normalizeLabel(label),
                 detail: normalizeDetail(detail),
                 custom_color: normalizeCustomColor(custom_color),
+                border_color: normalizeBorderColor(border_color),
+                hover_color: normalizeHoverColor(hover_color),
+                hover_opacity: normalizeHoverOpacity(hover_opacity),
+                z_index: normalizeZIndex(z_index),
+                // Absent (a zone created before this column existed, or by a
+                // client that doesn't send it) means "show it" — same default
+                // as the column's own, not a silent opt-out.
+                show_label: show_label === undefined ? true : !!show_label,
                 edge_lengths: normalizeEdgeLengths(edge_lengths, cleanPoints.length),
+                fill_opacity: normalizeFillOpacity(fill_opacity),
                 action_type: normalizeActionType(action_type, 'info'),
                 target_scene_id: target_scene_id || null,
                 link_url: clampText(link_url, 2000), info_body: clampText(info_body, 4000),

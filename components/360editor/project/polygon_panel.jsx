@@ -14,8 +14,9 @@
 // middle.jsx flushes+closes it (rather than blocking) when you switch tabs
 // or select something else.
 import { useState } from 'react'
-import { STATUS_COLORS, CUSTOM_STATUS_COLORS, colorForStatus, MAX_DETAIL_KEYS } from '@/lib/polygons'
+import { STATUS_COLORS, DEFAULT_STATUS_COLOR, CUSTOM_STATUS_COLORS, colorForStatus, MAX_DETAIL_KEYS, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, MAX_Z_INDEX } from '@/lib/polygons'
 import InfoFieldsEditor from './info_fields_editor'
+import ReferencePlanPanel from './reference_plan_panel'
 
 function Spinner({ size = 10 }) {
     return (
@@ -30,6 +31,49 @@ const STATUS_OPTIONS = Object.keys(STATUS_COLORS)
 
 function StatusSwatch({ status, customColor }) {
     return <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorForStatus(status, customColor) }}/>
+}
+
+// Shared by both the fill and border color pickers below: a preset palette
+// (CUSTOM_STATUS_COLORS, including black/white) plus a native <input
+// type="color"> wheel for anything outside those presets — same value/
+// onChange contract as the palette swatches, so picking a custom hue and
+// re-picking a preset both just call onPick with a '#rrggbb' string.
+// defaultLabel/defaultColor render an extra leading swatch for "no
+// override" (title + the color it currently resolves to); omit them for a
+// picker that always has SOME concrete value.
+function ColorPickerRow({ value, onPick, defaultLabel, defaultColor, onClearDefault }) {
+    return (
+        <div className="flex items-center gap-1.5 flex-wrap">
+            {defaultLabel && (
+                <button type="button" onClick={onClearDefault} title={defaultLabel}
+                        className={`w-5 h-5 rounded-full shrink-0 border border-editor-border transition-transform ${
+                            !value ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
+                        }`}
+                        style={{ background: defaultColor }}/>
+            )}
+            {CUSTOM_STATUS_COLORS.map(c => (
+                <button key={c} type="button" onClick={() => onPick(c)} title={c}
+                        className={`w-5 h-5 rounded-full shrink-0 border border-editor-border/40 transition-transform ${
+                            value === c ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
+                        }`}
+                        style={{ background: c }}/>
+            ))}
+            {/* Native color wheel — covers anything outside the preset
+                palette. Its own swatch ring lights up when the current
+                value isn't one of the presets above (a custom pick), so
+                there's always exactly one lit swatch. */}
+            <label title="Custom color…"
+                   className={`relative w-5 h-5 rounded-full shrink-0 cursor-pointer overflow-hidden border border-editor-border/40 transition-transform ${
+                       value && !CUSTOM_STATUS_COLORS.includes(value) ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
+                   }`}
+                   style={{ background: value && !CUSTOM_STATUS_COLORS.includes(value)
+                       ? value
+                       : 'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)' }}>
+                <input type="color" value={value || '#6366f1'} onChange={e => onPick(e.target.value)}
+                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
+            </label>
+        </div>
+    )
 }
 
 // A small, dynamic key/value row editor for the "detail" payload (price,
@@ -130,6 +174,17 @@ function PolygonForm({ state, scenes, activeSceneId, hotspots, onUpdate, onDelet
                            onChange={e => onUpdate({ ...state, label: e.target.value })}
                            placeholder="e.g. Unit 4B"
                            className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5 text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted"/>
+                    {/* The label doubles as the plot-number badge drawn at
+                        the zone's centre on the panorama — off hides just
+                        the badge, the label itself still shows in the card
+                        on click and in this panel's list. */}
+                    <label className="flex items-center gap-1.5 text-[11px] text-editor-ink cursor-pointer pt-0.5">
+                        <input type="checkbox"
+                               checked={state.show_label !== false}
+                               onChange={e => onUpdate({ ...state, show_label: e.target.checked })}
+                               className="w-3.5 h-3.5 accent-editor-primary"/>
+                        Show this label on the map
+                    </label>
                 </div>
                 <div className="space-y-1">
                     <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Status</label>
@@ -147,20 +202,136 @@ function PolygonForm({ state, scenes, activeSceneId, hotspots, onUpdate, onDelet
                            onChange={e => onUpdate({ ...state, status: e.target.value })}
                            placeholder="or type a custom status"
                            className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5 text-[11px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-dim"/>
-                    {/* Only a custom status can carry a color override — a preset
-                        (available/booked/reserved) always keeps its own fixed color. */}
-                    {!STATUS_OPTIONS.includes(state.status) && state.status && (
-                        <div className="flex items-center gap-1.5 pt-0.5">
-                            {CUSTOM_STATUS_COLORS.map(c => (
-                                <button key={c} type="button" onClick={() => onUpdate({ ...state, custom_color: c })}
-                                        title={c}
-                                        className={`w-5 h-5 rounded-full shrink-0 transition-transform ${
-                                            (state.custom_color || CUSTOM_STATUS_COLORS[0]) === c ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
-                                        }`}
-                                        style={{ background: c }}/>
-                            ))}
+                    {/* Fill color — an override on top of whichever status
+                        this zone has, preset or custom alike. "Default" (the
+                        status's own fixed color, or the shared default for a
+                        custom status) clears the override; any preset
+                        swatch or the color wheel sets custom_color. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Fill color</label>
+                        <ColorPickerRow
+                            value={state.custom_color || null}
+                            onPick={c => onUpdate({ ...state, custom_color: c })}
+                            defaultLabel="Default"
+                            defaultColor={STATUS_COLORS[state.status] || DEFAULT_STATUS_COLOR}
+                            onClearDefault={() => onUpdate({ ...state, custom_color: null })}
+                        />
+                    </div>
+                    {/* Border color — independent of fill, applies to every
+                        zone regardless of status. "Same as fill" (the
+                        default) clears the override; any other swatch or
+                        the color wheel sets border_color, which the shape's
+                        stroke then uses instead of the resolved fill color. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Border color</label>
+                        <ColorPickerRow
+                            value={state.border_color || null}
+                            onPick={c => onUpdate({ ...state, border_color: c })}
+                            defaultLabel="Same as fill"
+                            defaultColor={colorForStatus(state.status, state.custom_color)}
+                            onClearDefault={() => onUpdate({ ...state, border_color: null })}
+                        />
+                    </div>
+                    {/* Hover fill color — what the zone turns while the
+                        pointer is over it. "Same as fill" (the default)
+                        clears the override, which is what hovering did
+                        before it was configurable. Desktop only; there's
+                        no hover state on a touchscreen. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Hover color</label>
+                        <ColorPickerRow
+                            value={state.hover_color || null}
+                            onPick={c => onUpdate({ ...state, hover_color: c })}
+                            defaultLabel="Same as fill"
+                            defaultColor={colorForStatus(state.status, state.custom_color)}
+                            onClearDefault={() => onUpdate({ ...state, hover_color: null })}
+                        />
+                    </div>
+                    {/* Applies to the fill regardless of whether the color
+                        above came from a preset status or a custom one —
+                        it's a property of the zone's shading, not of the
+                        color itself. Slider AND a typed number, kept in
+                        sync — a drag is fine for "roughly this translucent",
+                        but matching an exact value across several zones
+                        needs to type the same number, not eyeball a slider. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Fill opacity</label>
+                        <div className="flex items-center gap-2">
+                            <input type="range" min={0} max={100} step={1}
+                                   value={Math.round((state.fill_opacity ?? DEFAULT_FILL_OPACITY) * 100)}
+                                   onChange={e => onUpdate({ ...state, fill_opacity: Number(e.target.value) / 100 })}
+                                   className="flex-1 accent-editor-primary h-1 cursor-pointer"/>
+                            <div className="flex items-center gap-1 shrink-0">
+                                <input type="number" min={0} max={100} step={1}
+                                       value={Math.round((state.fill_opacity ?? DEFAULT_FILL_OPACITY) * 100)}
+                                       onChange={e => {
+                                           const n = Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0)))
+                                           onUpdate({ ...state, fill_opacity: n / 100 })
+                                       }}
+                                       className="w-11 h-6 bg-editor-surface border border-editor-border rounded-md px-1 text-[11px] text-editor-ink text-right font-mono tabular-nums focus:outline-none focus:border-editor-primary"/>
+                                <span className="text-[10px] text-editor-ink-dim">%</span>
+                            </div>
                         </div>
-                    )}
+                    </div>
+                    {/* Opacity while hovered. An absolute value, NOT a bump on
+                        top of the fill opacity above — so e.g. fill 0 with
+                        hover 60% gives a zone that's invisible until pointed
+                        at, which a relative bump couldn't express. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Hover opacity</label>
+                        <div className="flex items-center gap-2">
+                            <input type="range" min={0} max={100} step={1}
+                                   value={Math.round((state.hover_opacity ?? DEFAULT_HOVER_OPACITY) * 100)}
+                                   onChange={e => onUpdate({ ...state, hover_opacity: Number(e.target.value) / 100 })}
+                                   className="flex-1 accent-editor-primary h-1 cursor-pointer"/>
+                            <div className="flex items-center gap-1 shrink-0">
+                                <input type="number" min={0} max={100} step={1}
+                                       value={Math.round((state.hover_opacity ?? DEFAULT_HOVER_OPACITY) * 100)}
+                                       onChange={e => {
+                                           const n = Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0)))
+                                           onUpdate({ ...state, hover_opacity: n / 100 })
+                                       }}
+                                       className="w-11 h-6 bg-editor-surface border border-editor-border rounded-md px-1 text-[11px] text-editor-ink text-right font-mono tabular-nums focus:outline-none focus:border-editor-primary"/>
+                                <span className="text-[10px] text-editor-ink-dim">%</span>
+                            </div>
+                        </div>
+                    </div>
+                    {/* Paint order for zones that overlap each other — a road
+                        or common-area strip crossing a row of plots needs to
+                        sit UNDER them, which is otherwise impossible (zones
+                        paint in whatever order they load in). Lower goes
+                        behind; the two buttons cover the whole real use case,
+                        with the number there for finer stacking. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Layer</label>
+                        <div className="flex items-center gap-1.5">
+                            <button type="button" onClick={() => onUpdate({ ...state, z_index: -1 })}
+                                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                        (state.z_index ?? 0) < 0 ? 'border-editor-primary bg-editor-primary/8 text-editor-primary' : 'border-editor-border text-editor-ink-muted hover:border-editor-primary/40'
+                                    }`}>
+                                Behind
+                            </button>
+                            <button type="button" onClick={() => onUpdate({ ...state, z_index: 0 })}
+                                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                        (state.z_index ?? 0) === 0 ? 'border-editor-primary bg-editor-primary/8 text-editor-primary' : 'border-editor-border text-editor-ink-muted hover:border-editor-primary/40'
+                                    }`}>
+                                Normal
+                            </button>
+                            <button type="button" onClick={() => onUpdate({ ...state, z_index: 1 })}
+                                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                        (state.z_index ?? 0) > 0 ? 'border-editor-primary bg-editor-primary/8 text-editor-primary' : 'border-editor-border text-editor-ink-muted hover:border-editor-primary/40'
+                                    }`}>
+                                In front
+                            </button>
+                            <input type="number" min={-MAX_Z_INDEX} max={MAX_Z_INDEX} step={1}
+                                   value={state.z_index ?? 0}
+                                   onChange={e => {
+                                       const n = Math.min(MAX_Z_INDEX, Math.max(-MAX_Z_INDEX, Math.round(Number(e.target.value) || 0)))
+                                       onUpdate({ ...state, z_index: n })
+                                   }}
+                                   className="w-11 h-6 ml-auto shrink-0 bg-editor-surface border border-editor-border rounded-md px-1 text-[11px] text-editor-ink text-right font-mono tabular-nums focus:outline-none focus:border-editor-primary"/>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Plot dimensions — one free-text length per edge (edge i runs
@@ -367,6 +538,7 @@ export default function PolygonPanel({
                                           scenes, hotspots,
                                           polygonPopup, onUpdatePopup, onDeletePopup, onCancelPopup, onSaveNowPopup, onUploadImage,
                                           savingPolygon, justSavedPolygon, deletingPolygon,
+                                          referencePlan,
                                       }) {
     if (polygonPopup) {
         return (
@@ -394,6 +566,11 @@ export default function PolygonPanel({
                 <div className="text-[11px] font-bold uppercase tracking-widest text-editor-ink-muted">Zones</div>
                 <p className="text-[10px] text-editor-ink-dim mt-0.5">Draw a shape, then set its status.</p>
             </div>
+
+            {/* A calibrated DXF to trace over — editor-only, deleted once the
+                zones are drawn. Lives here rather than under Overlays because
+                this is the panel you're already in while drawing zones. */}
+            {referencePlan && <ReferencePlanPanel {...referencePlan}/>}
 
             <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
                 {polygons.length === 0 && !drawing && (

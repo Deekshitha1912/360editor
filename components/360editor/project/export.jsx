@@ -5,7 +5,7 @@
 
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus } from '@/lib/polygons'
+import { colorForStatus, borderColorFor, hoverColorFor } from '@/lib/polygons'
 import { DEFAULT_HOTSPOT_COLOR, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 
 const PSV_VERSION = '5.15.1'
@@ -98,14 +98,27 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
         // Zones are always scene-scoped (no "every scene" concept). The color
         // is resolved server-side from status here, once, rather than shipping
         // a status->color lookup table to the client.
+        // Sorted by z_index ASCENDING here, once, server-side — PSV paints
+        // markers in plain array order, so this is what lets a road/common-
+        // area strip sit UNDER the plots crossing it. Stable, so zones
+        // sharing a z_index keep the order they already had. Mirrors
+        // middle.jsx's own orderedPolygons.
         const sceneZones = zones
             .filter(z => z.scene_id === scene.id)
+            .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
             .map(z => ({
                 id: z.id,
                 points: z.points,
                 color: colorForStatus(z.status, z.custom_color),
+                borderColor: borderColorFor(colorForStatus(z.status, z.custom_color), z.border_color),
+                hoverColor: hoverColorFor(colorForStatus(z.status, z.custom_color), z.hover_color),
+                fillOpacity: z.fill_opacity ?? 0.33,
+                hoverOpacity: z.hover_opacity ?? 0.6,
                 status: z.status,
                 label: z.label || '',
+                // ANDed with the tour-wide switch here, once, rather than
+                // shipping both flags and re-checking per frame in the tour.
+                showLabel: z.show_label !== false && project.show_zone_labels !== false,
                 detail: z.detail || {},
                 edgeLengths: z.edge_lengths || [],
                 actionType: z.action_type || 'info',
@@ -213,6 +226,18 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #imgLbClose{position:absolute;top:10px;right:10px;width:32px;height:32px;border-radius:50%;border:none;background:rgba(20,20,26,.65);color:#fff;font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:background .15s ease;}
 #imgLbClose:hover{background:rgba(0,0,0,.8)}
 .edge-label{pointer-events:none;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;white-space:nowrap;}
+/* Always-visible plot-number badge at a zone's centre. Neutral light pill
+   rather than the zone's own color, so one style stays legible on every
+   fill. Non-interactive so it never steals the zone's own click. */
+.zone-label{pointer-events:none;background:rgba(255,255,255,.92);color:#14141a;font-size:12px;font-weight:700;line-height:1;padding:4px 9px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.4);}
+/* Mild hover fade for zones. Costs no JavaScript: the markers plugin sets
+   fill/stroke with setAttributeNS on an element it REUSES across updates, and
+   a presentation attribute participates in the cascade, so changing it
+   transitions like any other computed style change. Only the one zone under
+   the pointer is ever animating. Properties are listed explicitly and never
+   as "all" -- the polygon's points attribute is rewritten every frame as the
+   camera moves, and transitioning THAT would smear every zone on each pan. */
+.psv-marker--poly{transition:fill .16s ease-out,stroke .16s ease-out,stroke-width .16s ease-out;}
 .hs-info{padding:2px 2px 8px}
 .hs-info h3{font-size:15px;font-weight:600;margin:0 0 8px}
 .hs-info img{display:block;width:100%;border-radius:10px;margin-bottom:10px;object-fit:cover;max-height:180px;}
@@ -263,6 +288,26 @@ ${autorotateImport}
 var TOURS=${toursJson};var SM=${sceneListJson};
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// Two-hex-digit alpha suffix for a zone's fill color -- hand-synced copy of
+// lib/polygons.js's alphaHex (this file ships as a plain string, so it can't
+// import that module -- same convention as FLOOR_SIZE_MULTIPLIER's own copy
+// below). The fill and hover opacities it's applied to are both resolved
+// server-side into each zone's data, so no boost constant is needed here.
+function _alphaHex(o){var a=Math.round(Math.min(1,Math.max(0,o))*255);var h=a.toString(16);return h.length<2?'0'+h:h;}
+// Text decal image -- hand-synced copy of lib/arrows.js's
+// textDecalSize/textDecalImage (this file ships as a plain string and can't
+// import that module -- same convention as FLOOR_SIZE_MULTIPLIER's own copy
+// below).
+function _escXml(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c];});}
+function _textDecalSize(text){var len=Math.max(1,(text||'').length);return {width:24*2+len*30,height:100};}
+function _textDecalImage(text,color){
+  var sz=_textDecalSize(text);
+  var svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+sz.width+'" height="'+sz.height+'" viewBox="0 0 '+sz.width+' '+sz.height+'">'
+    +'<text x="'+(sz.width/2)+'" y="'+(sz.height/2)+'" text-anchor="middle" dominant-baseline="central" '
+    +'font-family="-apple-system,Segoe UI,Arial,sans-serif" font-size="64" font-weight="700" '
+    +'fill="'+(color||'#111111')+'">'+_escXml(text||'Text')+'</text></svg>';
+  return 'data:image/svg+xml,'+encodeURIComponent(svg);
+}
 // height/color are baked into an inline style attribute on the markup
 // itself, not left to PSV's own marker style config -- that config gets
 // applied via Object.assign(element.style, config.style) (a plain
@@ -322,6 +367,14 @@ function arrowMarker(h){
   // plain string can't import that module). Mirrors middle.jsx's
   // arrowMarkers builder.
   if(h.type==='floor'){var fsz=h.size*2.5;return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:h.gif,position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:fsz,height:fsz},rotation:{yaw:h.rotateY+'deg',pitch:h.rotateX+'deg',roll:(h.rotation||0)+'deg'},data:d},extra);}
+  // Text decal: the SAME surface-embedded imageLayer mechanism as floor
+  // above, except the image is generated from this hotspot's own
+  // label/color (_textDecalImage) instead of a fixed sprite -- its aspect
+  // ratio isn't 1:1 like floor's, so width/height below preserve it.
+  if(h.type==='text'){
+    var tsz=_textDecalSize(h.label);var taspect=tsz.width/tsz.height;var th=h.size*2.5;
+    return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:_textDecalImage(h.label,h.color),position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:th*taspect,height:th},rotation:{yaw:h.rotateY+'deg',pitch:h.rotateX+'deg',roll:(h.rotation||0)+'deg'},data:d},extra);
+  }
   // Pulse ring stays a plain billboard (a true 3D marker would freeze its
   // pulse animation to one static frame) but X/Y still get a real visible
   // effect via a CSS transform on the marker element -- the transform
@@ -333,7 +386,7 @@ function arrowMarker(h){
   return Object.assign({id:'hs_'+h.id,type:'image',image:h.customIconUrl||h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:d},extra);
 }
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
-function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+'55',stroke:z.color,strokeWidth:'2'},visible:!z.startHidden,data:z};}
+function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+_alphaHex(z.fillOpacity),stroke:z.borderColor||z.color,strokeWidth:'2'},visible:!z.startHidden,data:z};}
 // One read-only label per edge that actually has a length typed in (edge i
 // runs from points[i] to points[(i+1) % length]) -- a plain arithmetic
 // midpoint, same tolerance lib/polygons.js's own centroidOf() uses for these
@@ -349,11 +402,28 @@ function edgeLabelMarkers(z){
   }
   return out;
 }
+// The zone's own label as an always-visible badge at its centre -- the
+// plot-number pill a site plan lives on. Plain arithmetic centroid, same
+// simplification lib/polygons.js's centroidOf() documents (not seam-aware),
+// fine for the compact shapes this is for. Non-interactive (pointer-events
+// :none in CSS) so it never steals the zone's own click.
+function zoneLabelMarker(z){
+  if(!z.showLabel||!z.label)return null;
+  var n=z.points.length;if(!n)return null;
+  var cy=0,cp=0;for(var i=0;i<n;i++){cy+=z.points[i][0];cp+=z.points[i][1];}cy/=n;cp/=n;
+  return {id:'zlabel_'+z.id,type:'html',html:'<div class="zone-label">'+esc(z.label)+'</div>',anchor:'center center',position:{yaw:cy+'deg',pitch:cp+'deg'},visible:!z.startHidden,style:{pointerEvents:'none'}};
+}
 function markersFor(id){
   var s=TOURS[id];
-  var out=s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker)).concat(s.arrows.map(arrowMarker));
-  s.zones.forEach(function(z){out=out.concat(edgeLabelMarkers(z));});
-  return out;
+  // Paint order, first (bottom) to last (top): cover-ups, zone fills, every
+  // zone label, then the arrows -- so a navigation arrow is never hidden
+  // behind a plot-number badge. Mirrors middle.jsx's own marker order.
+  var out=s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker));
+  s.zones.forEach(function(z){
+    out=out.concat(edgeLabelMarkers(z));
+    var zl=zoneLabelMarker(z);if(zl)out.push(zl);
+  });
+  return out.concat(s.arrows.map(arrowMarker));
 }
 
 var _l=0,_t=SM.length;
@@ -448,12 +518,12 @@ mp.addEventListener('select-marker',function(ev){
 mp.addEventListener('enter-marker',function(ev){
   var m=ev.marker;
   if(m.id.indexOf('poly_')!==0||!m.data)return;
-  mp.updateMarker({id:m.id,svgStyle:{fill:m.data.color+'99',stroke:m.data.color,strokeWidth:'3'}});
+  mp.updateMarker({id:m.id,svgStyle:{fill:(m.data.hoverColor||m.data.color)+_alphaHex(m.data.hoverOpacity),stroke:m.data.borderColor||m.data.color,strokeWidth:'3'}});
 });
 mp.addEventListener('leave-marker',function(ev){
   var m=ev.marker;
   if(m.id.indexOf('poly_')!==0||!m.data)return;
-  mp.updateMarker({id:m.id,svgStyle:{fill:m.data.color+'55',stroke:m.data.color,strokeWidth:'2'}});
+  mp.updateMarker({id:m.id,svgStyle:{fill:m.data.color+_alphaHex(m.data.fillOpacity),stroke:m.data.borderColor||m.data.color,strokeWidth:'2'}});
 });
 // Landmark "grow in" line -- toggles lm-in-view (see the .lm.lm-anim CSS
 // rules) on each animated landmark's own marker element once its point is
@@ -498,6 +568,43 @@ function _updateLandmarkAnim(){
 }
 viewer.addEventListener('position-updated',_updateLandmarkAnim);
 viewer.addEventListener('zoom-updated',_updateLandmarkAnim);
+// Zone-label auto-hide -- a plot-number badge shows only while its own zone
+// is actually big enough on screen to hold it, so zooming out over a
+// 150-plot site plan doesn't pile every badge into unreadable mush.
+// Measuring each zone's own projected size (rather than thresholding the
+// camera's zoom level) needs no setting and no per-tour tuning: it adapts to
+// however big each individual plot happens to be at the current zoom.
+// Mirrors middle.jsx's zoneFitsLabel, including erring toward SHOWING when a
+// point won't project. updateMarker is called only when a badge's visibility
+// actually flips -- it's a real marker mutation that fires a set-markers
+// event, so doing it on every camera event unconditionally would be heavy.
+var _LABEL_BADGE_H=22,_zlVis={};
+function _zoneFitsLabel(z){
+  var minX=1/0,maxX=-1/0,minY=1/0,maxY=-1/0;
+  for(var i=0;i<z.points.length;i++){
+    var pt;
+    try{pt=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:z.points[i][0]*Math.PI/180,pitch:z.points[i][1]*Math.PI/180});}catch(e){return true;}
+    if(!pt)return true;
+    if(pt.x<minX)minX=pt.x;
+    if(pt.x>maxX)maxX=pt.x;
+    if(pt.y<minY)minY=pt.y;
+    if(pt.y>maxY)maxY=pt.y;
+  }
+  return (maxX-minX)>=(((z.label||'').length||1)*7.2+20)&&(maxY-minY)>=_LABEL_BADGE_H;
+}
+function _updateZoneLabels(){
+  var s=_curScene&&TOURS[_curScene];
+  if(!s)return;
+  s.zones.forEach(function(z){
+    if(!z.showLabel||!z.label)return;
+    var fits=_zoneFitsLabel(z);
+    if(_zlVis[z.id]===fits)return;
+    _zlVis[z.id]=fits;
+    try{mp.updateMarker({id:'zlabel_'+z.id,visible:fits&&!z.startHidden});}catch(e){}
+  });
+}
+viewer.addEventListener('position-updated',_updateZoneLabels);
+viewer.addEventListener('zoom-updated',_updateZoneLabels);
 function hideZoneCard(){document.getElementById('zoneCard').style.display='none';}
 window.hideZoneCard=hideZoneCard;
 function showZoneCard(z){
@@ -539,7 +646,9 @@ var _WMCUR=[];
 function _wm(id){var layer=document.getElementById('wmLayer');if(!layer)return;layer.innerHTML='';_WMCUR=[];LOGOS.forEach(function(l){if(l.s!=null&&l.s!==id)return;var d=document.createElement('div');d.className='wm';d.style.cssText='left:'+l.x+'%;top:'+l.y+'%;width:'+l.w+'px;opacity:'+l.o+';';var img=document.createElement('img');img.src=l.u;img.alt='';img.onload=function(){_clampWM(d,l);};d.appendChild(img);layer.appendChild(d);_WMCUR.push({el:d,l:l});_clampWM(d,l);});}
 function _reclampWM(){_WMCUR.forEach(function(o){_clampWM(o.el,o.l);});}
 window.addEventListener('resize',_reclampWM);
-function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();}
+// _zlVis is reset here, not merged: loadScene rebuilt every marker, so a
+// badge's visibility from the previous scene no longer describes anything.
+function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();_zlVis={};_updateZoneLabels();}
 ${introCode}
 
 // Module-scope top-level functions are NOT global — the inline onclick="..."

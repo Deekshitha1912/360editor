@@ -1,7 +1,7 @@
 // app/api/polygons/[id]/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
-import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeEdgeLengths } from '@/lib/polygons'
+import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeBorderColor, normalizeHoverColor, normalizeZIndex, normalizeEdgeLengths, normalizeFillOpacity, normalizeHoverOpacity } from '@/lib/polygons'
 import { normalizeActionType, clampText, normalizeInfoFields } from '@/lib/actions'
 
 // Ownership is checked with its own SELECT, then the write is a plain update
@@ -42,6 +42,12 @@ export async function PATCH(req, { params }) {
         if ('label'  in body) updates.label  = normalizeLabel(body.label)
         if ('detail' in body) updates.detail = normalizeDetail(body.detail)
         if ('custom_color' in body) updates.custom_color = normalizeCustomColor(body.custom_color)
+        if ('border_color' in body) updates.border_color = normalizeBorderColor(body.border_color)
+        if ('hover_color'  in body) updates.hover_color  = normalizeHoverColor(body.hover_color)
+        if ('z_index'      in body) updates.z_index      = normalizeZIndex(body.z_index)
+        if ('show_label'   in body) updates.show_label   = !!body.show_label
+        if ('fill_opacity' in body) updates.fill_opacity = normalizeFillOpacity(body.fill_opacity)
+        if ('hover_opacity' in body) updates.hover_opacity = normalizeHoverOpacity(body.hover_opacity)
         // edge_lengths must be padded/truncated to match the zone's point
         // count, which may not be known yet (it's only in `body.points` if
         // this same request is also changing the shape) — normalized below,
@@ -94,7 +100,7 @@ export async function PATCH(req, { params }) {
             .update(updates)
             .eq('id', id)
             .select(`
-                id, scene_id, project_id, points, status, label, detail, custom_color, edge_lengths,
+                id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity,
                 action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden
             `)
 
