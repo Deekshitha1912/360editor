@@ -14,9 +14,10 @@
 // middle.jsx flushes+closes it (rather than blocking) when you switch tabs
 // or select something else.
 import { useState } from 'react'
-import { STATUS_COLORS, DEFAULT_STATUS_COLOR, CUSTOM_STATUS_COLORS, colorForStatus, MAX_DETAIL_KEYS, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, MAX_Z_INDEX } from '@/lib/polygons'
+import { STATUS_COLORS, DEFAULT_STATUS_COLOR, colorForStatus, MAX_DETAIL_KEYS, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, MAX_Z_INDEX } from '@/lib/polygons'
 import InfoFieldsEditor from './info_fields_editor'
 import ReferencePlanPanel from './reference_plan_panel'
+import ColorPickerRow from './color_picker_row'
 
 function Spinner({ size = 10 }) {
     return (
@@ -31,49 +32,6 @@ const STATUS_OPTIONS = Object.keys(STATUS_COLORS)
 
 function StatusSwatch({ status, customColor }) {
     return <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorForStatus(status, customColor) }}/>
-}
-
-// Shared by both the fill and border color pickers below: a preset palette
-// (CUSTOM_STATUS_COLORS, including black/white) plus a native <input
-// type="color"> wheel for anything outside those presets — same value/
-// onChange contract as the palette swatches, so picking a custom hue and
-// re-picking a preset both just call onPick with a '#rrggbb' string.
-// defaultLabel/defaultColor render an extra leading swatch for "no
-// override" (title + the color it currently resolves to); omit them for a
-// picker that always has SOME concrete value.
-function ColorPickerRow({ value, onPick, defaultLabel, defaultColor, onClearDefault }) {
-    return (
-        <div className="flex items-center gap-1.5 flex-wrap">
-            {defaultLabel && (
-                <button type="button" onClick={onClearDefault} title={defaultLabel}
-                        className={`w-5 h-5 rounded-full shrink-0 border border-editor-border transition-transform ${
-                            !value ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
-                        }`}
-                        style={{ background: defaultColor }}/>
-            )}
-            {CUSTOM_STATUS_COLORS.map(c => (
-                <button key={c} type="button" onClick={() => onPick(c)} title={c}
-                        className={`w-5 h-5 rounded-full shrink-0 border border-editor-border/40 transition-transform ${
-                            value === c ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
-                        }`}
-                        style={{ background: c }}/>
-            ))}
-            {/* Native color wheel — covers anything outside the preset
-                palette. Its own swatch ring lights up when the current
-                value isn't one of the presets above (a custom pick), so
-                there's always exactly one lit swatch. */}
-            <label title="Custom color…"
-                   className={`relative w-5 h-5 rounded-full shrink-0 cursor-pointer overflow-hidden border border-editor-border/40 transition-transform ${
-                       value && !CUSTOM_STATUS_COLORS.includes(value) ? 'ring-2 ring-offset-1 ring-editor-primary scale-110' : ''
-                   }`}
-                   style={{ background: value && !CUSTOM_STATUS_COLORS.includes(value)
-                       ? value
-                       : 'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)' }}>
-                <input type="color" value={value || '#6366f1'} onChange={e => onPick(e.target.value)}
-                       className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
-            </label>
-        </div>
-    )
 }
 
 // A small, dynamic key/value row editor for the "detail" payload (price,
@@ -185,6 +143,20 @@ function PolygonForm({ state, scenes, activeSceneId, hotspots, onUpdate, onDelet
                                className="w-3.5 h-3.5 accent-editor-primary"/>
                         Show this label on the map
                     </label>
+                    {/* Background color of the badge itself — independent of
+                        the zone's own fill/border/hover colors above, same
+                        picker. "Default" (the neutral light pill every badge
+                        already used) clears the override. */}
+                    <div className="space-y-1 pt-0.5">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Label color</label>
+                        <ColorPickerRow
+                            value={state.label_color || null}
+                            onPick={c => onUpdate({ ...state, label_color: c })}
+                            defaultLabel="Default"
+                            defaultColor="#ffffff"
+                            onClearDefault={() => onUpdate({ ...state, label_color: null })}
+                        />
+                    </div>
                 </div>
                 <div className="space-y-1">
                     <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Status</label>

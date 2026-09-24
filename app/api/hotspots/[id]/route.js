@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import {
     clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
-    clampHotspotAngle, normalizeActionType, clampText,
+    clampHotspotAngle, normalizeActionType, clampText, normalizeZIndex,
 } from '@/lib/hotspots'
 import { normalizeInfoFields } from '@/lib/actions'
 
@@ -33,7 +33,7 @@ export async function PATCH(req, { params }) {
 
         const allowed = [
             'label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation',
-            'color', 'label_color', 'rotate_x', 'rotate_y',
+            'color', 'label_color', 'rotate_x', 'rotate_y', 'z_index',
             'action_type', 'link_url', 'info_body', 'info_image_url', 'info_fields', 'toggle_target_id', 'start_hidden',
             'animate_line', 'custom_icon_url',
         ]
@@ -51,6 +51,7 @@ export async function PATCH(req, { params }) {
         if ('label_color'     in updates) updates.label_color     = normalizeLabelColor(updates.label_color)
         if ('rotate_x'        in updates) updates.rotate_x        = clampHotspotAngle(updates.rotate_x, 90)
         if ('rotate_y'        in updates) updates.rotate_y        = clampHotspotAngle(updates.rotate_y, 0)
+        if ('z_index'         in updates) updates.z_index         = normalizeZIndex(updates.z_index)
         if ('action_type'     in updates) updates.action_type     = normalizeActionType(updates.action_type)
         if ('link_url'        in updates) updates.link_url        = clampText(updates.link_url, 2000)
         if ('info_body'       in updates) updates.info_body       = clampText(updates.info_body, 4000)
@@ -114,7 +115,7 @@ export async function PATCH(req, { params }) {
             .eq('id', id)
             .select(`
                 id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
-                color, label_color, rotate_x, rotate_y,
+                color, label_color, rotate_x, rotate_y, z_index,
                 action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
                 custom_icon_url
             `)

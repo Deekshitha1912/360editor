@@ -5,7 +5,7 @@
 
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus, borderColorFor, hoverColorFor } from '@/lib/polygons'
+import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor } from '@/lib/polygons'
 import { DEFAULT_HOTSPOT_COLOR, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 
 const PSV_VERSION = '5.15.1'
@@ -52,8 +52,13 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
     const sceneList = []
 
     for (const scene of scenes) {
+        // Sorted by z_index ASCENDING here, once, server-side -- PSV paints
+        // markers in plain array order, so this is what lets one hotspot
+        // (e.g. a text decal) sit behind or in front of another overlapping
+        // one. Mirrors middle.jsx's own arrowMarkers sort.
         const arrows = hotspots
             .filter(h => h.scene_id === scene.id)
+            .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
             .map(h => {
                 const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
                 return {
@@ -119,6 +124,11 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                 // ANDed with the tour-wide switch here, once, rather than
                 // shipping both flags and re-checking per frame in the tour.
                 showLabel: z.show_label !== false && project.show_zone_labels !== false,
+                // Precomputed here, server-side, rather than shipping the
+                // color logic to the client's own copy of this file's script
+                // — that plain string can import lib/polygons.js, this
+                // build step can.
+                labelStyle: badgeLabelStyleFor(z.label_color),
                 detail: z.detail || {},
                 edgeLengths: z.edge_lengths || [],
                 actionType: z.action_type || 'info',
@@ -203,20 +213,38 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #rotateOverlay svg{animation:breathe 2.8s ease-in-out infinite;margin-bottom:20px}
 #rotateOverlay p{font-size:19px;font-weight:600;line-height:1.5;opacity:.9}
 @media(orientation:portrait){#rotateOverlay{display:flex}}
-#zoneCard{position:fixed;left:18px;bottom:64px;z-index:25000;display:none;width:220px;background:rgba(20,20,26,.92);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:14px 16px;color:#fff;box-shadow:0 12px 36px rgba(0,0,0,.45);}
-#zoneCard .zc-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
-#zoneCard .zc-dot{width:9px;height:9px;border-radius:50%;flex:none;}
-#zoneCard .zc-title{font-size:14px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-#zoneCard .zc-close{cursor:pointer;opacity:.6;flex:none;font-size:14px;line-height:1;background:none;border:none;color:#fff;}
-#zoneCard .zc-close:hover{opacity:1}
-#zoneCard .zc-status{font-size:11px;opacity:.7;text-transform:capitalize;margin-bottom:8px;}
+#zoneCardBackdrop{display:none;position:fixed;inset:0;z-index:24999;background:rgba(10,10,14,.55);backdrop-filter:blur(2px);}
+/* No fixed width -- a position:fixed block with no width/right set shrinks
+   to fit its content, so the card hugs whatever's actually inside it
+   (typically just an image at its own natural size) instead of forcing
+   that content into a fixed box. That's the fix for the black bars that
+   showed above/below an image under object-fit:contain: those were never a
+   border, they were the card's own background showing through the gap
+   contain leaves when an image's aspect ratio doesn't match a fixed box.
+   With no fixed box to not-quite-fill, there's no gap to show through. */
+#zoneCard{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:25000;display:none;max-width:calc(100vw - 36px);max-height:calc(100vh - 36px);overflow-y:auto;overflow-x:hidden;background:transparent;padding:0;color:#fff;box-shadow:0 12px 36px rgba(0,0,0,.45);border-radius:14px;}
+#zoneCard .zc-close{position:absolute;top:10px;right:10px;width:32px;height:32px;border-radius:50%;border:none;background:rgba(20,20,26,.65);color:#fff;font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:background .15s ease;z-index:1;}
+#zoneCard .zc-close:hover{background:rgba(0,0,0,.8)}
+/* Images live directly on the transparent card, never inside the padded/
+   dark #zcDetail below -- sized to their own natural dimensions (capped for
+   the viewport), so nothing is ever a fixed box an image could fail to
+   exactly fill. Rounded corners on every side; #zcDetail's own top corners
+   square off against an image directly above it (only #zcDetail:first-child
+   gets full rounding, i.e. a card with no image at all). */
+#zoneCard #zcImages{max-width:min(480px,calc(100vw - 36px));}
+#zoneCard .zc-image{display:block;width:auto;height:auto;max-width:100%;max-height:80vh;margin:0 auto;border-radius:14px;}
+#zoneCard .zc-caption{font-size:11px;color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.8);text-align:center;margin:6px 0 0;}
+/* Detail rows/text/links keep a solid readable backing and their own
+   padding, separate from any image above -- empty (no Details, no non-image
+   Card contents) means display:none, so an image-only card shows nothing
+   but the image. */
+#zoneCard #zcDetail{background:rgba(20,20,26,.92);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.14);border-radius:0 0 14px 14px;padding:14px;max-width:min(480px,calc(100vw - 36px));}
+#zoneCard #zcDetail.zc-solo{border-radius:14px;}
 #zoneCard .zc-row{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:3px 0;}
 #zoneCard .zc-row span:first-child{opacity:.55}
 #zoneCard .zc-row span:last-child{font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-#zoneCard .zc-image{width:100%;border-radius:8px;margin:8px 0;object-fit:cover;max-height:140px;}
 #zoneCard .zc-body{font-size:12px;line-height:1.5;opacity:.85;margin:8px 0 0;white-space:pre-wrap;}
 #zoneCard .zc-link{display:inline-block;margin:8px 6px 0 0;background:#3730a3;color:#fff;font-size:11px;font-weight:600;text-decoration:none;padding:7px 14px;border-radius:16px;text-align:center;}
-#zoneCard .zc-caption{font-size:11px;opacity:.6;margin:-4px 0 8px;}
 #zoneCard .zc-field-label{font-size:10px;font-weight:700;opacity:.55;text-transform:uppercase;letter-spacing:.04em;margin:10px 0 3px;}
 #imgLightbox{display:none;position:fixed;inset:0;z-index:95000;background:rgba(10,10,14,.55);backdrop-filter:blur(2px);align-items:center;justify-content:center;opacity:0;transition:opacity .25s ease;}
 #imgLightbox.show{opacity:1;}
@@ -225,7 +253,7 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 #imgLbFrame img{display:block;max-width:90vw;max-height:88vh;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);}
 #imgLbClose{position:absolute;top:10px;right:10px;width:32px;height:32px;border-radius:50%;border:none;background:rgba(20,20,26,.65);color:#fff;font-size:16px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);box-shadow:0 2px 10px rgba(0,0,0,.35);transition:background .15s ease;}
 #imgLbClose:hover{background:rgba(0,0,0,.8)}
-.edge-label{pointer-events:none;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;white-space:nowrap;}
+.edge-label{position:fixed;transform:translate(-50%,-50%);z-index:15000;pointer-events:none;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:600;padding:3px 8px;border-radius:20px;white-space:nowrap;}
 /* Always-visible plot-number badge at a zone's centre. Neutral light pill
    rather than the zone's own color, so one style stays legible on every
    fill. Non-interactive so it never steals the zone's own click. */
@@ -262,7 +290,7 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 ${introHtml}
 <div id="viewer"></div>
 ${logoHtml}
-<div id="zoneCard"><div class="zc-head"><span class="zc-dot" id="zcDot"></span><span class="zc-title" id="zcTitle"></span><button class="zc-close" onclick="hideZoneCard()">&#10005;</button></div><div class="zc-status" id="zcStatus"></div><div id="zcDetail"></div></div>
+<div id="zoneCardBackdrop"></div><div id="zoneCard"><button class="zc-close" aria-label="Close" onclick="hideZoneCard()">&#10005;</button><div id="zcImages"></div><div id="zcDetail"></div></div>
 <div id="imgLightbox"><div id="imgLbFrame"><img id="imgLbImg" alt=""><button id="imgLbClose" aria-label="Close">&#10005;</button></div></div>
 <button id="sbToggle" onclick="toggleSceneSidebar()" title="Hide scene list" aria-label="Hide scene list">
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
@@ -387,21 +415,6 @@ function arrowMarker(h){
 }
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
 function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+_alphaHex(z.fillOpacity),stroke:z.borderColor||z.color,strokeWidth:'2'},visible:!z.startHidden,data:z};}
-// One read-only label per edge that actually has a length typed in (edge i
-// runs from points[i] to points[(i+1) % length]) -- a plain arithmetic
-// midpoint, same tolerance lib/polygons.js's own centroidOf() uses for these
-// compact, single-object-sized shapes. Non-interactive (pointer-events:none
-// in CSS) so it never steals the zone's own click.
-function edgeLabelMarkers(z){
-  var out=[],lens=z.edgeLengths||[];
-  for(var i=0;i<z.points.length;i++){
-    var label=lens[i];
-    if(!label)continue;
-    var a=z.points[i],b=z.points[(i+1)%z.points.length];
-    out.push({id:'elabel_'+z.id+'_'+i,type:'html',html:'<div class="edge-label">'+esc(label)+'</div>',anchor:'center center',position:{yaw:((a[0]+b[0])/2)+'deg',pitch:((a[1]+b[1])/2)+'deg'},visible:!z.startHidden});
-  }
-  return out;
-}
 // The zone's own label as an always-visible badge at its centre -- the
 // plot-number pill a site plan lives on. Plain arithmetic centroid, same
 // simplification lib/polygons.js's centroidOf() documents (not seam-aware),
@@ -411,7 +424,8 @@ function zoneLabelMarker(z){
   if(!z.showLabel||!z.label)return null;
   var n=z.points.length;if(!n)return null;
   var cy=0,cp=0;for(var i=0;i<n;i++){cy+=z.points[i][0];cp+=z.points[i][1];}cy/=n;cp/=n;
-  return {id:'zlabel_'+z.id,type:'html',html:'<div class="zone-label">'+esc(z.label)+'</div>',anchor:'center center',position:{yaw:cy+'deg',pitch:cp+'deg'},visible:!z.startHidden,style:{pointerEvents:'none'}};
+  var st=z.labelStyle?' style="'+z.labelStyle+'"':'';
+  return {id:'zlabel_'+z.id,type:'html',html:'<div class="zone-label"'+st+'>'+esc(z.label)+'</div>',anchor:'center center',position:{yaw:cy+'deg',pitch:cp+'deg'},visible:!z.startHidden,style:{pointerEvents:'none'}};
 }
 function markersFor(id){
   var s=TOURS[id];
@@ -420,7 +434,6 @@ function markersFor(id){
   // behind a plot-number badge. Mirrors middle.jsx's own marker order.
   var out=s.covers.map(function(c){return coverMarker(c,s.hfov);}).concat(s.zones.map(zoneMarker));
   s.zones.forEach(function(z){
-    out=out.concat(edgeLabelMarkers(z));
     var zl=zoneLabelMarker(z);if(zl)out.push(zl);
   });
   return out.concat(s.arrows.map(arrowMarker));
@@ -491,7 +504,7 @@ function hideImageLightbox(){
 window.hideImageLightbox=hideImageLightbox;
 document.getElementById('imgLbClose').addEventListener('click',hideImageLightbox);
 document.getElementById('imgLightbox').addEventListener('click',function(e){if(e.target.id==='imgLightbox')hideImageLightbox();});
-document.addEventListener('keydown',function(e){if(e.key==='Escape')hideImageLightbox();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){hideImageLightbox();hideZoneCard();}});
 mp.addEventListener('select-marker',function(ev){
   var m=ev.marker;
   if(m.id.indexOf('hs_')===0 && m.data){
@@ -512,7 +525,13 @@ mp.addEventListener('select-marker',function(ev){
     else if(zt==='link') openLink(z.linkUrl);
     else if(zt==='image') showImageLightbox(z.infoImageUrl);
     else if(zt==='toggle' && z.toggleTargetId) mp.toggleMarker('hs_'+z.toggleTargetId);
-    else showZoneCard(z);
+    // "Show status & details" with literally nothing added (no Details keys,
+    // no Card contents fields) has nothing to show -- opening the card
+    // anyway just produced an empty dark box with a close button, which is
+    // more confusing than doing nothing. A zone left at its default action
+    // with no content configured (e.g. a purely decorative "Road" area) now
+    // behaves like it has no click action at all.
+    else if(Object.keys(z.detail||{}).length||(z.infoFields||[]).length) showZoneCard(z);
   }
 });
 mp.addEventListener('enter-marker',function(ev){
@@ -605,14 +624,103 @@ function _updateZoneLabels(){
 }
 viewer.addEventListener('position-updated',_updateZoneLabels);
 viewer.addEventListener('zoom-updated',_updateZoneLabels);
-function hideZoneCard(){document.getElementById('zoneCard').style.display='none';}
+// Plot-dimension labels -- one persistent DOM node per edge that has a
+// length typed in, positioned in real screen space on every camera event
+// instead of anchored to a single (yaw,pitch) marker position. PSV renders
+// a polygon's edges as straight lines between the two corners' CURRENT
+// screen projections, not a spherical geodesic, so only a live reprojection
+// like this stays glued to the actual rendered edge through pan/zoom -- a
+// static marker anchored at the naive degree-average of the two corners
+// (what shipped originally) drifts toward the shape's centre instead, which
+// is visibly wrong for anything but a very small/distant zone. Plain
+// position:fixed divs (same convention as .wm's own layer) rather than PSV
+// markers, since PSV has no "recompute every camera event" declarative
+// marker type -- mirrors middle.jsx's own editor-side fix exactly.
+//
+// Repositioning runs off a dedicated requestAnimationFrame loop below, NOT
+// PSV's own 'position-updated'/'zoom-updated' events -- those are driven by
+// PSV's internal eased "Dynamic" value tween and are NOT guaranteed to fire
+// on every rendered frame of a raw mouse-drag pan the way rAF is. Relying on
+// them shipped a real bug: mid-drag, PSV keeps repositioning every OTHER
+// marker itself (that's internal, per-frame, and doesn't go through these
+// events at all), while these plain DOM labels only moved on whatever
+// cadence position-updated happened to fire at -- so panning across a
+// labeled zone could leave its dimension text frozen in place, visibly
+// detached from the zone sliding underneath it, exactly the symptom
+// reported. middle.jsx's own version never had this bug because it was
+// already built on a real rAF loop from the start (see mainLoop there) --
+// this just gives the published tour the same guarantee.
+var _elLayer=null,_elEls={},_elCamKey=null;
+function _edgeLabelSlots(s){
+  var out=[];
+  s.zones.forEach(function(z){
+    var lens=z.edgeLengths||[];
+    for(var i=0;i<z.points.length;i++){if(lens[i])out.push({z:z,i:i,label:lens[i]});}
+  });
+  return out;
+}
+function _rebuildEdgeLabels(){
+  if(!_elLayer){_elLayer=document.createElement('div');_elLayer.id='elLayer';document.body.appendChild(_elLayer);}
+  _elLayer.innerHTML='';_elEls={};
+  var s=_curScene&&TOURS[_curScene];
+  if(!s)return;
+  _edgeLabelSlots(s).forEach(function(slot){
+    var d=document.createElement('div');
+    d.className='edge-label';
+    d.textContent=slot.label;
+    d.style.display='none';
+    _elLayer.appendChild(d);
+    _elEls[slot.z.id+'_'+slot.i]=d;
+  });
+  _elCamKey=null;
+  _updateEdgeLabels();
+}
+function _updateEdgeLabels(){
+  var s=_curScene&&TOURS[_curScene];
+  if(!s)return;
+  _edgeLabelSlots(s).forEach(function(slot){
+    var el=_elEls[slot.z.id+'_'+slot.i];
+    if(!el)return;
+    if(slot.z.startHidden){el.style.display='none';return;}
+    var a=slot.z.points[slot.i],b=slot.z.points[(slot.i+1)%slot.z.points.length];
+    var pa=null,pb=null;
+    try{
+      pa=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:a[0]*Math.PI/180,pitch:a[1]*Math.PI/180});
+      pb=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:b[0]*Math.PI/180,pitch:b[1]*Math.PI/180});
+    }catch(e){}
+    if(pa&&pb){
+      el.style.display='';
+      el.style.left=((pa.x+pb.x)/2)+'px';
+      el.style.top=((pa.y+pb.y)/2)+'px';
+    }else{
+      el.style.display='none';
+    }
+  });
+}
+// Gated on a cheap camera fingerprint, same reasoning as middle.jsx's own
+// zone-label auto-hide -- the projection math only runs on frames where the
+// view actually changed, not unconditionally 60 times a second.
+function _edgeLabelLoop(){
+  if(_curScene&&TOURS[_curScene]){
+    var camKey=null;
+    try{
+      var pos=viewer.getPosition();
+      camKey=Math.round(pos.yaw*1e3)+'|'+Math.round(pos.pitch*1e3)+'|'+Math.round(viewer.getZoomLevel()*100);
+    }catch(e){}
+    if(camKey&&camKey!==_elCamKey){
+      _elCamKey=camKey;
+      _updateEdgeLabels();
+    }
+  }
+  requestAnimationFrame(_edgeLabelLoop);
+}
+requestAnimationFrame(_edgeLabelLoop);
+function hideZoneCard(){document.getElementById('zoneCard').style.display='none';document.getElementById('zoneCardBackdrop').style.display='none';}
 window.hideZoneCard=hideZoneCard;
 function showZoneCard(z){
-  document.getElementById('zcDot').style.background=z.color;
-  document.getElementById('zcTitle').textContent=z.label||'Zone';
-  document.getElementById('zcStatus').textContent=z.status;
+  var images=document.getElementById('zcImages');
   var body=document.getElementById('zcDetail');
-  body.innerHTML='';
+  images.innerHTML='';body.innerHTML='';
   Object.keys(z.detail||{}).forEach(function(k){
     var row=document.createElement('div');row.className='zc-row';
     var a=document.createElement('span');a.textContent=k;
@@ -621,12 +729,15 @@ function showZoneCard(z){
   });
   // Optional extras shared with the hotspot info card (same action-system
   // fields, same InfoFieldsEditor-built list) -- absent on every zone that
-  // predates this, so nothing renders when the list is empty.
+  // predates this, so nothing renders when the list is empty. Images go into
+  // their own unpadded container (see #zcImages/.zc-image CSS for why --
+  // sized to their own natural dimensions, never a fixed box), everything
+  // else into the padded/dark #zcDetail.
   (z.infoFields||[]).forEach(function(f){
     if(f.type==='image'){
       var img=document.createElement('img');img.className='zc-image';img.src=f.value;img.alt=f.label||'';
-      body.appendChild(img);
-      if(f.label){var cap=document.createElement('p');cap.className='zc-caption';cap.textContent=f.label;body.appendChild(cap);}
+      images.appendChild(img);
+      if(f.label){var cap=document.createElement('p');cap.className='zc-caption';cap.textContent=f.label;images.appendChild(cap);}
     }else if(f.type==='link'){
       var link=document.createElement('a');link.className='zc-link';link.href=f.value;link.target='_blank';link.rel='noopener';link.textContent=f.label||'Learn more';
       body.appendChild(link);
@@ -635,8 +746,16 @@ function showZoneCard(z){
       var txt=document.createElement('p');txt.className='zc-body';txt.textContent=f.value;body.appendChild(txt);
     }
   });
+  // Hidden rather than left as an empty padded box when there's no non-image
+  // content at all -- an image-only card (the common case) should show
+  // nothing but the image. zc-solo (full corner radius, not just the bottom
+  // two) applies whenever there's no image above it to square off against.
+  body.style.display=body.children.length?'':'none';
+  body.classList.toggle('zc-solo',!images.children.length);
   document.getElementById('zoneCard').style.display='block';
+  document.getElementById('zoneCardBackdrop').style.display='block';
 }
+document.getElementById('zoneCardBackdrop').addEventListener('click',hideZoneCard);
 
 SM.forEach(function(s){var d=document.createElement('div');d.className='ss-item';d.dataset.id=s.id;var img=document.createElement('img');img.src=s.url;img.alt=s.name;var lbl=document.createElement('span');lbl.textContent=s.name;d.appendChild(img);d.appendChild(lbl);d.addEventListener('click',function(){loadScene(s.id);});document.getElementById('sceneSidebar').appendChild(d);});
 function _hl(id){document.querySelectorAll('.ss-item').forEach(function(el){el.classList.toggle('active',el.dataset.id===id);});}
@@ -648,7 +767,7 @@ function _reclampWM(){_WMCUR.forEach(function(o){_clampWM(o.el,o.l);});}
 window.addEventListener('resize',_reclampWM);
 // _zlVis is reset here, not merged: loadScene rebuilt every marker, so a
 // badge's visibility from the previous scene no longer describes anything.
-function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();_zlVis={};_updateZoneLabels();}
+function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();_zlVis={};_updateZoneLabels();_rebuildEdgeLabels();}
 ${introCode}
 
 // Module-scope top-level functions are NOT global — the inline onclick="..."
@@ -671,7 +790,7 @@ function toggleSceneSidebar(){
   btn.title=label;btn.setAttribute('aria-label',label);
 }
 window.toggleSceneSidebar=toggleSceneSidebar;
-document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),sbt=document.getElementById('sbToggle'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zc=document.getElementById('zoneCard'),lb=document.getElementById('imgLightbox');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(sbt&&!fs.contains(sbt))fs.appendChild(sbt);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zc&&!fs.contains(zc))fs.appendChild(zc);if(lb&&!fs.contains(lb))fs.appendChild(lb);}else{if(sb)document.body.appendChild(sb);if(sbt)document.body.appendChild(sbt);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zc)document.body.appendChild(zc);if(lb)document.body.appendChild(lb);}});
+document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),sbt=document.getElementById('sbToggle'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zcb=document.getElementById('zoneCardBackdrop'),zc=document.getElementById('zoneCard'),lb=document.getElementById('imgLightbox');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(sbt&&!fs.contains(sbt))fs.appendChild(sbt);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zcb&&!fs.contains(zcb))fs.appendChild(zcb);if(zc&&!fs.contains(zc))fs.appendChild(zc);if(lb&&!fs.contains(lb))fs.appendChild(lb);}else{if(sb)document.body.appendChild(sb);if(sbt)document.body.appendChild(sbt);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zcb)document.body.appendChild(zcb);if(zc)document.body.appendChild(zc);if(lb)document.body.appendChild(lb);}});
 function _chk(){var l=window.innerWidth>window.innerHeight;document.getElementById('rotateOverlay').style.display=l?'none':'flex';}
 window.addEventListener('orientationchange',function(){setTimeout(_chk,300);});window.addEventListener('resize',function(){setTimeout(_chk,300);});setTimeout(_chk,300);
 </script></body></html>`

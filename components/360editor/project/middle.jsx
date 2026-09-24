@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Viewer } from '@photo-sphere-viewer/core'
 import { MarkersPlugin } from '@photo-sphere-viewer/markers-plugin'
+import { Quaternion, Euler, Vector3 } from 'three'
 import '@photo-sphere-viewer/core/index.css'
 import '@photo-sphere-viewer/markers-plugin/index.css'
 import '@/components/360editor/project/landmark-marker.css'
@@ -15,7 +16,7 @@ import PanelTabs from '@/components/360editor/project/panel_tabs'
 import { ARROWS, FLOOR_SIZE_MULTIPLIER, textDecalImage, textDecalSize } from '@/lib/arrows'
 import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus, borderColorFor, hoverColorFor, centroidOf, normalizeEdgeLengths, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, alphaHex } from '@/lib/polygons'
+import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor, centroidOf, normalizeEdgeLengths, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, alphaHex } from '@/lib/polygons'
 import { buildTransform, projectPlan, planVertices, residualDegrees } from '@/lib/reference-plan'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
@@ -30,6 +31,82 @@ import { isPublishCycleExpired, publishCycleEndsAt } from '@/lib/publish-cycle'
 // entirely by using PSV's degree-suffixed string form ("12.3deg").
 const RAD = Math.PI / 180
 const DEG = 180 / Math.PI
+
+// True 3D composition for the floor/text/pulse on-canvas rotation gizmo —
+// the same fix, but the exact math differs by type because they're rendered
+// two genuinely different ways.
+//
+// floor/text are a REAL 3D mesh (PSV's imageLayer marker): rotate_x/
+// rotate_y/rotation are applied as mesh.rotateY(-yaw); mesh.rotateX(-pitch);
+// mesh.rotateZ(-roll) (@photo-sphere-viewer/markers-plugin's ImageLayer
+// source) — THREE.Euler order 'YXZ', values negated.
+//
+// pulse is NOT a 3D mesh — it's a flat 2D billboard with a CSS tilt
+// illusion: rotate_x/rotate_y go into this file's own `style.transform:
+// perspective() rotateX() rotateY()` above, while `rotation` (Z) is instead
+// PSV's native 2D marker rotation, which PSV applies via the standalone CSS
+// `rotate` property (AbstractStandardMarker's `element.style.rotate = ...`
+// — confirmed in the markers-plugin source, not guessed). Per the CSS
+// Transforms Level 2 spec, individual properties (translate, rotate, scale)
+// combine with the `transform` property in that fixed order — translate ×
+// rotate × scale × transform — so pulse's total composition works out to
+// Rz(rotation) × Rx(rotate_x) × Ry(rotate_y), using the RAW stored values
+// with no negation: THREE.Euler order 'ZXY'.
+//
+// Either way, the underlying bug was the same: the on-canvas gizmo used to
+// drag one of the three stored numbers directly (old_value + swept_angle).
+// That's fine near (0,0,0), but Euler angles hit gimbal lock wherever the
+// MIDDLE axis of their own order sits at ±90° — floor/text default their
+// middle axis (rotate_x) to exactly 90° for a flat decal, so users landed
+// in or near that singularity almost immediately: two of the three "axes"
+// then drag identically, which reads as "it only rotates one direction".
+// (Pulse defaults its own middle axis, rotate_x, to 0° — away from the
+// singularity — but the same coupling exists if it's cranked toward ±90°.)
+//
+// The fix: track the drag as a quaternion (which cannot gimbal-lock),
+// composing each ring's drag as one more rotation about that axis on top
+// of whatever orientation the object is already in — exactly the extra
+// step the real renderer would take if it applied one more rotation. Only
+// at the end is it decomposed back into the three stored degrees fields, in
+// that SAME type's order/sign convention, so the DB/render-facing
+// representation is unchanged — only how a DRAG updates it changes. The
+// other two fields changing value as a side effect of dragging one ring is
+// expected: it's the same thing a Blender/Unity Euler-XYZ readout does
+// under a real 3D gizmo, not a bug.
+const AXIS_VEC = { x: new Vector3(1, 0, 0), y: new Vector3(0, 1, 0), z: new Vector3(0, 0, 1) }
+
+const ROTATION_CONVENTION = {
+    // floor, text, and anything else defaulting to the mesh path
+    mesh:    { order: 'YXZ', negate: true },
+    // pulse's CSS-tilt path
+    cssTilt: { order: 'ZXY', negate: false },
+}
+
+function rotationConventionFor(arrowType) {
+    return arrowType === 'pulse' ? ROTATION_CONVENTION.cssTilt : ROTATION_CONVENTION.mesh
+}
+
+function wrapDeg180(n) {
+    return ((n + 180) % 360 + 360) % 360 - 180
+}
+
+function rotationFieldsToQuaternion(rotateX, rotateY, rotateZ, arrowType) {
+    const { order, negate } = rotationConventionFor(arrowType)
+    const sign = negate ? -1 : 1
+    const e = new Euler(sign * (rotateX || 0) * RAD, sign * (rotateY || 0) * RAD, sign * (rotateZ || 0) * RAD, order)
+    return new Quaternion().setFromEuler(e)
+}
+
+function quaternionToRotationFields(q, arrowType) {
+    const { order, negate } = rotationConventionFor(arrowType)
+    const sign = negate ? -1 : 1
+    const e = new Euler().setFromQuaternion(q, order)
+    return {
+        rotate_x: wrapDeg180(sign * e.x * DEG),
+        rotate_y: wrapDeg180(sign * e.y * DEG),
+        rotation: wrapDeg180(sign * e.z * DEG),
+    }
+}
 
 // A zone's plot-number badge is shown only while the zone is actually big
 // enough on screen to hold it — zoom out over a 150-plot site plan and every
@@ -350,6 +427,17 @@ export default function ProjectClient({ projectId }) {
     const labeledZonesRef    = useRef([])
     const labelVisRef        = useRef(new Map())
     const labelCamKeyRef     = useRef(null)
+    // Plot-dimension labels — the imperative equivalent of the zone-edit
+    // overlay's own per-edge midpoint math (see the JSX render further
+    // down), reused here so a SAVED zone's dimension text sits exactly on
+    // its rendered edge too, not just while that zone is being edited.
+    // edgeLabelElsRef holds the actual DOM nodes (populated by ref callback
+    // in JSX, keyed "zoneId_edgeIndex"), positioned directly via style.left/
+    // top on the same camera-fingerprint cadence as the zone-label pass
+    // above — never through React state, since that could mean many labels
+    // re-rendering 60 times a second.
+    const edgeLabelZonesRef = useRef([])
+    const edgeLabelElsRef   = useRef(new Map())
     const floorPreviewKeyRef = useRef(null)  // last-applied {yaw,pitch,size,rotate_x,rotate_y,rotation} snapshot for 'hs_floor_preview' — skips the (expensive, WebGL-flickering) updateMarker call on frames where nothing actually changed
     const onHotspotClickRef = useRef(null)
     const onCoverupClickRef = useRef(null)
@@ -400,6 +488,16 @@ export default function ProjectClient({ projectId }) {
     const [hotspots, setHotspots]               = useState([])
     const [activeScene, setActiveScene]         = useState(null)
     const [loading, setLoading]                 = useState(true)
+    // A genuine load failure (e.g. a schema-behind-code 500 from an
+    // unapplied migration) used to silently redirect back to the project
+    // list with zero explanation — which is exactly what made "my zones and
+    // landmarks are all missing" look like data loss instead of what it
+    // actually was: one query erroring out because a column it expects
+    // doesn't exist in the database yet. Shown as a real error screen
+    // instead now; only a genuine 401 (not signed in) or 404 (no such
+    // project) still navigate away, since those aren't bugs to explain.
+    const [loadError, setLoadError]             = useState('')
+    const [loadRetryKey, setLoadRetryKey]       = useState(0)
     const [isDragOver, setIsDragOver]           = useState(false)
     const [isDraggingPin, setIsDraggingPin]     = useState(false)
     const [activeRightTab, setActiveRightTab]   = useState('directions') // 'directions' | 'overlays' | 'zones'
@@ -550,10 +648,22 @@ export default function ProjectClient({ projectId }) {
     // ── Fetch ──────────────────────────────────────────────────────────────
     useEffect(() => {
         async function load() {
+            setLoadError('')
+            setLoading(true)
             try {
                 const res = await fetch(`/api/projects/${projectId}`)
                 if (res.status === 401) { router.push('/'); return }
-                if (!res.ok)            { router.push('/360editor'); return }
+                // 404 = genuinely no such project (wrong id, or someone
+                // else's) — nothing to explain, the list is the right place.
+                // Anything else non-ok (500s, most commonly the "database is
+                // missing a column this build expects" schema-drift error)
+                // is a real problem worth surfacing, not silently hiding.
+                if (res.status === 404) { router.push('/360editor'); return }
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}))
+                    setLoadError(body.error || `Could not load this project (HTTP ${res.status}).`)
+                    return
+                }
                 const data = await res.json()
                 setProject(data.project)
                 setLogos(projectLogos(data.project))
@@ -564,13 +674,13 @@ export default function ProjectClient({ projectId }) {
                 setPolygons(data.polygons ?? [])
                 if (data.scenes.length > 0) setActiveScene(data.scenes[0])
             } catch {
-                router.push('/360editor')
+                setLoadError('Network error — could not reach the server.')
             } finally {
                 setLoading(false)
             }
         }
         load()
-    }, [projectId]) // eslint-disable-line
+    }, [projectId, loadRetryKey]) // eslint-disable-line
 
     // ── Sync hotspot size from project ─────────────────────────────────────
     useEffect(() => {
@@ -747,6 +857,7 @@ export default function ProjectClient({ projectId }) {
             color: h.color || DEFAULT_HOTSPOT_COLOR,
             label_color: h.label_color || DEFAULT_LABEL_COLOR,
             rotate_x: h.rotate_x ?? 90, rotate_y: h.rotate_y ?? 0,
+            z_index: h.z_index ?? 0,
             action_type: h.action_type || 'navigate',
             link_url: h.link_url || '', info_body: h.info_body || '', info_image_url: h.info_image_url || '',
             info_fields: h.info_fields || [],
@@ -1008,8 +1119,13 @@ export default function ProjectClient({ projectId }) {
         const viewer = psvRef.current
         if (!mp || !viewer || !activeScene) return
 
+        // Sorted by z_index ASCENDING, same reasoning as orderedPolygons
+        // below — PSV paints markers in plain array order, so this is what
+        // lets one hotspot (e.g. a text decal) sit behind or in front of
+        // another overlapping one.
         const arrowMarkers = hotspots
             .filter(h => h.scene_id === activeScene.id && h.id !== editingId)
+            .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
             .map(h => {
                 const size = h.size ?? hotspotSize
                 // Landmark is an `html` marker (a per-hotspot line+label
@@ -1217,15 +1333,29 @@ export default function ProjectClient({ projectId }) {
             .filter(p => p.show_label !== false && p.label)
         const zoneLabelMarkers = labeledZones.map(p => {
             const { yaw, pitch } = centroidOf(p.points)
+            // A chosen label_color overrides the badge's default light-pill
+            // CSS (background+text color, inline so it wins over .zone-label);
+            // unset renders the plain style attribute-free div as before.
+            const style = badgeLabelStyleFor(p.label_color)
             return {
                 id: `zlabel_${p.id}`,
                 type: 'html',
-                html: `<div class="zone-label">${escapeHtml(p.label)}</div>`,
+                html: `<div class="zone-label"${style ? ` style="${style}"` : ''}>${escapeHtml(p.label)}</div>`,
                 anchor: 'center center',
                 position: { yaw: `${yaw}deg`, pitch: `${pitch}deg` },
                 style: { pointerEvents: 'none' },
             }
         })
+
+        // Plot-dimension labels are NOT built here — see the dedicated
+        // effect below (edgeLabelZonesRef/mainLoop) for why: PSV renders a
+        // polygon's edges as straight lines between the two SCREEN
+        // projections of its corners, not along a spherical geodesic, so
+        // the screen point that actually sits in the middle of a rendered
+        // edge shifts under panning/zooming in a way a single static
+        // (yaw,pitch) position can't track — the same reason the drag
+        // corner handles and floor-decal preview are imperative DOM
+        // overlays instead of declarative markers, not a coincidence.
 
         // The live drawing-preview line is NOT built here — it needs to
         // follow the cursor every frame (a rubber band from the last placed
@@ -1251,6 +1381,16 @@ export default function ProjectClient({ projectId }) {
         labeledZonesRef.current = labeledZones.map(p => ({ id: p.id, points: p.points, label: p.label }))
         labelVisRef.current = new Map()
         labelCamKeyRef.current = null
+
+        // Same "recompute on the next frame regardless" reset as above,
+        // for the imperative edge-dimension overlay — the DOM nodes
+        // themselves are re-created fresh by the JSX render this effect's
+        // own state change triggers, so any position written to a PREVIOUS
+        // node is meaningless now.
+        edgeLabelZonesRef.current = orderedPolygons
+            .filter(p => p.id !== editingPolygonId)
+            .map(p => ({ id: p.id, points: p.points, edgeLengths: p.edge_lengths || [] }))
+            .filter(p => p.edgeLengths.some(Boolean))
     }, [hotspots, visibleCoverups, visiblePolygons, planRuns, activeScene, hotspotSize, editingId, editingPolygonId, selectedOverlay, coverupAspect, project?.show_zone_labels])
 
     // ── rAF — keeps the placement pin + selected cover-up projected on screen
@@ -1270,7 +1410,7 @@ export default function ProjectClient({ projectId }) {
         // unconditionally would be the same performance trap the floor-decal
         // preview already hit.
         const mpl = markersPluginRef.current
-        if (viewer && mpl && labeledZonesRef.current.length) {
+        if (viewer && (labeledZonesRef.current.length || edgeLabelZonesRef.current.length)) {
             let camKey = null
             try {
                 const pos = viewer.getPosition()
@@ -1278,11 +1418,43 @@ export default function ProjectClient({ projectId }) {
             } catch {}
             if (camKey && camKey !== labelCamKeyRef.current) {
                 labelCamKeyRef.current = camKey
-                for (const z of labeledZonesRef.current) {
-                    const fits = zoneFitsLabel(viewer, z.points, z.label)
-                    if (labelVisRef.current.get(z.id) !== fits) {
-                        labelVisRef.current.set(z.id, fits)
-                        try { mpl.updateMarker({ id: `zlabel_${z.id}`, visible: fits }) } catch {}
+                if (mpl) {
+                    for (const z of labeledZonesRef.current) {
+                        const fits = zoneFitsLabel(viewer, z.points, z.label)
+                        if (labelVisRef.current.get(z.id) !== fits) {
+                            labelVisRef.current.set(z.id, fits)
+                            try { mpl.updateMarker({ id: `zlabel_${z.id}`, visible: fits }) } catch {}
+                        }
+                    }
+                }
+                // Plot-dimension labels — reposition each edge-label DOM node
+                // (written directly, no React state) to the current screen-
+                // space midpoint of its two corners. This is the exact same
+                // math the live zone-edit overlay uses (see the JSX render
+                // further down) — PSV draws a polygon's edges as straight
+                // lines between the two corners' SCREEN projections, not a
+                // spherical geodesic, so only a live reprojection like this
+                // (not a single static yaw/pitch anchor) stays glued to the
+                // rendered edge through panning/zooming instead of drifting
+                // toward the shape's centre.
+                for (const z of edgeLabelZonesRef.current) {
+                    for (let i = 0; i < z.points.length; i++) {
+                        const label = z.edgeLengths[i]
+                        if (!label) continue
+                        const el = edgeLabelElsRef.current.get(`${z.id}_${i}`)
+                        if (!el) continue
+                        try {
+                            const a = z.points[i], b = z.points[(i + 1) % z.points.length]
+                            const pa = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: a[0] * RAD, pitch: a[1] * RAD })
+                            const pb = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: b[0] * RAD, pitch: b[1] * RAD })
+                            if (pa && pb) {
+                                el.style.display = ''
+                                el.style.left = `${(pa.x + pb.x) / 2}px`
+                                el.style.top  = `${(pa.y + pb.y) / 2}px`
+                            } else {
+                                el.style.display = 'none'
+                            }
+                        } catch { el.style.display = 'none' }
                     }
                 }
             }
@@ -1544,6 +1716,7 @@ export default function ProjectClient({ projectId }) {
                 // placed, the same "default that vanishes" bug already hit
                 // and fixed for floor's own edit-preview.
                 rotate_x: (hotspotType === 'floor' || hotspotType === 'text') ? 90 : 0, rotate_y: 0,
+                z_index: 0,
                 action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
                 toggle_target_id: '', start_hidden: false, animate_line: true,
                 custom_icon_url: '',
@@ -1583,25 +1756,27 @@ export default function ProjectClient({ projectId }) {
         setIsDraggingPin(true)
     }
 
-    // Floor decal's 3-ring gizmo (one ring per axis) — same corner-drag
+    // Floor/text decal's 3-ring gizmo (one ring per axis) — same corner-drag
     // pattern as startPinResize/startPinRotate, but delta-based instead of
     // absolute-angle: with three overlapping rings you grab from wherever
     // that ring happens to be, so snapping straight to "wherever the cursor
     // currently is" (what the single Z-only handle above does) would jump
-    // the instant you click down. Recording the start angle AND the axis's
-    // current value lets onOverlayMouseMove apply only the swept delta.
-    const AXIS_FIELD = { x: 'rotate_x', y: 'rotate_y', z: 'rotation' }
+    // the instant you click down. Recording the start angle and the FULL
+    // drag-start orientation (as a quaternion, not just this one axis's raw
+    // value — see rotationFieldsToQuaternion's comment for why) lets
+    // onOverlayMouseMove compose the swept delta as one more true 3D
+    // rotation on top of it, instead of bumping a single Euler number.
     function startAxisRotate(e, axis) {
         e.preventDefault(); e.stopPropagation()
         if (!pinPos || !viewerRef.current || !popupState) return
         const rect = viewerRef.current.getBoundingClientRect()
         const cxPage = rect.left + pinPos.x
         const cyPage = rect.top  + pinPos.y
-        const field = AXIS_FIELD[axis]
         pinGestureRef.current = {
-            mode: 'axisRotate', axis, field, cxPage, cyPage,
+            mode: 'axisRotate', axis, cxPage, cyPage,
+            arrowType: popupState.arrow_type,
             startAngle: Math.atan2(e.clientY - cyPage, e.clientX - cxPage) * 180 / Math.PI,
-            startValue: popupState[field] ?? (field === 'rotate_x' ? 90 : 0),
+            startQuat: rotationFieldsToQuaternion(popupState.rotate_x, popupState.rotate_y, popupState.rotation, popupState.arrow_type),
         }
         setIsDraggingPin(true)
     }
@@ -1628,10 +1803,20 @@ export default function ProjectClient({ projectId }) {
         }
         if (g?.mode === 'axisRotate') {
             const angleDeg = Math.atan2(e.clientY - g.cyPage, e.clientX - g.cxPage) * 180 / Math.PI
-            const delta    = angleDeg - g.startAngle
-            const wrapped  = ((g.startValue + delta + 180) % 360 + 360) % 360 - 180
+            const deltaDeg = angleDeg - g.startAngle
+            // Sign matches whichever convention this type's rotation actually
+            // uses (see rotationConventionFor) — negated for a mesh (floor/
+            // text), not negated for pulse's CSS tilt — so composing this
+            // delta always spins the ring the same direction the old
+            // direct-add code did, for every type.
+            const { negate } = rotationConventionFor(g.arrowType)
+            const deltaQuat = new Quaternion().setFromAxisAngle(AXIS_VEC[g.axis], (negate ? -1 : 1) * deltaDeg * RAD)
+            const qNew = g.startQuat.clone().multiply(deltaQuat)
+            const fields = quaternionToRotationFields(qNew, g.arrowType)
             setPopupState(prev =>
-                (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, [g.field]: roundTo2(wrapped) } : prev
+                (prev?.mode === 'new' || prev?.mode === 'edit-existing')
+                    ? { ...prev, rotate_x: roundTo2(fields.rotate_x), rotate_y: roundTo2(fields.rotate_y), rotation: roundTo2(fields.rotation) }
+                    : prev
             )
             return
         }
@@ -1982,6 +2167,7 @@ export default function ProjectClient({ projectId }) {
                     size: popupState.size, rotation: popupState.rotation, color: popupState.color,
                     label_color: popupState.label_color,
                     rotate_x: popupState.rotate_x, rotate_y: popupState.rotate_y,
+                    z_index: popupState.z_index ?? 0,
                     action_type: popupState.action_type || 'navigate',
                     link_url: popupState.link_url || null, info_body: popupState.info_body || null,
                     info_image_url: popupState.info_image_url || null,
@@ -2021,6 +2207,7 @@ export default function ProjectClient({ projectId }) {
                     label_color:     popupState.label_color,
                     rotate_x:        popupState.rotate_x,
                     rotate_y:        popupState.rotate_y,
+                    z_index:         popupState.z_index ?? 0,
                     action_type:      popupState.action_type || 'navigate',
                     link_url:         popupState.link_url || null,
                     info_body:        popupState.info_body || null,
@@ -2144,6 +2331,7 @@ export default function ProjectClient({ projectId }) {
             mode: 'edit', polygon: p,
             status: p.status, label: p.label, detail: p.detail, custom_color: p.custom_color || null,
             border_color: p.border_color || null, hover_color: p.hover_color || null,
+            label_color: p.label_color || null,
             hover_opacity: p.hover_opacity ?? DEFAULT_HOVER_OPACITY,
             z_index: p.z_index ?? 0, show_label: p.show_label !== false,
             fill_opacity: p.fill_opacity ?? DEFAULT_FILL_OPACITY,
@@ -2180,7 +2368,7 @@ export default function ProjectClient({ projectId }) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
         polygonPopup?._dirty, polygonPopup?.label, polygonPopup?.status, polygonPopup?.detail, polygonPopup?.points,
-        polygonPopup?.custom_color, polygonPopup?.border_color, polygonPopup?.hover_color,
+        polygonPopup?.custom_color, polygonPopup?.border_color, polygonPopup?.hover_color, polygonPopup?.label_color,
         polygonPopup?.z_index, polygonPopup?.show_label,
         polygonPopup?.fill_opacity, polygonPopup?.hover_opacity, polygonPopup?.edge_lengths?.join('|'),
         polygonPopup?.action_type, polygonPopup?.target_scene_id, polygonPopup?.link_url,
@@ -2232,6 +2420,7 @@ export default function ProjectClient({ projectId }) {
                     custom_color: savingFor.custom_color || null,
                     border_color: savingFor.border_color || null,
                     hover_color: savingFor.hover_color || null,
+                    label_color: savingFor.label_color || null,
                     hover_opacity: savingFor.hover_opacity ?? DEFAULT_HOVER_OPACITY,
                     z_index: savingFor.z_index ?? 0,
                     show_label: savingFor.show_label !== false,
@@ -2690,6 +2879,28 @@ export default function ProjectClient({ projectId }) {
         </div>
     )
 
+    if (loadError) return (
+        <div className="h-screen flex flex-col items-center justify-center gap-4 bg-editor-canvas p-6 text-center">
+            <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5">
+                    <circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/>
+                </svg>
+            </div>
+            <p className="text-editor-ink font-semibold max-w-md">Couldn't load this project</p>
+            <p className="text-editor-ink-muted text-[13px] max-w-md">{loadError}</p>
+            <div className="flex gap-2">
+                <button onClick={() => setLoadRetryKey(k => k + 1)}
+                        className="h-9 px-4 rounded-xl bg-editor-primary text-white text-editor-sm font-semibold hover:bg-editor-primary-hover transition-colors">
+                    Try again
+                </button>
+                <Link href="/360editor"
+                      className="h-9 px-4 flex items-center rounded-xl border border-editor-border text-editor-ink-muted hover:bg-editor-subtle text-editor-sm transition-colors">
+                    Back to projects
+                </Link>
+            </div>
+        </div>
+    )
+
     const hasPopup  = popupState !== null
     const isEditing = popupState?.mode === 'new' || popupState?.mode === 'edit-existing'
 
@@ -3070,14 +3281,30 @@ export default function ProjectClient({ projectId }) {
                                     // Save" bug that preview was supposed to prevent. This box is
                                     // now just an (invisible) drag/resize/rotate handle target.
                                     //
-                                    // Pulse has no such conflict — its saved marker's tilt IS this
-                                    // same CSS formula (not a different 3D engine), so previewing it
-                                    // this way can't disagree with the real result the way it did
-                                    // for floor.
+                                    // Pulse has no such conflict in principle — its saved marker's
+                                    // tilt IS this same CSS formula, not a different 3D engine — but
+                                    // getting the ORDER right matters: the real saved marker applies
+                                    // Z (roll) via PSV's own native `rotation` config, which the
+                                    // library sets as the standalone CSS `rotate` property, and the
+                                    // X/Y tilt separately via `style.transform` (see arrowMarkers'
+                                    // pulse branch). Per the CSS Transforms Level 2 spec, standalone
+                                    // rotate/translate/scale properties compose BEFORE the transform
+                                    // property's own function list — so the real marker's Z-roll is
+                                    // applied to the object's ORIGINAL frame, THEN the X/Y tilt warps
+                                    // that already-rolled result. Cramming all three into one
+                                    // `transform` string with Z listed LAST (as this used to do)
+                                    // composes the opposite way — Z applied to the ALREADY-tilted
+                                    // result instead — a materially different 3D orientation for any
+                                    // non-trivial roll, which is exactly what looked right while
+                                    // dragging (this preview) and wrong the instant Save handed off
+                                    // to the real marker. Listing rotate(Z) FIRST here reproduces the
+                                    // real marker's actual composition order exactly (a `transform`
+                                    // function list composes left-to-right the same way multiple
+                                    // separately-set properties do relative to `transform` itself).
                                     const boxTransform = (isFloor || isText)
                                         ? 'none'
                                         : isPulse
-                                            ? `perspective(600px) rotateX(${popupState.rotate_x ?? 0}deg) rotateY(${popupState.rotate_y ?? 0}deg) rotate(${rot}deg)`
+                                            ? `rotate(${rot}deg) perspective(600px) rotateX(${popupState.rotate_x ?? 0}deg) rotateY(${popupState.rotate_y ?? 0}deg)`
                                             : `rotate(${rot}deg)`
                                     // `size` for floor isn't a screen-space pixel count like every
                                     // other type — it's a 3D scale factor (size/100, times
@@ -3421,6 +3648,38 @@ export default function ProjectClient({ projectId }) {
                                         })}
                                     </>
                                 )}
+
+                                {/* Plot-dimension labels for every SAVED zone (the block
+                                    above only covers the one currently being edited).
+                                    Rendered once as plain, empty-positioned DOM nodes —
+                                    mainLoop writes their style.left/top directly via
+                                    edgeLabelElsRef on every camera-fingerprint change, the
+                                    same screen-space-midpoint math as the block above, so
+                                    dimension text stays glued to its actual rendered edge
+                                    after Save instead of drifting toward the shape's
+                                    centre (which is what a single static (yaw,pitch)
+                                    marker anchor would do — PSV renders an edge as a
+                                    straight line between its two corners' current screen
+                                    projections, not a spherical geodesic). No React state
+                                    involved, so this costs nothing per frame beyond the
+                                    already-gated camera check. */}
+                                {visiblePolygons
+                                    .filter(p => p.id !== editingPolygonId)
+                                    .flatMap(p => (p.edge_lengths || []).map((label, i) => {
+                                        if (!label) return null
+                                        const key = `${p.id}_${i}`
+                                        return (
+                                            <div key={key}
+                                                 ref={el => {
+                                                     if (el) edgeLabelElsRef.current.set(key, el)
+                                                     else edgeLabelElsRef.current.delete(key)
+                                                 }}
+                                                 className="edge-label absolute z-30"
+                                                 style={{ display: 'none', transform: 'translate(-50%,-50%)' }}>
+                                                {label}
+                                            </div>
+                                        )
+                                    }))}
 
                                 {isEditing && !isDraggingPin && (
                                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/65 backdrop-blur text-white text-[11px] font-medium px-3 py-1.5 rounded-full">

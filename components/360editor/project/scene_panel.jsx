@@ -34,6 +34,13 @@ export default function ScenePanel({ projectId, scenes, onScenesChange, onSelect
     const [queue, setQueue] = useState([])  // [{id, file, name, preview, status: 'queued'|'uploading'|'error', error}]
     const [confirmDelete, setConfirmDelete] = useState(null)
     const [error, setError] = useState('')
+    // Renaming a scene — inline, in place of the name label at the bottom of
+    // its thumbnail. renamingId gates which one (if any) shows the input
+    // instead of plain text; renameValue is that input's own live text,
+    // kept separate from `scenes` so typing doesn't PATCH on every
+    // keystroke — only committed (see renameScene) on blur/Enter.
+    const [renamingId, setRenamingId] = useState(null)
+    const [renameValue, setRenameValue] = useState('')
 
     // Mirrors `scenes` for reads inside async upload completions, but ALSO
     // gets written to synchronously the instant a scene is created (before
@@ -155,6 +162,33 @@ export default function ScenePanel({ projectId, scenes, onScenesChange, onSelect
         })
     }
 
+    // Empty/whitespace-only input reverts to the scene's existing name
+    // rather than saving blank — the thumbnail's name label is the only
+    // thing identifying a scene in the drag-and-drop list and in every
+    // hotspot's "Links to" dropdown elsewhere in the editor, so leaving it
+    // blank would just make the scene anonymous everywhere it's referenced.
+    // No PATCH at all when the (trimmed) value didn't actually change —
+    // covers "opened rename, changed nothing, clicked away" without a
+    // pointless round trip.
+    async function renameScene(scene, rawValue) {
+        setRenamingId(null)
+        const next = rawValue.trim().slice(0, 120)
+        if (!next || next === scene.name) return
+        onScenesChange(scenes.map(s => s.id === scene.id ? { ...s, name: next } : s))
+        try {
+            const res = await fetch(`/api/scenes/${scene.id}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: next }),
+            })
+            if (!res.ok) throw new Error()
+            const { scene: updated } = await res.json()
+            onScenesChange(scenesRef.current.map(s => s.id === scene.id ? updated : s))
+        } catch {
+            setError('Could not rename the scene.')
+            onScenesChange(scenesRef.current.map(s => s.id === scene.id ? scene : s)) // revert
+        }
+    }
+
     async function deleteScene(scene) {
         setError('')
         try {
@@ -249,8 +283,42 @@ export default function ScenePanel({ projectId, scenes, onScenesChange, onSelect
                     >
                         <img src={scene.url} alt={scene.name} className="w-full h-[68px] object-cover" />
                         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
-                            <p className="text-[11px] font-semibold text-white truncate">{scene.name}</p>
+                            {renamingId === scene.id ? (
+                                // stopPropagation on every handler here — the card
+                                // itself is draggable and double-click-to-select,
+                                // neither of which should fire while typing a name.
+                                <input
+                                    autoFocus
+                                    defaultValue={scene.name}
+                                    onChange={e => setRenameValue(e.target.value)}
+                                    onClick={e => e.stopPropagation()}
+                                    onDoubleClick={e => e.stopPropagation()}
+                                    onMouseDown={e => e.stopPropagation()}
+                                    onDragStart={e => e.preventDefault()}
+                                    onBlur={() => renameScene(scene, renameValue)}
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') e.currentTarget.blur()
+                                        else if (e.key === 'Escape') { setRenamingId(null) }
+                                    }}
+                                    className="w-full bg-white/15 text-[11px] font-semibold text-white placeholder:text-white/50 rounded px-1 py-0.5 outline-none ring-1 ring-white/40 focus:ring-editor-primary"
+                                />
+                            ) : (
+                                <p
+                                    onDoubleClick={e => { e.stopPropagation(); setRenamingId(scene.id); setRenameValue(scene.name) }}
+                                    title="Double-click to rename"
+                                    className="text-[11px] font-semibold text-white truncate"
+                                >
+                                    {scene.name}
+                                </p>
+                            )}
                         </div>
+                        <button
+                            onClick={e => { e.stopPropagation(); setRenamingId(scene.id); setRenameValue(scene.name) }}
+                            title="Rename"
+                            className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 w-5 h-5 bg-white/80 rounded flex items-center justify-center text-editor-ink-muted hover:text-editor-primary hover:bg-editor-primary/10 transition-all"
+                        >
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+                        </button>
                         <button
                             onClick={e => { e.stopPropagation(); setConfirmDelete(scene) }}
                             className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 w-5 h-5 bg-white/80 rounded flex items-center justify-center text-editor-ink-muted hover:text-red-500 hover:bg-red-50 transition-all"

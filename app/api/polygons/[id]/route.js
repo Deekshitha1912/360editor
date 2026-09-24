@@ -1,7 +1,7 @@
 // app/api/polygons/[id]/route.js
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
-import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeBorderColor, normalizeHoverColor, normalizeZIndex, normalizeEdgeLengths, normalizeFillOpacity, normalizeHoverOpacity } from '@/lib/polygons'
+import { normalizePoints, normalizeStatus, normalizeLabel, normalizeDetail, normalizeCustomColor, normalizeBorderColor, normalizeHoverColor, normalizeLabelColor, normalizeZIndex, normalizeEdgeLengths, normalizeFillOpacity, normalizeHoverOpacity } from '@/lib/polygons'
 import { normalizeActionType, clampText, normalizeInfoFields } from '@/lib/actions'
 
 // Ownership is checked with its own SELECT, then the write is a plain update
@@ -44,6 +44,7 @@ export async function PATCH(req, { params }) {
         if ('custom_color' in body) updates.custom_color = normalizeCustomColor(body.custom_color)
         if ('border_color' in body) updates.border_color = normalizeBorderColor(body.border_color)
         if ('hover_color'  in body) updates.hover_color  = normalizeHoverColor(body.hover_color)
+        if ('label_color'  in body) updates.label_color  = normalizeLabelColor(body.label_color)
         if ('z_index'      in body) updates.z_index      = normalizeZIndex(body.z_index)
         if ('show_label'   in body) updates.show_label   = !!body.show_label
         if ('fill_opacity' in body) updates.fill_opacity = normalizeFillOpacity(body.fill_opacity)
@@ -100,7 +101,7 @@ export async function PATCH(req, { params }) {
             .update(updates)
             .eq('id', id)
             .select(`
-                id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity,
+                id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, label_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity,
                 action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden
             `)
 

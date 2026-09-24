@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import {
     clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
-    clampHotspotAngle, normalizeActionType, clampText,
+    clampHotspotAngle, normalizeActionType, clampText, normalizeZIndex,
 } from '@/lib/hotspots'
 import { normalizeInfoFields } from '@/lib/actions'
 
@@ -16,7 +16,7 @@ export async function POST(req) {
         const body = await req.json()
         const {
             project_id, scene_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
-            color, label_color, rotate_x, rotate_y,
+            color, label_color, rotate_x, rotate_y, z_index,
             action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
             custom_icon_url,
         } = body
@@ -59,6 +59,7 @@ export async function POST(req) {
                 size: clampHotspotSize(size), rotation: clampHotspotRotation(rotation),
                 color: normalizeHotspotColor(color), label_color: normalizeLabelColor(label_color),
                 rotate_x: clampHotspotAngle(rotate_x, 90), rotate_y: clampHotspotAngle(rotate_y, 0),
+                z_index: normalizeZIndex(z_index),
                 action_type: normalizeActionType(action_type),
                 link_url: clampText(link_url, 2000), info_body: clampText(info_body, 4000),
                 info_image_url: clampText(info_image_url, 2000),

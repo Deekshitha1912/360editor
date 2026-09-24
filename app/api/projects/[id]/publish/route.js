@@ -67,14 +67,14 @@ export async function POST(req, { params }) {
                 // publish-snapshot query. Fixed alongside adding the new
                 // action_type/link_url/etc. fields below, since it's the
                 // exact same query.
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url')
                 .eq('project_id', id),
             // Not destructured with the others: a database that hasn't had
             // db/001_create_polygons.sql applied yet must still be able to
             // publish (with zero zones), not fail the whole request.
             supabase
                 .from('polygons')
-                .select('id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
+                .select('id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, label_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
                 .eq('project_id', id),
         ])
         const polygons = polygonsRes.error ? [] : (polygonsRes.data ?? [])

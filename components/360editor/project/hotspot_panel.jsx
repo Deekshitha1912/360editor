@@ -11,8 +11,9 @@
 
 import { useState } from 'react'
 import { ARROWS } from '@/lib/arrows'
-import { HOTSPOT_COLORS, LABEL_COLORS } from '@/lib/hotspots'
+import { HOTSPOT_COLORS, LABEL_COLORS, DEFAULT_HOTSPOT_COLOR, MAX_Z_INDEX } from '@/lib/hotspots'
 import InfoFieldsEditor from './info_fields_editor'
+import ColorPickerRow from './color_picker_row'
 export { ARROWS }
 
 function Spinner({ size = 10 }) {
@@ -103,16 +104,52 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
 
                 {isTextForm && (
                     <div className="space-y-1">
+                        {/* Same picker (preset palette + color wheel) as a
+                            zone's fill/border/hover color, using the SAME
+                            default palette — one consistent color system
+                            across zones and text, rather than the smaller
+                            fixed swatch set every other hotspot color field
+                            uses. */}
                         <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Text color</label>
-                        <div className="flex gap-1.5">
-                            {HOTSPOT_COLORS.map(c => (
-                                <button key={c} type="button" onClick={() => onUpdate({ ...state, color: c })}
-                                        aria-label={c}
-                                        className={`w-6 h-6 rounded-full border-2 transition-transform ${
-                                            (state.color || HOTSPOT_COLORS[0]) === c ? 'border-editor-ink scale-110' : 'border-white/60 hover:scale-105'
-                                        }`}
-                                        style={{ background: c, boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}/>
-                            ))}
+                        <ColorPickerRow
+                            value={state.color || DEFAULT_HOTSPOT_COLOR}
+                            onPick={c => onUpdate({ ...state, color: c })}
+                        />
+                    </div>
+                )}
+
+                {isTextForm && (
+                    <div className="space-y-1">
+                        {/* Paint order among overlapping hotspots — same
+                            Behind/Normal/In front pattern as a zone's own
+                            Layer control (polygon_panel.jsx). */}
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Layer</label>
+                        <div className="flex items-center gap-1.5">
+                            <button type="button" onClick={() => onUpdate({ ...state, z_index: -1 })}
+                                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                        (state.z_index ?? 0) < 0 ? 'border-editor-primary bg-editor-primary/8 text-editor-primary' : 'border-editor-border text-editor-ink-muted hover:border-editor-primary/40'
+                                    }`}>
+                                Behind
+                            </button>
+                            <button type="button" onClick={() => onUpdate({ ...state, z_index: 0 })}
+                                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                        (state.z_index ?? 0) === 0 ? 'border-editor-primary bg-editor-primary/8 text-editor-primary' : 'border-editor-border text-editor-ink-muted hover:border-editor-primary/40'
+                                    }`}>
+                                Normal
+                            </button>
+                            <button type="button" onClick={() => onUpdate({ ...state, z_index: 1 })}
+                                    className={`h-7 px-2.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                        (state.z_index ?? 0) > 0 ? 'border-editor-primary bg-editor-primary/8 text-editor-primary' : 'border-editor-border text-editor-ink-muted hover:border-editor-primary/40'
+                                    }`}>
+                                In front
+                            </button>
+                            <input type="number" min={-MAX_Z_INDEX} max={MAX_Z_INDEX} step={1}
+                                   value={state.z_index ?? 0}
+                                   onChange={e => {
+                                       const n = Math.min(MAX_Z_INDEX, Math.max(-MAX_Z_INDEX, Math.round(Number(e.target.value) || 0)))
+                                       onUpdate({ ...state, z_index: n })
+                                   }}
+                                   className="w-11 h-6 ml-auto shrink-0 bg-editor-surface border border-editor-border rounded-md px-1 text-[11px] text-editor-ink text-right font-mono tabular-nums focus:outline-none focus:border-editor-primary"/>
                         </div>
                     </div>
                 )}

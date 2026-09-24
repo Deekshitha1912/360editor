@@ -94,3 +94,19 @@
 .psv-marker--poly {
     transition: fill .16s ease-out, stroke .16s ease-out, stroke-width .16s ease-out;
 }
+
+/* Plot-dimension label -- one per zone edge, at its midpoint, shown only
+   once a length was actually typed into the zone form. Matches the tour
+   export's own .edge-label exactly (export.jsx), so a saved zone's
+   dimensions look identical in the editor and the published tour. */
+.edge-label {
+    pointer-events: none;
+    background: rgba(0, 0, 0, .7);
+    backdrop-filter: blur(4px);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 20px;
+    white-space: nowrap;
+}
