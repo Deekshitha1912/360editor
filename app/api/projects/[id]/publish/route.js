@@ -15,7 +15,7 @@ import { uniqueSlug } from '@/lib/slug'
 import { isPublishCycleExpired } from '@/lib/publish-cycle'
 
 // Fields the public renderer needs — nothing else is snapshotted.
-const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups'
+const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups, cover_logo_url'
 
 function siteOrigin(req) {
     const configured = process.env.NEXT_PUBLIC_SITE_URL
@@ -67,7 +67,7 @@ export async function POST(req, { params }) {
                 // publish-snapshot query. Fixed alongside adding the new
                 // action_type/link_url/etc. fields below, since it's the
                 // exact same query.
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url, plan_shapes')
                 .eq('project_id', id),
             // Not destructured with the others: a database that hasn't had
             // db/001_create_polygons.sql applied yet must still be able to
@@ -101,6 +101,7 @@ export async function POST(req, { params }) {
                 show_zone_labels: project.show_zone_labels !== false,
                 overlays:     project.overlays ?? [],
                 coverups:     project.coverups ?? [],
+                cover_logo_url: project.cover_logo_url || null,
             },
             scenes,
             hotspots: hotspots ?? [],

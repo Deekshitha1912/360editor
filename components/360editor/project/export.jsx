@@ -90,6 +90,11 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                     toggleTargetId: h.toggle_target_id || '',
                     startHidden: !!h.start_hidden,
                     animateLine: h.animate_line !== false,
+                    // 'siteplan' only — the parsed DXF geometry (shapes +
+                    // bbox) that _planDecalImage renders on the fly. null
+                    // for every other type (and for a 'siteplan' hotspot
+                    // whose import never actually succeeded).
+                    planShapes: h.plan_shapes || null,
                 }
             })
 
@@ -163,6 +168,16 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
         u: l.url, s: l.scene_id, x: l.x, y: l.y, w: l.size, o: l.opacity,
     })))
     const logoHtml = `<div id="wmLayer"></div>`
+
+    // Shown once, above the project name, on the loading screen only — NOT
+    // the same thing as `overlays` (screen-anchored watermarks shown WHILE
+    // touring, possibly several, each scoped to a scene). Undefined on an
+    // older published snapshot (from before this column existed) is just as
+    // falsy as null, so this renders nothing for those without any special-
+    // casing.
+    const coverLogoHtml = project.cover_logo_url
+        ? `<img id="loadLogo" src="${escapeHtml(project.cover_logo_url)}" alt="" style="max-width:200px;max-height:100px;object-fit:contain;margin-bottom:18px;display:block;">`
+        : ''
 
     const introHtml = showIntro ? `<div id="introBox" style="display:none;position:fixed;inset:0;z-index:90000;align-items:center;justify-content:center;background:rgba(0,0,0,.45);backdrop-filter:blur(4px);font-family:'Poppins',-apple-system,sans-serif;"><div style="background:rgba(10,10,10,.85);border-radius:20px;padding:36px 44px;text-align:center;color:#fff;max-width:360px;"><div style="font-size:44px;margin-bottom:14px;">👆</div><p style="font-size:19px;font-weight:600;margin:0 0 8px">Tap arrows to move</p><p style="font-size:13px;opacity:.65;margin:0 0 24px">Drag anywhere to look around</p><button id="introDismiss" style="background:#3730a3;color:#fff;border:none;border-radius:30px;padding:11px 32px;font-size:15px;font-weight:600;cursor:pointer;">Got it</button></div></div>` : ''
 
@@ -285,7 +300,7 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 </style>
 </head>
 <body>
-<div id="loadOverlay"><div id="loadTitle">${escapeHtml(project.name)}</div><div id="loadPct">Loading… 0%</div><div id="loadBar"><div id="loadFill"></div></div></div>
+<div id="loadOverlay">${coverLogoHtml}<div id="loadTitle">${escapeHtml(project.name)}</div><div id="loadPct">Loading… 0%</div><div id="loadBar"><div id="loadFill"></div></div></div>
 <div id="rotateOverlay"><svg width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.4"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 17h.01"/></svg><p>Please rotate your device<br>to landscape mode</p></div>
 ${introHtml}
 <div id="viewer"></div>
@@ -336,6 +351,37 @@ function _textDecalImage(text,color){
     +'fill="'+(color||'#111111')+'">'+_escXml(text||'Text')+'</text></svg>';
   return 'data:image/svg+xml,'+encodeURIComponent(svg);
 }
+// Site plan decal -- hand-synced copy of lib/arrows.js's
+// planDecalSize/planDecalImage (this file ships as a plain string and can't
+// import that module -- same convention as _textDecalSize/_textDecalImage
+// above). DXF is Y-up, SVG is Y-down, so Y is flipped here (py below).
+var _PLAN_MAX_DIM=2048;
+function _planDecalSize(bbox){
+  var w=Math.max(1e-6,bbox.maxX-bbox.minX);var h=Math.max(1e-6,bbox.maxY-bbox.minY);
+  var scale=_PLAN_MAX_DIM/Math.max(w,h);
+  return {width:Math.max(1,Math.round(w*scale)),height:Math.max(1,Math.round(h*scale))};
+}
+function _planDecalImage(shapes,bbox,color,opacity){
+  var sz=_planDecalSize(bbox);var width=sz.width,height=sz.height;
+  var w=(bbox.maxX-bbox.minX)||1;var h=(bbox.maxY-bbox.minY)||1;
+  var sx=width/w,sy=height/h;
+  var strokeWidth=Math.max(1.5,Math.min(width,height)/250);
+  function px(x){return ((x-bbox.minX)*sx).toFixed(2);}
+  function py(y){return (height-(y-bbox.minY)*sy).toFixed(2);}
+  var paths='';
+  (shapes||[]).forEach(function(shape){
+    var pts=shape.pts;
+    if(!pts||pts.length<2) return;
+    var d=pts.map(function(p,i){return (i===0?'M':'L')+px(p[0])+','+py(p[1]);}).join(' ')
+      +(shape.tag==='polygon'?' Z':'');
+    paths+='<path d="'+d+'" fill="none" stroke="'+(color||'#111111')+'" stroke-width="'+strokeWidth+'"/>';
+  });
+  var body='<rect width="'+width+'" height="'+height+'" fill="#ffffff" fill-opacity="0.85"/>'+paths;
+  var op=Number(opacity==null?1:opacity);
+  var content=(isFinite(op)&&op<1)?'<g opacity="'+op+'">'+body+'</g>':body;
+  var svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'" viewBox="0 0 '+width+' '+height+'">'+content+'</svg>';
+  return 'data:image/svg+xml,'+encodeURIComponent(svg);
+}
 // height/color are baked into an inline style attribute on the markup
 // itself, not left to PSV's own marker style config -- that config gets
 // applied via Object.assign(element.style, config.style) (a plain
@@ -381,7 +427,7 @@ function arrowMarker(h){
   // type leaves it unset, so showMarkerPanel() silently no-ops for them.
   var extra={visible:!h.startHidden};
   if(h.actionType==='info') extra.content=hsInfoContent(h);
-  var d={target:h.target,actionType:h.actionType,linkUrl:h.linkUrl,toggleTargetId:h.toggleTargetId,infoImageUrl:h.infoImageUrl};
+  var d={target:h.target,actionType:h.actionType,linkUrl:h.linkUrl,toggleTargetId:h.toggleTargetId,infoImageUrl:h.infoImageUrl,yaw:h.yaw,pitch:h.pitch};
   if(h.type==='landmark'){return Object.assign({id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor,h.animateLine),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:d},extra);}
   // Floor decal: a real 3D plane (imageLayer), placed as a single point +
   // a 3-axis rotation object -- rotation.yaw/pitch/roll map to Y/X/Z axis
@@ -402,6 +448,18 @@ function arrowMarker(h){
   if(h.type==='text'){
     var tsz=_textDecalSize(h.label);var taspect=tsz.width/tsz.height;var th=h.size*2.5;
     return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:_textDecalImage(h.label,h.color),position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:th*taspect,height:th},rotation:{yaw:h.rotateY+'deg',pitch:h.rotateX+'deg',roll:(h.rotation||0)+'deg'},data:d},extra);
+  }
+  // Site plan decal: the SAME surface-embedded imageLayer mechanism as
+  // floor/text above, except the image is the parsed DXF geometry rendered
+  // as a line-drawing (_planDecalImage) instead of a fixed sprite or
+  // generated text. A hotspot with no successfully-parsed plan (planShapes
+  // null) renders nothing rather than throwing.
+  if(h.type==='siteplan'){
+    if(!h.planShapes) return null;
+    var psz=_planDecalSize(h.planShapes.bbox);var paspect=psz.width/psz.height;var ph=h.size*2.5;
+    // Hand-synced copy of lib/arrows.js's planRenderRotation.
+    var pr=h.planShapes.flat===false?{x:h.rotateX,y:h.rotateY,z:h.rotation||0}:{x:90,y:0,z:(h.rotateY||0)+(h.rotation||0)};
+    return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:_planDecalImage(h.planShapes.shapes,h.planShapes.bbox,h.color,h.planShapes.opacity),position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:ph*paspect,height:ph},rotation:{yaw:pr.y+'deg',pitch:pr.x+'deg',roll:pr.z+'deg'},data:d},extra);
   }
   // Pulse ring stays a plain billboard (a true 3D marker would freeze its
   // pulse animation to one static frame) but X/Y still get a real visible
@@ -436,7 +494,7 @@ function markersFor(id){
   s.zones.forEach(function(z){
     var zl=zoneLabelMarker(z);if(zl)out.push(zl);
   });
-  return out.concat(s.arrows.map(arrowMarker));
+  return out.concat(s.arrows.map(arrowMarker).filter(Boolean));
 }
 
 var _l=0,_t=SM.length;
@@ -473,6 +531,38 @@ function loadScene(id){
   viewer.setPanorama(s.panorama,opts).then(function(){
     mp.setMarkers(markersFor(id));
     _onScene(id);
+  });
+}
+// "Transport" transition for a hotspot's own Go-to-scene click -- a 3DVista-
+// style push-in rather than PSV's default fade: rotate+zoom IN toward the
+// clicked hotspot's own direction, swap the panorama at the peak of that
+// zoom with PSV's own transition turned off (we're already doing our own),
+// then zoom back OUT to a normal view WITHOUT rotating -- you keep facing
+// the same direction you pushed in on, reading as walking straight through
+// the hotspot into the next space, rather than snapping to that scene's own
+// saved opening angle. The zone-click navigate path and the scene-sidebar
+// thumbnails deliberately keep the plain loadScene() above -- neither has a
+// single "this is the direction to push toward" point the way a hotspot,
+// placed exactly where you'd walk through, does.
+//
+// Zoom target is relative to whatever zoom you were ALREADY at (+28,
+// capped at 92) rather than a fixed number -- "zoom a little bit" reads
+// very differently if you were already zoomed in versus at a wide FOV, and
+// a relative bump keeps the push-in feeling proportional either way.
+function loadSceneViaHotspot(id,hYaw,hPitch){
+  var s=TOURS[id];
+  if(!s)return;
+  var startZoom=viewer.getZoomLevel();
+  var pushZoom=Math.min(92,startZoom+28);
+  var pos={yaw:hYaw+'deg',pitch:hPitch+'deg'};
+  viewer.animate({yaw:pos.yaw,pitch:pos.pitch,zoom:pushZoom,speed:450}).then(function(){
+    return viewer.setPanorama(s.panorama,{position:pos,zoom:pushZoom,transition:false,showLoader:false});
+  }).then(function(){
+    mp.setMarkers(markersFor(id));
+    _onScene(id);
+    var restZoom=startZoom;
+    try{restZoom=viewer.dataHelper.fovToZoomLevel(s.hfov);}catch(e){}
+    return viewer.animate({zoom:restZoom,speed:450});
   });
 }
 // mailto:/tel: aren't real navigable pages, so they replace the current tab
@@ -512,7 +602,7 @@ mp.addEventListener('select-marker',function(ev){
     // 'info' needs nothing here -- PSV's own showMarkerPanel() already
     // opened the content panel (set via arrowMarker's config.content)
     // before this listener even runs.
-    if(t==='navigate' && d.target) loadScene(d.target);
+    if(t==='navigate' && d.target) loadSceneViaHotspot(d.target,d.yaw,d.pitch);
     else if(t==='link') openLink(d.linkUrl);
     else if(t==='image') showImageLightbox(d.infoImageUrl);
     // toggleMarker is a built-in MarkersPlugin method -- no manual

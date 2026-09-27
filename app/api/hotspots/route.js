@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import {
     clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
-    clampHotspotAngle, normalizeActionType, clampText, normalizeZIndex,
+    clampHotspotAngle, normalizeActionType, clampText, normalizeZIndex, normalizePlanShapes,
 } from '@/lib/hotspots'
 import { normalizeInfoFields } from '@/lib/actions'
 
@@ -18,7 +18,7 @@ export async function POST(req) {
             project_id, scene_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
             color, label_color, rotate_x, rotate_y, z_index,
             action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
-            custom_icon_url,
+            custom_icon_url, plan_shapes,
         } = body
 
         if (!project_id || !scene_id || pitch == null || yaw == null)
@@ -52,11 +52,18 @@ export async function POST(req) {
                 return NextResponse.json({ error: 'toggle_target_id does not belong to this scene.' }, { status: 400 })
         }
 
+        // A plan that was sent but doesn't normalize is rejected outright —
+        // silently storing null here is what made an oversized DXF vanish on
+        // save with no error anywhere.
+        const planShapes = normalizePlanShapes(plan_shapes)
+        if (plan_shapes != null && !planShapes)
+            return NextResponse.json({ error: 'Site plan data is invalid or too large.' }, { status: 400 })
+
         const { data: hotspot, error } = await supabase
             .from('hotspots')
             .insert({
                 project_id, scene_id, pitch, yaw, arrow_type, label: label || '', target_scene_id,
-                size: clampHotspotSize(size), rotation: clampHotspotRotation(rotation),
+                size: clampHotspotSize(size, arrow_type), rotation: clampHotspotRotation(rotation),
                 color: normalizeHotspotColor(color), label_color: normalizeLabelColor(label_color),
                 rotate_x: clampHotspotAngle(rotate_x, 90), rotate_y: clampHotspotAngle(rotate_y, 0),
                 z_index: normalizeZIndex(z_index),
@@ -67,6 +74,7 @@ export async function POST(req) {
                 toggle_target_id: toggle_target_id || null, start_hidden: !!start_hidden,
                 animate_line: animate_line == null ? true : !!animate_line,
                 custom_icon_url: clampText(custom_icon_url, 2000),
+                plan_shapes: planShapes,
             })
             .select().single()
 

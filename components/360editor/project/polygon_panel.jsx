@@ -16,7 +16,6 @@
 import { useState } from 'react'
 import { STATUS_COLORS, DEFAULT_STATUS_COLOR, colorForStatus, MAX_DETAIL_KEYS, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, MAX_Z_INDEX } from '@/lib/polygons'
 import InfoFieldsEditor from './info_fields_editor'
-import ReferencePlanPanel from './reference_plan_panel'
 import ColorPickerRow from './color_picker_row'
 
 function Spinner({ size = 10 }) {
@@ -510,7 +509,6 @@ export default function PolygonPanel({
                                           scenes, hotspots,
                                           polygonPopup, onUpdatePopup, onDeletePopup, onCancelPopup, onSaveNowPopup, onUploadImage,
                                           savingPolygon, justSavedPolygon, deletingPolygon,
-                                          referencePlan,
                                       }) {
     if (polygonPopup) {
         return (
@@ -538,11 +536,6 @@ export default function PolygonPanel({
                 <div className="text-[11px] font-bold uppercase tracking-widest text-editor-ink-muted">Zones</div>
                 <p className="text-[10px] text-editor-ink-dim mt-0.5">Draw a shape, then set its status.</p>
             </div>
-
-            {/* A calibrated DXF to trace over — editor-only, deleted once the
-                zones are drawn. Lives here rather than under Overlays because
-                this is the panel you're already in while drawing zones. */}
-            {referencePlan && <ReferencePlanPanel {...referencePlan}/>}
 
             <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
                 {polygons.length === 0 && !drawing && (

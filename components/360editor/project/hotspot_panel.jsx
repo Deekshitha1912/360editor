@@ -11,9 +11,10 @@
 
 import { useState } from 'react'
 import { ARROWS } from '@/lib/arrows'
-import { HOTSPOT_COLORS, LABEL_COLORS, DEFAULT_HOTSPOT_COLOR, MAX_Z_INDEX } from '@/lib/hotspots'
+import { HOTSPOT_COLORS, LABEL_COLORS, DEFAULT_HOTSPOT_COLOR, MAX_Z_INDEX, HOTSPOT_SIZE_MIN, maxSizeFor } from '@/lib/hotspots'
 import InfoFieldsEditor from './info_fields_editor'
 import ColorPickerRow from './color_picker_row'
+import PlanCropModal from './plan_crop_modal'
 export { ARROWS }
 
 function Spinner({ size = 10 }) {
@@ -30,23 +31,34 @@ function Spinner({ size = 10 }) {
 // dragging the bounding box + gizmo on the canvas (middle.jsx) — this form
 // only holds what can't be set by dragging: the label, the click action,
 // and (for landmark/floor/pulse) color and rotation-axis fields.
-function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave, onCancel, onDelete, onUploadImage, saving, deleting, formRef }) {
+function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave, onCancel, onDelete, onUploadImage, saving, deleting, formRef, defaultSize }) {
+    const sizeMax = maxSizeFor(state.arrow_type)
+    const sizeValue = Math.round(state.size ?? defaultSize)
+    const setSize = v => {
+        const n = Number(v)
+        if (!Number.isFinite(n)) return
+        onUpdate({ ...state, size: Math.min(sizeMax, Math.max(HOTSPOT_SIZE_MIN, Math.round(n))) })
+    }
     const [uploadingImage, setUploadingImage] = useState(false)
     const [uploadError, setUploadError] = useState('')
 
     const [uploadingIcon, setUploadingIcon] = useState(false)
     const [uploadIconError, setUploadIconError] = useState('')
+    const [cropping, setCropping] = useState(false)
 
     const isLandmarkForm = state.arrow_type === 'landmark'
     const isCustomForm = state.arrow_type === 'custom'
     const isTextForm = state.arrow_type === 'text'
-    // 'floor' and 'text' (both real 3D-embedded imageLayer planes) and
-    // 'pulse' (a plain animated billboard) all get the same Rotate X/Y/Z
-    // sliders, matching the same 3-ring gizmo shown for all three on-canvas
-    // (middle.jsx) — X/Y are cosmetically inert for pulse (a flat billboard
-    // can't tilt), same "present but harmless" precedent as landmark's own
-    // unused rotation.
-    const showAxisSliders = state.arrow_type === 'floor' || state.arrow_type === 'pulse' || isTextForm
+    const isPlanForm = state.arrow_type === 'siteplan'
+    const isFlatPlan = isPlanForm && state.plan_shapes?.flat !== false
+    const heading = Math.round((((((state.rotate_y ?? 0) + (state.rotation ?? 0)) + 180) % 360 + 360) % 360 - 180) * 100) / 100
+    // 'floor', 'text' and 'siteplan' (all real 3D-embedded imageLayer
+    // planes) and 'pulse' (a plain animated billboard) all get the same
+    // Rotate X/Y/Z sliders, matching the same 3-ring gizmo shown for all
+    // four on-canvas (middle.jsx) — X/Y are cosmetically inert for pulse (a
+    // flat billboard can't tilt), same "present but harmless" precedent as
+    // landmark's own unused rotation.
+    const showAxisSliders = state.arrow_type === 'floor' || state.arrow_type === 'pulse' || isTextForm || isPlanForm
     const actionType = state.action_type || 'navigate'
     const arrow = ARROWS.find(a => a.type === state.arrow_type)
     const headerLabel = state.mode === 'edit-existing'
@@ -102,15 +114,58 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                     )}
                 </div>
 
-                {isTextForm && (
+                <div className="space-y-1">
+                    <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Size</label>
+                    <div className="flex items-center gap-2">
+                        <input type="range" min={HOTSPOT_SIZE_MIN} max={sizeMax} step={1} value={sizeValue}
+                               onChange={e => setSize(e.target.value)}
+                               className="flex-1 accent-editor-primary h-1 cursor-pointer"/>
+                        <input key={sizeValue} type="number" min={HOTSPOT_SIZE_MIN} max={sizeMax} step={1} defaultValue={sizeValue}
+                               onBlur={e => setSize(e.target.value)}
+                               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); setSize(e.currentTarget.value) } }}
+                               className="w-16 h-6 shrink-0 bg-editor-surface border border-editor-border rounded-md px-1 text-[11px] text-editor-ink text-right font-mono tabular-nums focus:outline-none focus:border-editor-primary"/>
+                    </div>
+                </div>
+
+                {isPlanForm && state.plan_shapes && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Plan area</label>
+                        <button type="button" onClick={() => setCropping(true)}
+                                className="w-full h-7 rounded-lg border border-editor-border text-[11px] font-semibold text-editor-ink hover:border-editor-primary/40 hover:bg-editor-primary/5 transition-colors flex items-center justify-center gap-1.5">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+                            Crop plan
+                        </button>
+                        <div className="flex items-center gap-2 pt-1.5">
+                            <span className="w-14 shrink-0 text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Opacity</span>
+                            <input type="range" min={5} max={100} step={1}
+                                   value={Math.round((state.plan_shapes.opacity ?? 1) * 100)}
+                                   onChange={e => onUpdate({ ...state, plan_shapes: { ...state.plan_shapes, opacity: Number(e.target.value) / 100 } })}
+                                   className="flex-1 accent-editor-primary h-1 cursor-pointer"/>
+                            <span className="w-9 shrink-0 text-right text-[10px] font-mono tabular-nums text-editor-ink">{Math.round((state.plan_shapes.opacity ?? 1) * 100)}%</span>
+                        </div>
+                        {cropping && (
+                            <PlanCropModal
+                                planShapes={state.plan_shapes}
+                                color={state.color || DEFAULT_HOTSPOT_COLOR}
+                                onClose={() => setCropping(false)}
+                                onApply={bbox => {
+                                    onUpdate({ ...state, plan_shapes: { ...state.plan_shapes, bbox, originalBbox: state.plan_shapes.originalBbox || state.plan_shapes.bbox } })
+                                    setCropping(false)
+                                }}/>
+                        )}
+                    </div>
+                )}
+
+                {(isTextForm || isPlanForm) && (
                     <div className="space-y-1">
                         {/* Same picker (preset palette + color wheel) as a
                             zone's fill/border/hover color, using the SAME
                             default palette — one consistent color system
                             across zones and text, rather than the smaller
                             fixed swatch set every other hotspot color field
-                            uses. */}
-                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Text color</label>
+                            uses. For siteplan this tints the DXF line-drawing
+                            itself (see planDecalImage), not a fill. */}
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">{isPlanForm ? 'Line color' : 'Text color'}</label>
                         <ColorPickerRow
                             value={state.color || DEFAULT_HOTSPOT_COLOR}
                             onPick={c => onUpdate({ ...state, color: c })}
@@ -118,7 +173,7 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                     </div>
                 )}
 
-                {isTextForm && (
+                {(isTextForm || isPlanForm) && (
                     <div className="space-y-1">
                         {/* Paint order among overlapping hotspots — same
                             Behind/Normal/In front pattern as a zone's own
@@ -368,7 +423,43 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                         </div>
                     </div>
                 )}
-                {showAxisSliders && (
+                {isPlanForm && state.plan_shapes && (
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" checked={isFlatPlan}
+                                   onChange={e => {
+                                       const flat = e.target.checked
+                                       // Turning it on folds the current Y and Z
+                                       // into one heading, which is what a flat
+                                       // plan renders with anyway.
+                                       onUpdate(flat
+                                           ? { ...state, plan_shapes: { ...state.plan_shapes, flat: true }, rotate_x: 90, rotate_y: 0, rotation: heading }
+                                           : { ...state, plan_shapes: { ...state.plan_shapes, flat: false } })
+                                   }}
+                                   className="w-3.5 h-3.5 accent-editor-primary"/>
+                            <span className="text-[11px] text-editor-ink">Lay flat on ground</span>
+                        </label>
+                        {isFlatPlan && (
+                            <div className="space-y-0.5">
+                                <div className="flex items-center justify-between">
+                                    <label className="flex items-center gap-1.5 text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">
+                                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: '#3b82f6' }}/>
+                                        Heading
+                                    </label>
+                                    <span className="text-[10px] text-editor-ink-muted font-mono">{Math.round(heading * 10) / 10}°</span>
+                                </div>
+                                <input type="range" min="-180" max="180" step="0.1" value={heading}
+                                       onChange={e => onUpdate({ ...state, rotate_x: 90, rotate_y: 0, rotation: Number(e.target.value) })}
+                                       className="w-full" style={{ accentColor: '#3b82f6' }}/>
+                                <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                                    Kept exactly level, so it lines up with the ground. Match it by moving, resizing and turning it.
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {showAxisSliders && !isFlatPlan && (
                     <div className="space-y-2">
                         {/* Colors match the on-canvas 3-ring gizmo (middle.jsx's
                             startAxisRotate/isFloor preview block) — red/green/blue,
@@ -427,6 +518,7 @@ export default function HotspotPanel({
                                          savingHotspot,
                                          deletingHotspot,
                                          formRef,
+                                         defaultSize = 90,
                                      }) {
     const sceneHotspots = hotspots.filter(h => h.scene_id === activeSceneId)
 
@@ -445,6 +537,7 @@ export default function HotspotPanel({
                 saving={savingHotspot}
                 deleting={deletingHotspot}
                 formRef={formRef}
+                defaultSize={defaultSize}
             />
         )
     }

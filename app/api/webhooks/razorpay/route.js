@@ -49,6 +49,8 @@ export async function POST(req) {
         await admin.rpc("grant_credits", {
           p_user_id: p.user_id,
           p_credits: p.credits_granted,
+          p_reason: "purchase",
+          p_reference_id: p.id,
         });
       }
     }

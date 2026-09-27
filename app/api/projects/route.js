@@ -19,7 +19,7 @@ export async function POST(req) {
 
         // Spend one credit BEFORE creating the project. This is atomic
         // (row-locked in the DB), so two rapid requests can't double-spend.
-        const ok = await consumeCredit(user.id)
+        const ok = await consumeCredit(user.id, 'project_create')
         if (!ok) {
             return NextResponse.json(
                 { error: 'You have no credits left. Buy a plan to create a new tour.' },
@@ -35,7 +35,7 @@ export async function POST(req) {
 
         if (error) {
             // Creation failed after we spent the credit — give it back.
-            await refundCredit(user.id)
+            await refundCredit(user.id, 'project_create_refund')
             return NextResponse.json({ error: error.message }, { status: 500 })
         }
 

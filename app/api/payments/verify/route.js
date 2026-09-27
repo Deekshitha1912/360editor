@@ -63,6 +63,8 @@ export async function POST(req) {
     await admin.rpc("grant_credits", {
       p_user_id: payment.user_id,
       p_credits: payment.credits_granted,
+      p_reason: "purchase",
+      p_reference_id: payment.id,
     });
 
     return NextResponse.json({ success: true, credits: payment.credits_granted });

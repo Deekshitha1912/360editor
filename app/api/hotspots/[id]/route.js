@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase-server'
 import {
     clampHotspotSize, clampHotspotRotation, normalizeHotspotColor, normalizeLabelColor,
-    clampHotspotAngle, normalizeActionType, clampText, normalizeZIndex,
+    clampHotspotAngle, normalizeActionType, clampText, normalizeZIndex, normalizePlanShapes,
 } from '@/lib/hotspots'
 import { normalizeInfoFields } from '@/lib/actions'
 
@@ -35,7 +35,7 @@ export async function PATCH(req, { params }) {
             'label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation',
             'color', 'label_color', 'rotate_x', 'rotate_y', 'z_index',
             'action_type', 'link_url', 'info_body', 'info_image_url', 'info_fields', 'toggle_target_id', 'start_hidden',
-            'animate_line', 'custom_icon_url',
+            'animate_line', 'custom_icon_url', 'plan_shapes',
         ]
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
@@ -45,7 +45,6 @@ export async function PATCH(req, { params }) {
             return NextResponse.json({ error: 'No valid fields.' }, { status: 400 })
         }
 
-        if ('size'            in updates) updates.size            = clampHotspotSize(updates.size)
         if ('rotation'        in updates) updates.rotation        = clampHotspotRotation(updates.rotation)
         if ('color'           in updates) updates.color           = normalizeHotspotColor(updates.color)
         if ('label_color'     in updates) updates.label_color     = normalizeLabelColor(updates.label_color)
@@ -61,11 +60,19 @@ export async function PATCH(req, { params }) {
         if ('animate_line'    in updates) updates.animate_line    = !!updates.animate_line
         if ('info_fields'     in updates) updates.info_fields     = normalizeInfoFields(updates.info_fields)
         if ('custom_icon_url' in updates) updates.custom_icon_url = clampText(updates.custom_icon_url, 2000)
+        // undefined (not "in updates") is the "leave untouched" case and an
+        // explicit null clears the plan; anything else that fails to
+        // normalize is rejected, never silently stored as null (see POST).
+        if ('plan_shapes' in updates && updates.plan_shapes != null) {
+            const planShapes = normalizePlanShapes(updates.plan_shapes)
+            if (!planShapes) return NextResponse.json({ error: 'Site plan data is invalid or too large.' }, { status: 400 })
+            updates.plan_shapes = planShapes
+        }
 
         // Step 1: fetch the hotspot
         const { data: hotspot, error: fetchErr } = await supabase
             .from('hotspots')
-            .select('id, project_id, scene_id')
+            .select('id, project_id, scene_id, arrow_type')
             .eq('id', id)
             .single()
 
@@ -75,6 +82,10 @@ export async function PATCH(req, { params }) {
         if (!hotspot) {
             return NextResponse.json({ error: 'Hotspot not found.' }, { status: 404 })
         }
+
+        // Clamped here, not with the other fields above, because the ceiling
+        // depends on the type — a site plan gets a larger one.
+        if ('size' in updates) updates.size = clampHotspotSize(updates.size, updates.arrow_type ?? hotspot.arrow_type)
 
         // Step 2: verify ownership
         const { data: project, error: projErr } = await supabase
@@ -117,7 +128,7 @@ export async function PATCH(req, { params }) {
                 id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
                 color, label_color, rotate_x, rotate_y, z_index,
                 action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
-                custom_icon_url
+                custom_icon_url, plan_shapes
             `)
 
         if (updateErr) {

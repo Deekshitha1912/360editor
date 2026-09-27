@@ -48,9 +48,9 @@ export async function POST(_req, { params }) {
         // rather than leaving the user short without having renewed anything.
         let spent = 0
         for (; spent < RENEWAL_CREDIT_COST; spent++) {
-            const ok = await consumeCredit(user.id)
+            const ok = await consumeCredit(user.id, 'renew', id)
             if (!ok) {
-                for (let i = 0; i < spent; i++) await refundCredit(user.id)
+                for (let i = 0; i < spent; i++) await refundCredit(user.id, 'renew_refund', id)
                 return NextResponse.json(
                     { error: `You need ${RENEWAL_CREDIT_COST} credits to renew this tour. Buy more to continue.` },
                     { status: 402 }
@@ -69,7 +69,7 @@ export async function POST(_req, { params }) {
 
         if (error) {
             // Update failed after the credits were already spent — give them back.
-            for (let i = 0; i < RENEWAL_CREDIT_COST; i++) await refundCredit(user.id)
+            for (let i = 0; i < RENEWAL_CREDIT_COST; i++) await refundCredit(user.id, 'renew_refund', id)
             return NextResponse.json({ error: error.message }, { status: 500 })
         }
 

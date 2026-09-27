@@ -79,13 +79,63 @@ export function CameraControls({ psvRef, onSaveView, savingView, savedView }) {
 // Logo upload used to live here, writing straight to projects.logo_url. That
 // column is gone — a project can carry several logos plus per-scene cover-ups
 // now, all managed in OverlayPanel. This modal is back to what its name says:
-// project settings.
-export function SettingsModal({ draft, onChange, onSave, onClose, saving }) {
+// project settings, plus the project's own name and its one loading-screen
+// logo (projects.cover_logo_url) — distinct from OverlayPanel's `overlays`,
+// which are screen-anchored watermarks shown WHILE touring, not the single
+// image shown once above the project name before the viewer even starts.
+export function SettingsModal({ draft, onChange, onSave, onClose, saving, onUploadImage }) {
+    const [uploadingLogo, setUploadingLogo] = useState(false)
+    const [logoError, setLogoError] = useState('')
+
+    async function pickLogo(file) {
+        if (!file) return
+        setLogoError('')
+        setUploadingLogo(true)
+        try {
+            const url = await onUploadImage(file)
+            onChange({ ...draft, cover_logo_url: url })
+        } catch (e) {
+            setLogoError(e.message || 'Upload failed.')
+        } finally {
+            setUploadingLogo(false)
+        }
+    }
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
             <div className="bg-white rounded-2xl border border-editor-border shadow-2xl p-6 w-[360px] space-y-4">
                 <p className="text-editor-lg font-semibold text-editor-ink">Project settings</p>
+
+                <div className="space-y-1">
+                    <label className="text-editor-sm text-editor-ink-muted uppercase tracking-wider">Project name</label>
+                    <input type="text" value={draft.name}
+                           onChange={e => onChange({ ...draft, name: e.target.value })}
+                           maxLength={120}
+                           className="w-full h-8 border border-editor-border rounded-lg px-2.5 text-editor-base focus:outline-none focus:border-editor-primary"/>
+                </div>
+
+                <div className="space-y-1">
+                    <label className="text-editor-sm text-editor-ink-muted uppercase tracking-wider">Loading screen logo</label>
+                    <p className="text-editor-xs text-editor-ink-muted">Shown above the project name while the tour loads.</p>
+                    <div className="flex items-center gap-2.5 pt-0.5">
+                        {draft.cover_logo_url && (
+                            <div className="relative w-12 h-12 rounded-lg border border-editor-border bg-editor-subtle flex items-center justify-center overflow-hidden shrink-0">
+                                <img src={draft.cover_logo_url} alt="" className="max-w-full max-h-full object-contain"/>
+                                <button type="button" onClick={() => onChange({ ...draft, cover_logo_url: '' })}
+                                        title="Remove logo"
+                                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-editor-ink text-white flex items-center justify-center text-[9px] leading-none hover:bg-red-500 transition-colors">
+                                    ✕
+                                </button>
+                            </div>
+                        )}
+                        <label className="h-8 px-3 flex items-center rounded-lg border border-dashed border-editor-primary/40 text-[11px] font-semibold text-editor-primary hover:bg-editor-primary/5 transition-colors cursor-pointer">
+                            {uploadingLogo ? <><Spinner size={10}/>&nbsp;Uploading…</> : (draft.cover_logo_url ? 'Replace' : 'Upload logo')}
+                            <input type="file" accept="image/*" className="hidden" disabled={uploadingLogo}
+                                   onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; pickLogo(f) }}/>
+                        </label>
+                    </div>
+                    {logoError && <p className="text-editor-xs text-red-500">{logoError}</p>}
+                </div>
 
                 <div className="space-y-1">
                     <label className="text-editor-sm text-editor-ink-muted uppercase tracking-wider">Auto-rotate speed</label>

@@ -13,11 +13,10 @@ import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
 import PolygonPanel from '@/components/360editor/project/polygon_panel'
 import PanelTabs from '@/components/360editor/project/panel_tabs'
-import { ARROWS, FLOOR_SIZE_MULTIPLIER, textDecalImage, textDecalSize } from '@/lib/arrows'
-import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
+import { ARROWS, FLOOR_SIZE_MULTIPLIER, textDecalImage, textDecalSize, planDecalImage, planDecalSize, planRenderRotation } from '@/lib/arrows'
+import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR, MAX_PLAN_SHAPES, MAX_PLAN_POINTS, HOTSPOT_SIZE_MIN, maxSizeFor } from '@/lib/hotspots'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
 import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor, centroidOf, normalizeEdgeLengths, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, alphaHex } from '@/lib/polygons'
-import { buildTransform, projectPlan, planVertices, residualDegrees } from '@/lib/reference-plan'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
@@ -171,11 +170,12 @@ function findSnapPoint(viewer, candidates, screenX, screenY) {
 //
 // Edges are matched in SCREEN space, not sphere space: PSV itself draws a
 // polygon/polyline's edges as straight screen-projected chords between
-// vertices (no great-circle interpolation — see lib/reference-plan.js's own
-// comment on this same PSV behavior), so snapping to the visually-drawn line
-// means projecting both endpoints, finding the closest point on that 2D
-// segment, and projecting back — not interpolating in yaw/pitch, which
-// would drift off the line actually rendered.
+// vertices (no great-circle interpolation — confirmed from
+// @photo-sphere-viewer/markers-plugin's own __getPolyPositions source), so
+// snapping to the visually-drawn line means projecting both endpoints,
+// finding the closest point on that 2D segment, and projecting back — not
+// interpolating in yaw/pitch, which would drift off the line actually
+// rendered.
 function findEdgeSnapPoint(viewer, edges, screenX, screenY) {
     let bestPt = null, bestDist = SNAP_PX
     for (const [a, b] of edges) {
@@ -455,6 +455,7 @@ export default function ProjectClient({ projectId }) {
     const selectedOverlayRef = useRef(null)  // mirrors selectedOverlay, read inside the rAF loop
     const polygonsRef        = useRef([])    // full polygons list, read inside the marker click/hover handlers
     const hotspotsRef        = useRef([])    // full hotspots list — onViewerDrop's deps don't include `hotspots`, so it'd otherwise see a stale snapshot when auto-numbering a new one ("Hotspot N")
+    const planFileInputRef   = useRef(null)  // hidden <input type=file> that onViewerDrop clicks for a dropped 'siteplan' hotspot
     const drawingPolygonRef  = useRef(null)  // mirrors drawingPolygon, read inside the PSV click handler
     // Every distinct point placed since "Start Drawing", across every split
     // so far in this session — NOT reset when a loop closes and gets carved
@@ -477,11 +478,6 @@ export default function ProjectClient({ projectId }) {
     const polygonSaveTimerRef = useRef(null) // debounce timer for the zone form's auto-save (see the useEffect below)
     const polygonSavedFlashTimerRef = useRef(null) // clears the "Saved" confirmation a moment after it appears
     const previewOpenRef    = useRef(false)  // pause the rAF loop while the preview modal is open
-    // ── DXF reference plan (a tracing guide for zones; editor-only) ──
-    const planSnapRef        = useRef([])    // projected plan vertices, read by the click handler + rAF preview as extra snap candidates
-    const pendingPlanPointRef = useRef(null) // plan-space [u,v] waiting for its matching click in the photo
-    const onCalibrationClickRef = useRef(null) // set during render, called from the mount-time viewer click listener
-    const planSaveTimerRef   = useRef(null)  // debounce for PATCH /api/scenes/[id] { reference_plan }
 
     const [project, setProject]                 = useState(null)
     const [scenes, setScenes]                   = useState([])
@@ -520,11 +516,6 @@ export default function ProjectClient({ projectId }) {
     const [zipError, setZipError]               = useState('')
     const [renewing, setRenewing]               = useState(false)
     const [renewError, setRenewError]           = useState('')
-    // The active scene's reference plan, mirrored out of `scenes` so edits
-    // are instant; persisted back on a debounce (see patchReferencePlan).
-    const [referencePlan, setReferencePlan]     = useState(null)
-    const [pendingPlanPoint, setPendingPlanPoint] = useState(null)
-    const [planError, setPlanError]             = useState('')
 
     // Overlays are edited freely and written once, on Save. Dragging used to
     // PATCH on every drop, which meant a round trip mid-gesture — the pause you
@@ -552,6 +543,7 @@ export default function ProjectClient({ projectId }) {
 
     const [hotspotSize, setHotspotSize]         = useState(90)
     const [hotspotToDelete, setHotspotToDelete] = useState(null)
+    const hotspotToDeleteRef = useRef(null) // mirrors hotspotToDelete, read inside the document-level "click outside auto-saves" listener (mounted once, needs the CURRENT value, not a stale one from mount time)
     const [deletingHotspot, setDeletingHotspot] = useState(false)
     const [polygonToDelete, setPolygonToDelete] = useState(null) // set by requestDeletePolygon; confirmed via the modal near the other delete confirmations
     const [savingView, setSavingView]           = useState(false)
@@ -583,6 +575,7 @@ export default function ProjectClient({ projectId }) {
     popupRef.current          = popupState
     hotspotSizeRef.current    = hotspotSize
     handleSaveRef.current     = handleSave
+    hotspotToDeleteRef.current = hotspotToDelete
     coverupsRef.current       = coverups
     selectedOverlayRef.current = selectedOverlay
     polygonsRef.current       = polygons
@@ -606,36 +599,6 @@ export default function ProjectClient({ projectId }) {
     const visibleCoverups = useMemo(() => overlaysForScene(coverups, activeScene?.id), [coverups, activeScene?.id])
     // Zones are always scene-scoped — no "every scene" concept.
     const visiblePolygons = useMemo(() => polygons.filter(p => p.scene_id === activeScene?.id), [polygons, activeScene?.id])
-
-    // ── Reference plan, derived ──
-    // The plan→ground transform is re-fitted from the calibration pairs
-    // rather than stored, so the pairs stay the single source of truth and
-    // adding/removing one simply re-fits. Null until two usable pairs exist.
-    const planTransform = useMemo(
-        () => (referencePlan ? buildTransform(referencePlan.pairs, referencePlan.mirror) : null),
-        [referencePlan]
-    )
-    const planShown = !!(referencePlan?.visible && planTransform)
-    const planRuns = useMemo(
-        () => (planShown ? projectPlan(referencePlan.shapes, planTransform) : []),
-        [planShown, referencePlan, planTransform]
-    )
-    // Plan corners double as snap targets while drawing a zone — tracing
-    // locks onto the plan instead of relying on a steady hand.
-    const planSnapPoints = useMemo(
-        () => (planShown ? planVertices(referencePlan.shapes, planTransform) : []),
-        [planShown, referencePlan, planTransform]
-    )
-    // Two pairs are solved exactly and so always report ~0 — the readout
-    // only means anything from three up.
-    const planResidual = useMemo(
-        () => (planTransform && (referencePlan?.pairs?.length ?? 0) > 2
-            ? residualDegrees(referencePlan.pairs, planTransform)
-            : null),
-        [referencePlan, planTransform]
-    )
-    planSnapRef.current = planSnapPoints
-    pendingPlanPointRef.current = pendingPlanPoint
 
     // Id of the hotspot currently being edited (stable primitive for effect deps)
     const editingId = popupState?.mode === 'edit-existing' ? popupState.hotspot?.id : null
@@ -793,6 +756,19 @@ export default function ProjectClient({ projectId }) {
             if (!ps || (ps.mode !== 'new' && ps.mode !== 'edit-existing')) return
             if (hotspotFormRef.current?.contains(e.target)) return
             if (pinBoxRef.current?.contains(e.target)) return
+            // Dialogs opened from the form (e.g. the site-plan crop) render
+            // as fixed overlays; working in one is not "clicking away".
+            if (e.target.closest?.('[data-keep-popup]')) return
+            // The delete-confirmation modal (and its Cancel/Confirm buttons)
+            // render as a separate DOM tree, outside both refs above — a
+            // mousedown on either button used to count as "clicked away" and
+            // fire a save. Clicking Confirm this way raced an autosave PATCH
+            // against the DELETE it triggered a moment later: if the DELETE
+            // landed first, the PATCH found 0 rows and logged/misdiagnosed
+            // as "an RLS policy is rejecting the write" — the row was just
+            // already gone. Nothing needs saving while this confirmation is
+            // up regardless of which button gets clicked, so skip entirely.
+            if (hotspotToDeleteRef.current) return
             handleSaveRef.current?.()
         }
         document.addEventListener('mousedown', onDocMouseDown)
@@ -864,6 +840,7 @@ export default function ProjectClient({ projectId }) {
             toggle_target_id: h.toggle_target_id || '', start_hidden: !!h.start_hidden,
             animate_line: h.animate_line !== false,
             custom_icon_url: h.custom_icon_url || '',
+            plan_shapes: h.plan_shapes || null,
         })
         setActiveRightTab('directions')
     }
@@ -980,13 +957,6 @@ export default function ProjectClient({ projectId }) {
         // instances for a moment, each registering its own listener against
         // the same shared setDrawingPolygon.
         viewer.addEventListener('click', ({ data }) => {
-            // Calibrating the reference plan: a plan vertex is already
-            // selected and waiting for its match in the photo, so this click
-            // completes the pair and does nothing else.
-            if (pendingPlanPointRef.current) {
-                onCalibrationClickRef.current?.(data.yaw * DEG, data.pitch * DEG)
-                return
-            }
             if (!drawingPolygonRef.current) return
             // Straight off the click event, same as the standalone spike that
             // validated this whole drawing flow — that comparison is what
@@ -1029,11 +999,9 @@ export default function ProjectClient({ projectId }) {
 
             let snapped = selfSnapped
             if (!snapped) {
-                // Saved zone corners, plus the reference plan's own vertices
-                // when one is calibrated and shown — tracing a plan should
-                // lock onto its corners rather than depend on a steady hand.
+                // Saved zone corners from every other drawn shape.
                 const otherPoints = polygonsRef.current.filter(p => p.scene_id === activeScene.id).flatMap(p => p.points)
-                snapped = findSnapPoint(viewer, otherPoints.concat(planSnapRef.current), data.viewerX, data.viewerY)
+                snapped = findSnapPoint(viewer, otherPoints, data.viewerX, data.viewerY)
             }
             if (!snapped) {
                 // No exact corner in range — try a soft snap onto another
@@ -1209,6 +1177,29 @@ export default function ProjectClient({ projectId }) {
                         data: { hotspotDbId: h.id },
                     }
                 }
+                // Site plan decal — same surface-embedded imageLayer mechanism
+                // as floor/text above, except the "sprite" is a line-drawing
+                // rendered on the fly from this hotspot's own stored DXF
+                // geometry (planDecalImage) rather than a fixed file or
+                // generated text. A hotspot saved before a plan was ever
+                // successfully parsed (plan_shapes still null) falls back to
+                // rendering nothing rather than crashing the whole markers
+                // build.
+                if (h.arrow_type === 'siteplan') {
+                    if (!h.plan_shapes) return null
+                    const { width: w, height: hgt } = planDecalSize(h.plan_shapes.bbox)
+                    const aspect = w / hgt
+                    const pr = planRenderRotation(h.plan_shapes, h.rotate_x, h.rotate_y, h.rotation)
+                    return {
+                        id: `hs_${h.id}`,
+                        type: 'imageLayer',
+                        imageLayer: planDecalImage(h.plan_shapes.shapes, h.plan_shapes.bbox, h.color || DEFAULT_HOTSPOT_COLOR, h.plan_shapes.opacity),
+                        position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
+                        size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect, height: size * FLOOR_SIZE_MULTIPLIER },
+                        rotation: { yaw: `${pr.y}deg`, pitch: `${pr.x}deg`, roll: `${pr.z}deg` },
+                        data: { hotspotDbId: h.id },
+                    }
+                }
                 const arrow = ARROWS.find(a => a.type === h.arrow_type) || ARROWS[0]
                 // Pulse ring stays a plain billboard (see the pulse-vs-3D
                 // tradeoff — a true 3D-embedded marker would freeze its
@@ -1243,6 +1234,7 @@ export default function ProjectClient({ projectId }) {
                     ...tilt,
                 }
             })
+            .filter(Boolean) // a 'siteplan' hotspot with no parsed plan yet (plan_shapes null) contributes nothing
 
         const baseHfov = activeScene.initial_hfov ?? DEFAULT_HFOV
         const coverupMarkers = visibleCoverups
@@ -1267,25 +1259,6 @@ export default function ProjectClient({ projectId }) {
                     data: { coverupId: c.id },
                 }
             })
-
-        // The calibrated reference plan — vector geometry welded to the
-        // ground, drawn UNDER the zones so a zone traced over it reads on
-        // top. pointerEvents:none matters: these lines cover a lot of the
-        // view, and without it they'd swallow the very zone-drawing clicks
-        // they exist to guide. Already subdivided by projectPlan, because
-        // PSV joins polyline vertices with straight screen-space chords.
-        const planMarkers = planRuns.map((pts, i) => ({
-            id: `plan_${i}`,
-            type: 'polyline',
-            polyline: pts.map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
-            svgStyle: {
-                stroke: '#22d3ee',
-                strokeWidth: '2',
-                strokeDasharray: '6,4',
-                fill: 'none',
-                pointerEvents: 'none',
-            },
-        }))
 
         // Zones. The one currently being corner-dragged (editingPolygonId) is
         // excluded here — its live shape is drawn separately, from
@@ -1363,7 +1336,7 @@ export default function ProjectClient({ projectId }) {
         // zones list on every mousemove if driven from this effect. It's
         // managed imperatively in mainLoop instead, the same way the
         // placement pin and selected cover-up already are.
-        const next = [...coverupMarkers, ...planMarkers, ...polygonMarkers, ...zoneLabelMarkers, ...arrowMarkers]
+        const next = [...coverupMarkers, ...polygonMarkers, ...zoneLabelMarkers, ...arrowMarkers]
         try {
             mp.setMarkers(next)
         } catch {
@@ -1391,7 +1364,7 @@ export default function ProjectClient({ projectId }) {
             .filter(p => p.id !== editingPolygonId)
             .map(p => ({ id: p.id, points: p.points, edgeLengths: p.edge_lengths || [] }))
             .filter(p => p.edgeLengths.some(Boolean))
-    }, [hotspots, visibleCoverups, visiblePolygons, planRuns, activeScene, hotspotSize, editingId, editingPolygonId, selectedOverlay, coverupAspect, project?.show_zone_labels])
+    }, [hotspots, visibleCoverups, visiblePolygons, activeScene, hotspotSize, editingId, editingPolygonId, selectedOverlay, coverupAspect, project?.show_zone_labels])
 
     // ── rAF — keeps the placement pin + selected cover-up projected on screen
     const mainLoop = useCallback(() => {
@@ -1546,7 +1519,6 @@ export default function ProjectClient({ projectId }) {
                     const candidates = [
                         ...polygonsRef.current.filter(p => p.scene_id === sceneId).flatMap(p => p.points),
                         ...dp.points,
-                        ...planSnapRef.current,   // reference-plan corners, same as the click handler
                     ]
                     // Same two-stage corner-then-edge order as the click
                     // handler, so the rubber-band line always previews
@@ -1593,12 +1565,18 @@ export default function ProjectClient({ projectId }) {
         // those on the fly.
         const isFloorEdit = ps && (ps.mode === 'new' || ps.mode === 'edit-existing') && ps.arrow_type === 'floor'
         const isTextEdit  = ps && (ps.mode === 'new' || ps.mode === 'edit-existing') && ps.arrow_type === 'text'
-        const isDecalEdit = isFloorEdit || isTextEdit
+        // Site plan shares this same live-preview mechanism too — its
+        // "image" is generated from the popup's own plan_shapes (set once,
+        // at drop time, by handleSitePlanFile) rather than label/color.
+        const isPlanEdit  = ps && (ps.mode === 'new' || ps.mode === 'edit-existing') && ps.arrow_type === 'siteplan' && ps.plan_shapes
+        const isDecalEdit = isFloorEdit || isTextEdit || isPlanEdit
         if (viewer && mp && isDecalEdit) {
             const size = ps.size ?? hotspotSizeRef.current
             const key  = isTextEdit
                 ? `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}|${ps.label}|${ps.color}`
-                : `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}`
+                : isPlanEdit
+                    ? `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}|${ps.color}|${JSON.stringify(ps.plan_shapes.bbox)}|${ps.plan_shapes.opacity ?? 1}|${ps.plan_shapes.flat !== false}`
+                    : `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}`
             // The declarative marker-sync effect (editingId changing when
             // "Edit" is clicked, or any of its other deps) calls
             // mp.setMarkers() — a full clear-and-rebuild that doesn't know
@@ -1616,19 +1594,24 @@ export default function ProjectClient({ projectId }) {
             if (floorPreviewKeyRef.current !== key) {
                 const image = isTextEdit
                     ? textDecalImage(ps.label, ps.color || DEFAULT_HOTSPOT_COLOR)
-                    : ARROWS.find(a => a.type === 'floor').gif
-                const aspect = isTextEdit ? (textDecalSize(ps.label).width / textDecalSize(ps.label).height) : 1
+                    : isPlanEdit
+                        ? planDecalImage(ps.plan_shapes.shapes, ps.plan_shapes.bbox, ps.color || DEFAULT_HOTSPOT_COLOR, ps.plan_shapes.opacity)
+                        : ARROWS.find(a => a.type === 'floor').gif
+                const aspect = isTextEdit
+                    ? (textDecalSize(ps.label).width / textDecalSize(ps.label).height)
+                    : isPlanEdit
+                        ? (planDecalSize(ps.plan_shapes.bbox).width / planDecalSize(ps.plan_shapes.bbox).height)
+                        : 1
+                const rot = isPlanEdit
+                    ? planRenderRotation(ps.plan_shapes, ps.rotate_x, ps.rotate_y, ps.rotation)
+                    : { x: ps.rotate_x ?? 90, y: ps.rotate_y ?? 0, z: ps.rotation ?? 0 }
                 const floorCfg = {
                     id: 'hs_floor_preview',
                     type: 'imageLayer',
                     imageLayer: image,
                     position: { yaw: `${ps.yaw}deg`, pitch: `${ps.pitch}deg` },
                     size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect, height: size * FLOOR_SIZE_MULTIPLIER },
-                    rotation: {
-                        yaw:   `${ps.rotate_y ?? 0}deg`,
-                        pitch: `${ps.rotate_x ?? 90}deg`,
-                        roll:  `${ps.rotation ?? 0}deg`,
-                    },
+                    rotation: { yaw: `${rot.y}deg`, pitch: `${rot.x}deg`, roll: `${rot.z}deg` },
                 }
                 // Only recorded as "applied" once one of the two calls
                 // actually succeeds — marking it applied unconditionally
@@ -1673,6 +1656,16 @@ export default function ProjectClient({ projectId }) {
     }, [])
 
     // ── Drag / drop ────────────────────────────────────────────────────────
+    // 'siteplan' is the one hotspot type with nothing sensible to drop with
+    // defaults — there's no plan geometry until a DXF is actually picked.
+    // The drop just remembers WHERE (pendingPlanDropRef) and opens a file
+    // picker instead of calling setPopupState immediately; the popup only
+    // opens once handleSitePlanFile has something to put in it. Dropping it
+    // and then cancelling the file picker is a clean no-op — nothing is
+    // created.
+    const pendingPlanDropRef = useRef(null)
+    const [hotspotError, setHotspotError] = useState('')
+
     const onViewerDragOver = useCallback(e => { e.preventDefault(); setIsDragOver(true) }, [])
     const onViewerDrop     = useCallback(e => {
         e.preventDefault(); setIsDragOver(false)
@@ -1701,7 +1694,17 @@ export default function ProjectClient({ projectId }) {
                 ? `Landmark ${sceneHotspots.filter(h => h.arrow_type === 'landmark').length + 1}`
                 : hotspotType === 'text'
                     ? 'Text'
-                    : `Hotspot ${sceneHotspots.length + 1}`
+                    : hotspotType === 'siteplan'
+                        ? 'Site Plan'
+                        : `Hotspot ${sceneHotspots.length + 1}`
+
+            if (hotspotType === 'siteplan') {
+                setHotspotError('')
+                pendingPlanDropRef.current = { ...coords, label }
+                planFileInputRef.current?.click()
+                return
+            }
+
             setPopupState({
                 mode: 'new', arrow_type: hotspotType, ...coords, label, target_scene_id: '', size: null, rotation: 0,
                 color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR,
@@ -1723,6 +1726,33 @@ export default function ProjectClient({ projectId }) {
             })
         }
     }, [sampleAt, drawingPolygon])
+
+    // dxf-parser is only pulled in when a file is actually picked, so it
+    // stays out of the editor's main bundle.
+    async function handleSitePlanFile(file) {
+        const drop = pendingPlanDropRef.current
+        pendingPlanDropRef.current = null
+        if (!file || !drop) return
+        try {
+            const { dxfTextToShapes } = await import('@/lib/dxf')
+            const { shapes, bbox } = dxfTextToShapes(await file.text())
+            const pointCount = shapes.reduce((n, s) => n + s.pts.length, 0)
+            if (shapes.length > MAX_PLAN_SHAPES || pointCount > MAX_PLAN_POINTS) {
+                setHotspotError(`This DXF is too detailed (${shapes.length} shapes, ${pointCount} points; limit ${MAX_PLAN_SHAPES} shapes / ${MAX_PLAN_POINTS} points). Delete unneeded layers in CAD and export again.`)
+                return
+            }
+            setPopupState({
+                mode: 'new', arrow_type: 'siteplan', ...drop, target_scene_id: '', size: null, rotation: 0,
+                color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR,
+                rotate_x: 90, rotate_y: 0, z_index: 0, plan_shapes: { shapes, bbox, originalBbox: { ...bbox } },
+                action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
+                toggle_target_id: '', start_hidden: false, animate_line: true,
+                custom_icon_url: '',
+            })
+        } catch (e) {
+            setHotspotError(e?.message || 'Could not read this DXF file.')
+        }
+    }
 
     // Corner-handle drag on the placement pin's bounding box. Same math
     // already proven for cover-ups (startOverlayResize/startOverlayRotate) —
@@ -1772,6 +1802,19 @@ export default function ProjectClient({ projectId }) {
         const rect = viewerRef.current.getBoundingClientRect()
         const cxPage = rect.left + pinPos.x
         const cyPage = rect.top  + pinPos.y
+        // A flat site plan has one rotation, its heading, which is simply
+        // rotate_y + rotation (see planRenderRotation). Adding to that
+        // directly avoids the quaternion round trip, which at exactly 90°
+        // on X is gimbal-locked and would smear the value across Y and Z.
+        if (popupState.arrow_type === 'siteplan' && popupState.plan_shapes?.flat !== false) {
+            pinGestureRef.current = {
+                mode: 'heading', cxPage, cyPage,
+                startAngle: Math.atan2(e.clientY - cyPage, e.clientX - cxPage) * 180 / Math.PI,
+                startHeading: (popupState.rotate_y ?? 0) + (popupState.rotation ?? 0),
+            }
+            setIsDraggingPin(true)
+            return
+        }
         pinGestureRef.current = {
             mode: 'axisRotate', axis, cxPage, cyPage,
             arrowType: popupState.arrow_type,
@@ -1787,10 +1830,11 @@ export default function ProjectClient({ projectId }) {
         const g = pinGestureRef.current
         if (g?.mode === 'resize') {
             const dist = Math.hypot(e.clientX - g.cxPage, e.clientY - g.cyPage)
-            const newSize = Math.min(400, Math.max(40, g.startSize * (dist / g.startDist)))
-            setPopupState(prev =>
-                (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, size: roundTo2(newSize) } : prev
-            )
+            const rawSize = g.startSize * (dist / g.startDist)
+            setPopupState(prev => {
+                if (prev?.mode !== 'new' && prev?.mode !== 'edit-existing') return prev
+                return { ...prev, size: roundTo2(Math.min(maxSizeFor(prev.arrow_type), Math.max(HOTSPOT_SIZE_MIN, rawSize))) }
+            })
             return
         }
         if (g?.mode === 'rotate') {
@@ -1798,6 +1842,16 @@ export default function ProjectClient({ projectId }) {
             const wrapped  = ((angleDeg + 180) % 360 + 360) % 360 - 180
             setPopupState(prev =>
                 (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, rotation: roundTo2(wrapped) } : prev
+            )
+            return
+        }
+        if (g?.mode === 'heading') {
+            const angleDeg = Math.atan2(e.clientY - g.cyPage, e.clientX - g.cxPage) * 180 / Math.PI
+            const heading = roundTo2(wrapDeg180(g.startHeading + angleDeg - g.startAngle))
+            setPopupState(prev =>
+                (prev?.mode === 'new' || prev?.mode === 'edit-existing')
+                    ? { ...prev, rotate_x: 90, rotate_y: 0, rotation: heading }
+                    : prev
             )
             return
         }
@@ -2176,13 +2230,24 @@ export default function ProjectClient({ projectId }) {
                     start_hidden: !!popupState.start_hidden,
                     animate_line: popupState.animate_line !== false,
                     custom_icon_url: popupState.custom_icon_url || null,
+                    // Only ever set at drop time by handleSitePlanFile, for
+                    // 'siteplan' hotspots — omitted (undefined, stripped by
+                    // JSON.stringify) for every other type.
+                    plan_shapes: popupState.plan_shapes ?? undefined,
                 }),
             })
             if (res.ok) {
                 const { hotspot } = await res.json()
                 setHotspots(prev => [...prev, hotspot])
                 setPopupState(prev => prev === savingFor ? null : prev)
+                setHotspotError('')
+            } else {
+                const err = await res.json().catch(() => ({}))
+                console.error('POST hotspot failed:', res.status, err?.error)
+                setHotspotError(`Could not save the hotspot${err?.error ? `: ${err.error}` : '.'}`)
             }
+        } catch {
+            setHotspotError('Network error — the hotspot was not saved.')
         } finally { dispatchFlag('savingHotspot'); savingNewHotspotRef.current = false }
     }
 
@@ -2217,6 +2282,11 @@ export default function ProjectClient({ projectId }) {
                     start_hidden:     !!popupState.start_hidden,
                     animate_line:     popupState.animate_line !== false,
                     custom_icon_url:  popupState.custom_icon_url || null,
+                    // Present (and unchanged) for every 'siteplan' hotspot
+                    // opened via onHotspotClickRef above, so a plain
+                    // reposition/resize save doesn't wipe the plan back to
+                    // null; omitted for every other type.
+                    plan_shapes: popupState.plan_shapes ?? undefined,
                 }),
             })
             if (res.ok) {
@@ -2226,7 +2296,10 @@ export default function ProjectClient({ projectId }) {
             } else {
                 const err = await res.json().catch(() => ({}))
                 console.error('PATCH hotspot failed:', res.status, err?.error)
+                setHotspotError(`Could not save the hotspot${err?.error ? `: ${err.error}` : '.'}`)
             }
+        } catch {
+            setHotspotError('Network error — the hotspot was not saved.')
         } finally { dispatchFlag('savingHotspot') }
     }
 
@@ -2537,114 +2610,6 @@ export default function ProjectClient({ projectId }) {
     // Captures wherever you've currently panned/zoomed to and saves it as this
     // scene's opening view. The column and PATCH /api/scenes/[id] support have
     // existed since the start; this is the first thing that actually calls it.
-    // ── Reference plan (imported DXF used as a tracing guide) ──────────────
-    // Editor-only by design: it is never snapshotted into published_payload,
-    // never reaches export.jsx, and never lands in the downloaded zip. The
-    // workflow is import → calibrate by clicking point pairs → trace zones
-    // over it → delete it. See lib/reference-plan.js for the geometry.
-
-    async function savePlan(sceneId, plan) {
-        try {
-            const res = await fetch(`/api/scenes/${sceneId}`, {
-                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ reference_plan: plan }),
-            })
-            const json = await res.json().catch(() => ({}))
-            if (!res.ok) { setPlanError(json.error || 'Could not save the reference plan.'); return }
-            // Same scene id, so the viewer-init/marker-sync effects that
-            // depend on activeScene keep their guard and don't reload the
-            // panorama — exactly the reasoning saveCurrentViewAsOpening
-            // relies on below.
-            const saved = json.scene?.reference_plan ?? null
-            setScenes(prev => prev.map(s => (s.id === sceneId ? { ...s, reference_plan: saved } : s)))
-            setActiveScene(prev => (prev && prev.id === sceneId ? { ...prev, reference_plan: saved } : prev))
-        } catch {
-            setPlanError('Network error — the reference plan was not saved.')
-        }
-    }
-
-    // The timer carries the scene id it was scheduled for, so a pending save
-    // can never land on a different scene after a switch.
-    function flushPlanSave() {
-        const pending = planSaveTimerRef.current
-        if (!pending) return
-        clearTimeout(pending.timer)
-        planSaveTimerRef.current = null
-        savePlan(pending.sceneId, pending.plan)
-    }
-
-    // Debounced: calibration is a burst of small edits (add a pair, flip
-    // mirror, toggle visibility) and each one shouldn't be its own round trip.
-    function patchReferencePlan(next) {
-        setReferencePlan(next)
-        setPlanError('')
-        const sceneId = activeScene?.id
-        if (!sceneId) return
-        if (planSaveTimerRef.current) clearTimeout(planSaveTimerRef.current.timer)
-        const timer = setTimeout(() => { planSaveTimerRef.current = null; savePlan(sceneId, next) }, 600)
-        planSaveTimerRef.current = { timer, sceneId, plan: next }
-    }
-
-    // dxf-parser is only pulled in when a file is actually imported, so it
-    // stays out of the editor's main bundle.
-    async function importPlanFile(file) {
-        if (!activeScene) return 'Open a scene first.'
-        try {
-            const { dxfTextToShapes } = await import('@/lib/dxf')
-            const { shapes, bbox } = dxfTextToShapes(await file.text())
-            setPendingPlanPoint(null)
-            patchReferencePlan({ name: file.name, shapes, bbox, pairs: [], mirror: false, visible: true })
-        } catch (e) {
-            return e?.message || 'Could not read this DXF file.'
-        }
-    }
-
-    function addCalibrationPair(planPt, yaw, pitch) {
-        setPendingPlanPoint(null)
-        if (!referencePlan || !Array.isArray(planPt)) return
-        patchReferencePlan({
-            ...referencePlan,
-            pairs: [...(referencePlan.pairs || []), { plan: planPt, yaw: roundTo2(yaw), pitch: roundTo2(pitch) }],
-        })
-    }
-
-    function removeCalibrationPair(index) {
-        if (!referencePlan) return
-        patchReferencePlan({ ...referencePlan, pairs: (referencePlan.pairs || []).filter((_, i) => i !== index) })
-    }
-
-    function updatePlanFlags(fields) {
-        if (!referencePlan) return
-        patchReferencePlan({ ...referencePlan, ...fields })
-    }
-
-    function deleteReferencePlan() {
-        setPendingPlanPoint(null)
-        setReferencePlan(null)
-        const sceneId = activeScene?.id
-        if (!sceneId) return
-        if (planSaveTimerRef.current) { clearTimeout(planSaveTimerRef.current.timer); planSaveTimerRef.current = null }
-        savePlan(sceneId, null)
-    }
-
-    // Called from the mount-time viewer click listener, which can't see this
-    // render's closure any other way.
-    onCalibrationClickRef.current = (yaw, pitch) => addCalibrationPair(pendingPlanPointRef.current, yaw, pitch)
-
-    // Hydrate when the active scene changes, flushing anything still pending
-    // for the scene being left behind.
-    useEffect(() => {
-        flushPlanSave()
-        setReferencePlan(activeScene?.reference_plan ?? null)
-        setPendingPlanPoint(null)
-        setPlanError('')
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeScene?.id])
-
-    // Don't silently drop an edit made in the last few hundred ms before the
-    // editor unmounts.
-    useEffect(() => () => flushPlanSave(), []) // eslint-disable-line react-hooks/exhaustive-deps
-
     async function saveCurrentViewAsOpening() {
         const viewer = psvRef.current
         if (!viewer || !activeScene) return
@@ -2932,7 +2897,7 @@ export default function ProjectClient({ projectId }) {
 
                     {/* Settings */}
                     <button
-                        onClick={() => { setSettingsDraft({ show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3, show_zone_labels: project?.show_zone_labels!==false }); setShowSettings(true) }}
+                        onClick={() => { setSettingsDraft({ name: project?.name || '', cover_logo_url: project?.cover_logo_url || '', show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3, show_zone_labels: project?.show_zone_labels!==false }); setShowSettings(true) }}
                         title="Project settings"
                         className="flex items-center justify-center w-8 h-8 rounded-lg border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors shrink-0">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -3099,6 +3064,16 @@ export default function ProjectClient({ projectId }) {
                                      className={`absolute inset-0 ${isDragOver ? 'ring-2 ring-editor-primary ring-inset' : ''}`}
                                      onDragOver={onViewerDragOver} onDragLeave={() => setIsDragOver(false)} onDrop={onViewerDrop}/>
 
+                                <input ref={planFileInputRef} type="file" accept=".dxf" hidden
+                                       onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; handleSitePlanFile(f) }}/>
+
+                                {hotspotError && (
+                                    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2 rounded-lg shadow-sm flex items-center gap-2">
+                                        {hotspotError}
+                                        <button onClick={() => setHotspotError('')} className="text-red-400 hover:text-red-600">✕</button>
+                                    </div>
+                                )}
+
                                 {/* ── Selected cover-up — the only one rendered as plain DOM.
                                     Every other cover-up is a PSV marker (see the marker-sync
                                     effect); PSV has no native marker-dragging, so the one being
@@ -3255,6 +3230,8 @@ export default function ProjectClient({ projectId }) {
                                     const isLandmark = popupState.arrow_type === 'landmark'
                                     const isFloor    = popupState.arrow_type === 'floor'
                                     const isText     = popupState.arrow_type === 'text'
+                                    const isPlan     = popupState.arrow_type === 'siteplan'
+                                    const isFlatPlan = isPlan && popupState.plan_shapes?.flat !== false
                                     const isPulse    = popupState.arrow_type === 'pulse'
                                     // Pulse ring stays a plain billboard (see the earlier tradeoff:
                                     // a true 3D-embedded marker would freeze its pulse animation to
@@ -3267,8 +3244,8 @@ export default function ProjectClient({ projectId }) {
                                     // arrowMarkers builder) — it's cosmetic (a flat billboard doesn't
                                     // actually warp with camera angle the way floor's real 3D plane
                                     // does), but it's not just an inert number either.
-                                    const showGizmo = isFloor || isText || isPulse
-                                    const rot = isLandmark || isFloor || isText ? 0 : (popupState.rotation ?? 0)
+                                    const showGizmo = isFloor || isText || isPlan || isPulse
+                                    const rot = isLandmark || isFloor || isText || isPlan ? 0 : (popupState.rotation ?? 0)
                                     // Floor decal's real look (a true 3D-rotated plane) is shown by
                                     // an actual imageLayer marker, live-updated every frame straight
                                     // from popupState (see mainLoop's 'hs_floor_preview' block) — a
@@ -3301,7 +3278,7 @@ export default function ProjectClient({ projectId }) {
                                     // real marker's actual composition order exactly (a `transform`
                                     // function list composes left-to-right the same way multiple
                                     // separately-set properties do relative to `transform` itself).
-                                    const boxTransform = (isFloor || isText)
+                                    const boxTransform = (isFloor || isText || isPlan)
                                         ? 'none'
                                         : isPulse
                                             ? `rotate(${rot}deg) perspective(600px) rotateX(${popupState.rotate_x ?? 0}deg) rotateY(${popupState.rotate_y ?? 0}deg)`
@@ -3334,10 +3311,10 @@ export default function ProjectClient({ projectId }) {
                                     // you zoomed away from wherever the factor happened to be tuned
                                     // for. Same baseHfov/currentHfov formula already used for the
                                     // selected cover-up's own edit box (coverupPopupScreen below).
-                                    const zoomScale = (isFloor || isText)
+                                    const zoomScale = (isFloor || isText || isPlan)
                                         ? (activeScene.initial_hfov ?? DEFAULT_HFOV) / (pinPos.hfov || activeScene.initial_hfov || DEFAULT_HFOV)
                                         : 1
-                                    const boxSize = (isFloor || isText) ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
+                                    const boxSize = (isFloor || isText || isPlan) ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
                                     // Gizmo ring geometry, hoisted up here (not just computed inside
                                     // the gizmo's own render below) because the drag/reposition hit
                                     // target right below needs to know gizmoFlat too — it has to stay
@@ -3392,7 +3369,7 @@ export default function ProjectClient({ projectId }) {
                                                             // this stays purely as the drag/resize hit target,
                                                             // so an outlined flat sticker doesn't float on
                                                             // top of the true 3D-tilted decal underneath it.
-                                                            opacity: (isFloor || isText) ? 0 : 1,
+                                                            opacity: (isFloor || isText || isPlan) ? 0 : 1,
                                                             // No outline wherever the gizmo shows (floor or
                                                             // pulse) — a solid square border sitting right
                                                             // where the rings pass near the corners competed
@@ -3570,18 +3547,21 @@ export default function ProjectClient({ projectId }) {
                                                     return (
                                                         <>
                                                             <svg className="absolute" width={box} height={box} viewBox={`0 0 ${box} ${box}`} style={{ ...svgPos, zIndex: 0 }}>
-                                                                <ellipse cx={cx} cy={cy} rx={r} ry={flat} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('x')}/>
-                                                                <ellipse cx={cx} cy={cy} rx={flat} ry={r} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('y')}/>
+                                                                {!isFlatPlan && <ellipse cx={cx} cy={cy} rx={r} ry={flat} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('x')}/>}
+                                                                {!isFlatPlan && <ellipse cx={cx} cy={cy} rx={flat} ry={r} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('y')}/>}
                                                                 <circle cx={cx} cy={cy} r={r} fill="none" stroke="transparent" strokeWidth={HIT} {...hit('z')}/>
                                                             </svg>
                                                             <svg className="absolute" width={box} height={box} viewBox={`0 0 ${box} ${box}`}
                                                                  style={{ ...svgPos, zIndex: 2, pointerEvents: 'none', filter: 'drop-shadow(0 0 2.5px rgba(0,0,0,.85))' }}>
+                                                                {/* A flat site plan only has a heading — just the blue ring. */}
+                                                                {!isFlatPlan && <>
                                                                 {/* X — red, wide/short ellipse (tilt around the horizontal axis) */}
                                                                 <path d={`M ${cx - r} ${cy} A ${r} ${flat} 0 0 1 ${cx + r} ${cy}`} fill="none" stroke="#ef4444" style={solid}/>
                                                                 <path d={`M ${cx + r} ${cy} A ${r} ${flat} 0 0 1 ${cx - r} ${cy}`} fill="none" stroke="#ef4444" style={faint}/>
                                                                 {/* Y — green, narrow/tall ellipse (turn around the vertical axis) */}
                                                                 <path d={`M ${cx} ${cy - r} A ${flat} ${r} 0 0 1 ${cx} ${cy + r}`} fill="none" stroke="#22c55e" style={solid}/>
                                                                 <path d={`M ${cx} ${cy + r} A ${flat} ${r} 0 0 1 ${cx} ${cy - r}`} fill="none" stroke="#22c55e" style={faint}/>
+                                                                </>}
                                                                 {/* Z — blue, full circle (spin in the screen plane) */}
                                                                 <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`} fill="none" stroke="#3b82f6" style={solid}/>
                                                                 <path d={`M ${cx + r} ${cy} A ${r} ${r} 0 0 1 ${cx - r} ${cy}`} fill="none" stroke="#3b82f6" style={faint}/>
@@ -3775,7 +3755,7 @@ export default function ProjectClient({ projectId }) {
                                               onSelectHotspot={id => onHotspotClickRef.current?.(id)}
                                               onUploadImage={uploadOverlayImage} savingHotspot={flags.savingHotspot}
                                               deletingHotspot={deletingHotspot}
-                                              formRef={hotspotFormRef}/>
+                                              formRef={hotspotFormRef} defaultSize={hotspotSize}/>
                             )}
                             {activeRightTab === 'overlays' && !polygonPopup && (
                                 <OverlayPanel
@@ -3811,19 +3791,6 @@ export default function ProjectClient({ projectId }) {
                                     onCancelPopup={() => closePolygonPopup()}
                                     onSaveNowPopup={saveZoneNow}
                                     onUploadImage={uploadOverlayImage}
-                                    referencePlan={{
-                                        plan: referencePlan,
-                                        pendingPoint: pendingPlanPoint,
-                                        residual: planResidual,
-                                        hasActiveScene: !!activeScene,
-                                        error: planError,
-                                        onImport: importPlanFile,
-                                        onPickPlanPoint: setPendingPlanPoint,
-                                        onCancelPending: () => setPendingPlanPoint(null),
-                                        onRemovePair: removeCalibrationPair,
-                                        onUpdateFlags: updatePlanFlags,
-                                        onDelete: deleteReferencePlan,
-                                    }}
                                     savingPolygon={savingPolygon}
                                     justSavedPolygon={justSavedPolygon}
                                     deletingPolygon={deletingPolygon}/>
@@ -3837,7 +3804,7 @@ export default function ProjectClient({ projectId }) {
             {showSettings && settingsDraft && (
                 <SettingsModal draft={settingsDraft} onChange={setSettingsDraft}
                                onSave={saveSettings} onClose={() => setShowSettings(false)}
-                               saving={flags.savingSettings}/>
+                               saving={flags.savingSettings} onUploadImage={uploadOverlayImage}/>
             )}
             {showEmbedModal && publicUrl && (
                 <EmbedModal url={publicUrl} onClose={() => setShowEmbedModal(false)}/>

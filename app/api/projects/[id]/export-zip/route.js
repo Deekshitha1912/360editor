@@ -28,7 +28,7 @@ import { buildTourHtml } from '@/components/360editor/project/export'
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups } from '@/lib/overlays'
 
-const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups'
+const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups, cover_logo_url'
 
 function isHttpUrl(u) {
     return typeof u === 'string' && /^https?:\/\//i.test(u)
@@ -169,7 +169,7 @@ export async function POST(_req, { params }) {
                 .order('created_at'),
             supabase
                 .from('hotspots')
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url, plan_shapes')
                 .eq('project_id', id),
             supabase
                 .from('polygons')
@@ -185,7 +185,7 @@ export async function POST(_req, { params }) {
         // (no reason to spend a credit on a request that was always going to
         // 400), but BEFORE the actual work below — a failure past this point
         // refunds it rather than silently keeping it.
-        const creditOk = await consumeCredit(user.id)
+        const creditOk = await consumeCredit(user.id, 'export_zip', id)
         if (!creditOk) {
             return NextResponse.json(
                 { error: 'You have no credits left. Buy more to download a self-hostable zip.' },
@@ -241,7 +241,7 @@ export async function POST(_req, { params }) {
                 },
             })
         } catch (err) {
-            await refundCredit(user.id)
+            await refundCredit(user.id, 'export_zip_refund', id)
             return NextResponse.json({ error: err?.message || 'Could not build the zip.' }, { status: 500 })
         }
     } catch (err) {

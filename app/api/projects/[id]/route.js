@@ -13,17 +13,17 @@ export async function GET(_req, { params }) {
         const [projectRes, scenesRes, hotspotsRes, polygonsRes] = await Promise.all([
             supabase
                 .from('projects')
-                .select('id, name, created_at, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups, slug, published_at, publish_cycle_started_at')
+                .select('id, name, created_at, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups, cover_logo_url, slug, published_at, publish_cycle_started_at')
                 .eq('id', id)
                 .eq('user_id', user.id)
                 .single(),
             supabase
                 .from('scenes')
-                .select('id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, created_at, reference_plan')
+                .select('id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, created_at')
                 .eq('project_id', id)
                 .order('created_at'),
             supabase.from('hotspots')
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url, plan_shapes')
                 .eq('project_id', id),
             supabase.from('polygons')
                 .select('id, scene_id, project_id, points, status, label, detail, custom_color, border_color, hover_color, label_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity, action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden')
@@ -93,10 +93,25 @@ export async function PATCH(req, { params }) {
         // Only allow safe fields to be patched
         // logo_url / logo_x / logo_y / logo_size were dropped by
         // db/overlays_cleanup.sql — logos live in `overlays` now.
-        const allowed = ['show_intro', 'auto_rotate', 'name', 'hotspot_size', 'show_zone_labels']
+        const allowed = ['show_intro', 'auto_rotate', 'name', 'hotspot_size', 'show_zone_labels', 'cover_logo_url']
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
         )
+
+        // Blank/whitespace-only rejected outright rather than silently kept
+        // — this is the only field on the project every scene's "Links to"
+        // dropdown and the browser tab title fall back to displaying, so an
+        // accidental empty save would make the whole project anonymous.
+        // Same 120-char cap as a scene's own rename (scene_panel.jsx).
+        if ('name' in updates) {
+            const trimmed = (updates.name || '').trim().slice(0, 120)
+            if (!trimmed) return NextResponse.json({ error: 'Project name cannot be empty.' }, { status: 400 })
+            updates.name = trimmed
+        }
+        // '' (no logo) has to become null, not get sent as-is — an empty
+        // string is still a truthy-looking value to the client's own
+        // `project.cover_logo_url ?` checks and to export.jsx's template.
+        if ('cover_logo_url' in updates) updates.cover_logo_url = updates.cover_logo_url || null
 
         // Screen-anchored logos. Sanitised server-side — the client decides
         // layout, never what is structurally valid. normalizeLogos returns null
