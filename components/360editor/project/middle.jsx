@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Viewer } from '@photo-sphere-viewer/core'
 import { MarkersPlugin } from '@photo-sphere-viewer/markers-plugin'
-import { Quaternion, Euler, Vector3 } from 'three'
+import { Quaternion, Euler, Vector3, Object3D } from 'three'
 import '@photo-sphere-viewer/core/index.css'
 import '@photo-sphere-viewer/markers-plugin/index.css'
 import '@/components/360editor/project/landmark-marker.css'
@@ -13,10 +13,11 @@ import HotspotPanel from '@/components/360editor/project/hotspot_panel'
 import OverlayPanel from '@/components/360editor/project/overlay_panel'
 import PolygonPanel from '@/components/360editor/project/polygon_panel'
 import PanelTabs from '@/components/360editor/project/panel_tabs'
-import { ARROWS, FLOOR_SIZE_MULTIPLIER, textDecalImage, textDecalSize, planDecalImage, planDecalSize, planRenderRotation } from '@/lib/arrows'
+import { ARROWS, FLOOR_SIZE_MULTIPLIER, textDecalImage, textDecalSize, planDecalImage, planDecalSize, planRenderRotation, planStretch } from '@/lib/arrows'
 import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, LABEL_COLORS, DEFAULT_LABEL_COLOR, MAX_PLAN_SHAPES, MAX_PLAN_POINTS, HOTSPOT_SIZE_MIN, maxSizeFor } from '@/lib/hotspots'
 import { newOverlayId, LOGO_DEFAULTS, COVERUP_DEFAULTS, projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor, centroidOf, normalizeEdgeLengths, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, alphaHex } from '@/lib/polygons'
+import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor, centroidOf, normalizeEdgeLengths, DEFAULT_FILL_OPACITY, DEFAULT_HOVER_OPACITY, alphaHex, MAX_POLYGON_VERTICES } from '@/lib/polygons'
+import { planFaceAt, simplifyOutline, matchPlotsToFaces, plotNumberLabels, planFacesCached, visiblePlotNumbers } from '@/lib/plan-faces'
 import TourPreviewModal from '@/components/360editor/project/preview'
 import { buildTourHtml, escapeHtml } from '@/components/360editor/project/export'
 import { roundTo2, flagsInit, flagsReducer } from '@/components/360editor/project/editor_utils'
@@ -87,6 +88,234 @@ function rotationConventionFor(arrowType) {
 
 function wrapDeg180(n) {
     return ((n + 180) % 360 + 360) % 360 - 180
+}
+
+// Where a view direction (degrees) meets a horizontal plane at height h
+// (h < 0, sphere radius 1), as horizontal coordinates. Same yaw convention
+// as PSV's sphericalCoordsToVector3 up to a mirror, which cancels out since
+// it's used both to and from these coordinates. Directions at or above the
+// horizon never reach the ground, so they're held just below it.
+function groundPointAt(yawDeg, pitchDeg, h) {
+    const p = Math.min(pitchDeg, -0.5) * RAD
+    const d = h / Math.tan(p)
+    return { x: d * Math.sin(yawDeg * RAD), z: d * Math.cos(yawDeg * RAD) }
+}
+
+// ── Site plan anchor ─────────────────────────────────────────────────────
+// A site plan's world transform, rebuilt with exactly PSV's own steps for an
+// imageLayer marker (markers-plugin: position on the radius-10 sphere, group
+// looks at the vertical axis, mesh rotated Y/X/Z by the negated angles,
+// scaled by size/100 over a 1x1 plane). Lets the editor ask where any point
+// of the drawing lands, which is what the anchor pin needs.
+const _planGroup = new Object3D()
+const _planMesh  = new Object3D()
+_planGroup.add(_planMesh)
+
+function planFrame(ps, defaultSize) {
+    const size = ps.size ?? defaultSize
+    const { width: w, height: hh } = planDecalSize(ps.plan_shapes.bbox)
+    const st  = planStretch(ps.plan_shapes)
+    const rot = planRenderRotation(ps.plan_shapes, ps.rotate_x, ps.rotate_y, ps.rotation)
+    _planMesh.position.set(0, 0, 0)
+    _planMesh.rotation.set(0, 0, 0)
+    _planMesh.scale.set(size * FLOOR_SIZE_MULTIPLIER * (w / hh) * st.x / 100, size * FLOOR_SIZE_MULTIPLIER * st.y / 100, 1)
+    const y = ps.yaw * RAD, p = ps.pitch * RAD
+    _planGroup.position.set(-10 * Math.cos(p) * Math.sin(y), 10 * Math.sin(p), 10 * Math.cos(p) * Math.cos(y))
+    _planGroup.lookAt(0, _planGroup.position.y, 0)
+    _planMesh.rotateY(-rot.y * RAD); _planMesh.rotateX(-rot.x * RAD); _planMesh.rotateZ(-rot.z * RAD)
+    _planGroup.updateMatrixWorld(true)
+    return _planMesh.matrixWorld.clone()
+}
+
+// u runs left→right across the drawing, v top→bottom, both 0..1.
+function planPointAt(ps, u, v, defaultSize) {
+    return new Vector3(u - 0.5, 0.5 - v, 0).applyMatrix4(planFrame(ps, defaultSize))
+}
+
+// PSV's own vector3ToSphericalCoords, in degrees.
+function directionOf(vec) {
+    const theta = Math.atan2(vec.x, vec.z)
+    return { yaw: (theta < 0 ? -theta : Math.PI * 2 - theta) * DEG, pitch: Math.asin(vec.y / vec.length()) * DEG }
+}
+
+// The (u, v) of the drawing under a view direction, or null if the ray
+// misses the plan's plane.
+function planUVAtDirection(ps, yawDeg, pitchDeg, defaultSize) {
+    const m = planFrame(ps, defaultSize)
+    const O = new Vector3().setFromMatrixPosition(m)
+    const X = new Vector3().setFromMatrixColumn(m, 0)
+    const Y = new Vector3().setFromMatrixColumn(m, 1)
+    const N = new Vector3().crossVectors(X, Y)
+    const y = yawDeg * RAD, p = pitchDeg * RAD
+    const d = new Vector3(-Math.cos(p) * Math.sin(y), Math.sin(p), Math.cos(p) * Math.cos(y))
+    const denom = d.dot(N)
+    if (Math.abs(denom) < 1e-12) return null
+    const t = O.dot(N) / denom
+    if (t <= 0) return null
+    const rel = d.multiplyScalar(t).sub(O)
+    return { u: 0.5 + rel.dot(X) / X.lengthSq(), v: 0.5 - rel.dot(Y) / Y.lengthSq() }
+}
+
+// Slides a flat plan across the ground so the point seen in direction
+// `from` ends up in direction `to` — the same maths as dragging it, keeping
+// its real-world heading and size.
+function slidePlanOnGround(s, from, to, defaultSize) {
+    const h = Math.sin(s.pitch * RAD)
+    const c = groundPointAt(s.yaw, s.pitch, h)
+    const a = groundPointAt(from.yaw, from.pitch, h)
+    const b = groundPointAt(to.yaw, to.pitch, h)
+    const cx = c.x + b.x - a.x, cz = c.z + b.z - a.z
+    const yaw   = Math.atan2(cx, cz) * DEG
+    const pitch = Math.atan2(h, Math.hypot(cx, cz)) * DEG
+    const size  = (s.size ?? defaultSize) * Math.sin(pitch * RAD) / Math.sin(s.pitch * RAD)
+    const heading = wrapDeg180((s.rotate_y ?? 0) + (s.rotation ?? 0) - wrapDeg180(yaw - s.yaw))
+    return { ...s, yaw, pitch, size, rotate_x: 90, rotate_y: 0, rotation: heading }
+}
+
+// With an anchor pinned, a reshape (size / heading / tilt / stretch) pivots
+// around the anchor instead of the plan's centre: after the change, the plan
+// is slid so the anchored point is back exactly where it was on the photo.
+// A move, a new anchor or a crop is passed through untouched.
+function holdPlanAnchor(prev, next, defaultSize) {
+    const a = prev?.plan_shapes?.anchor
+    if (!a || next?.arrow_type !== 'siteplan' || !next.plan_shapes) return next
+    if (prev.plan_shapes.flat === false || next.plan_shapes.flat === false) return next
+    if (next.yaw !== prev.yaw || next.pitch !== prev.pitch) return next
+    if (JSON.stringify(next.plan_shapes.anchor) !== JSON.stringify(a)) return next
+    if (JSON.stringify(next.plan_shapes.bbox) !== JSON.stringify(prev.plan_shapes.bbox)) return next
+    const target = directionOf(planPointAt(prev, a.u, a.v, defaultSize))
+    let s = next
+    // Exact in one step for a level plan; a few more settle any tilt.
+    for (let i = 0; i < 4; i++) s = slidePlanOnGround(s, directionOf(planPointAt(s, a.u, a.v, defaultSize)), target, defaultSize)
+    return { ...s, size: Math.min(maxSizeFor('siteplan'), Math.max(HOTSPOT_SIZE_MIN, s.size)) }
+}
+
+// ── Snap to points ──────────────────────────────────────────────────────
+// Fits a flat site plan to point pairs: each pair is a point of the drawing
+// (u, v) and the view direction where that point should appear in the
+// photo. Both are taken to the ground at the plan's height and the best
+// rotation + uniform scale + translation between them is solved in closed
+// form (2D least squares / Umeyama). For a level plan that ground mapping
+// is exact, so matching boundary corners fits the whole outline. One pair
+// only slides the plan.
+function planGroundOf(s, u, v, h, defaultSize) {
+    const d = directionOf(planPointAt(s, u, v, defaultSize))
+    return groundPointAt(d.yaw, d.pitch, h)
+}
+
+function planFitError(s, pairs, h, defaultSize) {
+    return pairs.reduce((sum, p) => {
+        const a = planGroundOf(s, p.u, p.v, h, defaultSize)
+        const b = groundPointAt(p.target.yaw, p.target.pitch, h)
+        return sum + (a.x - b.x) ** 2 + (a.z - b.z) ** 2
+    }, 0)
+}
+
+function fitPlanToPairs(s, pairs, defaultSize) {
+    if (!pairs.length) return s
+    if (pairs.length === 1) {
+        const p = pairs[0]
+        return slidePlanOnGround(s, directionOf(planPointAt(s, p.u, p.v, defaultSize)), p.target, defaultSize)
+    }
+    let cur = s
+    // One pass is exact for a level plan; a second settles any tilt.
+    for (let pass = 0; pass < 2; pass++) {
+        const h = Math.sin(cur.pitch * RAD)
+        const A = pairs.map(p => planGroundOf(cur, p.u, p.v, h, defaultSize))
+        const B = pairs.map(p => groundPointAt(p.target.yaw, p.target.pitch, h))
+        const mean = pts => ({ x: pts.reduce((t, q) => t + q.x, 0) / pts.length, z: pts.reduce((t, q) => t + q.z, 0) / pts.length })
+        const ma = mean(A), mb = mean(B)
+        let dot = 0, cross = 0, norm = 0
+        A.forEach((a, i) => {
+            const ax = a.x - ma.x, az = a.z - ma.z, bx = B[i].x - mb.x, bz = B[i].z - mb.z
+            dot += ax * bx + az * bz; cross += ax * bz - az * bx; norm += ax * ax + az * az
+        })
+        if (norm < 1e-12) return cur   // points on top of each other: nothing to fit
+        const phi = Math.atan2(cross, dot)
+        const k = Math.hypot(dot, cross) / norm
+        const c = groundPointAt(cur.yaw, cur.pitch, h)
+        const rx = c.x - ma.x, rz = c.z - ma.z
+        const cx = k * (rx * Math.cos(phi) - rz * Math.sin(phi)) + mb.x
+        const cz = k * (rx * Math.sin(phi) + rz * Math.cos(phi)) + mb.z
+        const yaw = Math.atan2(cx, cz) * DEG
+        const pitch = Math.atan2(h, Math.hypot(cx, cz)) * DEG
+        const size = Math.min(maxSizeFor('siteplan'), Math.max(HOTSPOT_SIZE_MIN,
+            (cur.size ?? defaultSize) * k * Math.sin(pitch * RAD) / Math.sin(cur.pitch * RAD)))
+        const heading = (cur.rotate_y ?? 0) + (cur.rotation ?? 0) - wrapDeg180(yaw - cur.yaw)
+        // Which way a ground rotation turns the stored heading depends on
+        // the (mirrored) ground axes, so try both and keep the better fit.
+        const cand = [1, -1].map(sign => ({ ...cur, yaw, pitch, size, rotate_x: 90, rotate_y: 0, rotation: wrapDeg180(heading + sign * phi * DEG) }))
+        const e = cand.map(c2 => planFitError(c2, pairs, Math.sin(c2.pitch * RAD), defaultSize))
+        cur = e[0] <= e[1] ? cand[0] : cand[1]
+    }
+    return cur
+}
+
+// The drawing vertex nearest (u, v), in the same u/v space — used so a
+// click near a boundary corner lands exactly on it.
+function nearestPlanVertex(planShapes, u, v) {
+    const { minX, maxX, minY, maxY } = planShapes.bbox
+    const W = maxX - minX || 1, H = maxY - minY || 1
+    let best = null, bestD = Infinity
+    for (const shape of planShapes.shapes || []) {
+        for (const [x, y] of shape.pts) {
+            const pu = (x - minX) / W, pv = (maxY - y) / H
+            const d = (pu - u) ** 2 + (pv - v) ** 2
+            if (d < bestD) { bestD = d; best = { u: pu, v: pv } }
+        }
+    }
+    return best
+}
+
+// ── Plan regions → zones ────────────────────────────────────────────────
+// Traced regions per plan (lib/plan-faces.js, cached there by the shapes
+// array so a big drawing is analysed once, not on every click).
+function planFacesFor(planShapes) {
+    return planFacesCached(planShapes)
+}
+
+// A point of the drawing (DXF units) → its u/v on the rendered plan, whose
+// image is fitted to the (possibly cropped) bbox with Y flipped.
+function planUVOfXY(planShapes, x, y) {
+    const { minX, maxX, minY, maxY } = planShapes.bbox
+    return { u: (x - minX) / ((maxX - minX) || 1), v: (maxY - y) / ((maxY - minY) || 1) }
+}
+
+// A region of the drawing → zone points [yaw, pitch] where the plan sits
+// on the photo right now, cut to the zone corner limit.
+function planRegionToZonePoints(ps, pts, defaultSize) {
+    return simplifyOutline(pts, MAX_POLYGON_VERTICES).map(([x, y]) => {
+        const { u, v } = planUVOfXY(ps.plan_shapes, x, y)
+        const d = directionOf(planPointAt(ps, u, v, defaultSize))
+        return [roundTo2(d.yaw), roundTo2(d.pitch)]
+    })
+}
+
+// The traced region under a view direction, in DXF units, or null.
+// Only what's inside the plan's (possibly cropped) visible area counts: a
+// cropped-away part of the drawing — even a whole second layout in the same
+// DXF — must never produce zones or plot names. Regions test by centre.
+function insidePlanView(planShapes, x, y) {
+    const { minX, maxX, minY, maxY } = planShapes.bbox
+    return x >= minX && x <= maxX && y >= minY && y <= maxY
+}
+// Includes numbers carried across from a numbered duplicate of the layout
+// when the plan is cropped to an unnumbered copy (lib/plan-faces.js).
+function visiblePlotLabels(planShapes) {
+    return visiblePlotNumbers(planShapes).labels
+}
+function visiblePlanFaces(planShapes) {
+    return planFacesFor(planShapes).faces.filter(f => {
+        const n = f.pts.length
+        return insidePlanView(planShapes, f.pts.reduce((t, p) => t + p[0], 0) / n, f.pts.reduce((t, p) => t + p[1], 0) / n)
+    })
+}
+
+function planRegionAtDirection(ps, yaw, pitch, defaultSize) {
+    const uv = planUVAtDirection(ps, yaw, pitch, defaultSize)
+    if (!uv) return null
+    const { minX, maxX, minY, maxY } = ps.plan_shapes.bbox
+    return planFaceAt(planFacesFor(ps.plan_shapes).faces, minX + uv.u * (maxX - minX), maxY - uv.v * (maxY - minY))
 }
 
 function rotationFieldsToQuaternion(rotateX, rotateY, rotateZ, arrowType) {
@@ -506,6 +735,20 @@ export default function ProjectClient({ projectId }) {
     const [settingsDraft, setSettingsDraft]     = useState(null)
     const [confirmDelete, setConfirmDelete]     = useState(false)
     const [pinPos, setPinPos]                   = useState(null)
+    // Waiting for a click on the site plan to pin its anchor there.
+    const [anchorPicking, setAnchorPicking]     = useState(false)
+    const anchorPickingRef                      = useRef(false)
+    anchorPickingRef.current = anchorPicking
+    // Snap-to-points mode for a site plan: { start, pairs: [{u, v, target}],
+    // pending: {u, v} | null } — see fitPlanToPairs. null when off.
+    const [snap, setSnap]                       = useState(null)
+    const snapRef                               = useRef(null)
+    snapRef.current = snap
+    // Click-to-zone mode (see toggleZonePick). null when off.
+    const [zonePick, setZonePick]               = useState(null)
+    const zonePickRef                           = useRef(null)
+    zonePickRef.current = zonePick
+    const pickZoneAtRef                         = useRef(null)   // latest pickZoneAt, for the once-registered PSV click listener
     const [viewerSize, setViewerSize]           = useState({ w: 0, h: 0 })
     const [flags, dispatchFlag]                 = useReducer(flagsReducer, flagsInit)
     const [previewHtml, setPreviewHtml]         = useState(null)
@@ -570,12 +813,57 @@ export default function ProjectClient({ projectId }) {
     // being created/edited, and the right panel shows its normal palette
     // + saved-hotspots list instead of the form (see HotspotPanel).
     const [popupState, setPopupState] = useState(null)
+    // Closing or switching away from a site plan cancels a pending anchor pick.
+    const editingSitePlan = popupState?.arrow_type === 'siteplan'
+    useEffect(() => { if (!editingSitePlan) { setAnchorPicking(false); setSnap(null); setZonePick(null) } }, [editingSitePlan])
+
+    // While click-to-zone is on, track the region under the cursor so it can
+    // be highlighted before the click (one lookup per animation frame).
+    const zonePickOn = !!zonePick && !zonePick.busy
+    useEffect(() => {
+        const el = viewerRef.current
+        if (!zonePickOn || !el) return
+        let raf = 0, last = null
+        const onMove = e => {
+            last = e
+            if (raf) return
+            raf = requestAnimationFrame(() => {
+                raf = 0
+                const ps = popupRef.current
+                const c = last && sampleAt(last.clientX, last.clientY)
+                const region = ps?.plan_shapes && c ? planRegionAtDirection(ps, c.yaw, c.pitch, hotspotSizeRef.current) : null
+                setZonePick(z => z && z.hover !== region ? { ...z, hover: region } : z)
+            })
+        }
+        el.addEventListener('mousemove', onMove)
+        return () => { el.removeEventListener('mousemove', onMove); cancelAnimationFrame(raf) }
+    }, [zonePickOn]) // eslint-disable-line
+
+    function toggleSnap() {
+        setAnchorPicking(false)
+        setZonePick(null)
+        setSnap(s => s ? null : { start: popupRef.current, pairs: [], pending: null })
+    }
+    // Steps back one click: the pending plan point first, else the last
+    // pair (refitting from the rest, or restoring the start with none left).
+    function undoSnap() {
+        const s = snapRef.current
+        if (!s) return
+        if (s.pending) { setSnap({ ...s, pending: null }); return }
+        if (!s.pairs.length) return
+        const pairs = s.pairs.slice(0, -1)
+        setSnap({ ...s, pairs })
+        setPopupState(prev => pairs.length
+            ? fitPlanToPairs(prev, pairs, hotspotSizeRef.current)
+            : { ...prev, yaw: s.start.yaw, pitch: s.start.pitch, size: s.start.size, rotate_x: s.start.rotate_x, rotate_y: s.start.rotate_y, rotation: s.start.rotation })
+    }
 
     scenesRef.current         = scenes
     popupRef.current          = popupState
     hotspotSizeRef.current    = hotspotSize
     handleSaveRef.current     = handleSave
     hotspotToDeleteRef.current = hotspotToDelete
+    pickZoneAtRef.current      = pickZoneAt
     coverupsRef.current       = coverups
     selectedOverlayRef.current = selectedOverlay
     polygonsRef.current       = polygons
@@ -759,6 +1047,9 @@ export default function ProjectClient({ projectId }) {
             // Dialogs opened from the form (e.g. the site-plan crop) render
             // as fixed overlays; working in one is not "clicking away".
             if (e.target.closest?.('[data-keep-popup]')) return
+            // Clicking the plan to pin its anchor, or to snap points, isn't
+            // "clicking away" either.
+            if (anchorPickingRef.current || snapRef.current || zonePickRef.current) return
             // The delete-confirmation modal (and its Cancel/Confirm buttons)
             // render as a separate DOM tree, outside both refs above — a
             // mousedown on either button used to count as "clicked away" and
@@ -957,6 +1248,54 @@ export default function ProjectClient({ projectId }) {
         // instances for a moment, each registering its own listener against
         // the same shared setDrawingPolygon.
         viewer.addEventListener('click', ({ data }) => {
+            if (zonePickRef.current) {
+                if (!zonePickRef.current.busy) pickZoneAtRef.current?.(data.yaw * DEG, data.pitch * DEG)
+                return
+            }
+            if (snapRef.current) {
+                const ps = popupRef.current
+                if (ps?.arrow_type !== 'siteplan' || !ps.plan_shapes) return
+                const cur = snapRef.current
+                const click = { yaw: data.yaw * DEG, pitch: data.pitch * DEG }
+                if (!cur.pending) {
+                    // First click of a pair: a point of the plan. Snaps to the
+                    // drawing's nearest vertex when that's within ~14px, so a
+                    // boundary corner is hit exactly.
+                    let uv = planUVAtDirection(ps, click.yaw, click.pitch, hotspotSizeRef.current)
+                    if (!uv || uv.u < -0.1 || uv.u > 1.1 || uv.v < -0.1 || uv.v > 1.1) return
+                    const vtx = nearestPlanVertex(ps.plan_shapes, uv.u, uv.v)
+                    if (vtx) {
+                        try {
+                            const d = directionOf(planPointAt(ps, vtx.u, vtx.v, hotspotSizeRef.current))
+                            const sp = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: d.yaw * RAD, pitch: d.pitch * RAD })
+                            if (sp && Math.hypot(sp.x - data.viewerX, sp.y - data.viewerY) <= 14) uv = vtx
+                        } catch {}
+                    }
+                    const next = { ...cur, pending: { u: uv.u, v: uv.v } }
+                    snapRef.current = next
+                    setSnap(next)
+                    return
+                }
+                // Second click: where that point belongs in the photo.
+                const pairs = [...cur.pairs, { u: cur.pending.u, v: cur.pending.v, target: click }]
+                const next = { ...cur, pairs, pending: null }
+                snapRef.current = next
+                setSnap(next)
+                setPopupState(prev => prev?.plan_shapes ? fitPlanToPairs(prev, pairs, hotspotSizeRef.current) : prev)
+                return
+            }
+            if (anchorPickingRef.current) {
+                anchorPickingRef.current = false
+                setAnchorPicking(false)
+                const ps = popupRef.current
+                if (ps?.arrow_type !== 'siteplan' || !ps.plan_shapes) return
+                const uv = planUVAtDirection(ps, data.yaw * DEG, data.pitch * DEG, hotspotSizeRef.current)
+                if (!uv) return
+                setPopupState(prev => prev?.plan_shapes
+                    ? { ...prev, plan_shapes: { ...prev.plan_shapes, anchor: { u: uv.u, v: uv.v } } }
+                    : prev)
+                return
+            }
             if (!drawingPolygonRef.current) return
             // Straight off the click event, same as the standalone spike that
             // validated this whole drawing flow — that comparison is what
@@ -1190,12 +1529,13 @@ export default function ProjectClient({ projectId }) {
                     const { width: w, height: hgt } = planDecalSize(h.plan_shapes.bbox)
                     const aspect = w / hgt
                     const pr = planRenderRotation(h.plan_shapes, h.rotate_x, h.rotate_y, h.rotation)
+                    const st = planStretch(h.plan_shapes)
                     return {
                         id: `hs_${h.id}`,
                         type: 'imageLayer',
                         imageLayer: planDecalImage(h.plan_shapes.shapes, h.plan_shapes.bbox, h.color || DEFAULT_HOTSPOT_COLOR, h.plan_shapes.opacity),
                         position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
-                        size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect, height: size * FLOOR_SIZE_MULTIPLIER },
+                        size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect * st.x, height: size * FLOOR_SIZE_MULTIPLIER * st.y },
                         rotation: { yaw: `${pr.y}deg`, pitch: `${pr.x}deg`, roll: `${pr.z}deg` },
                         data: { hotspotDbId: h.id },
                     }
@@ -1448,7 +1788,27 @@ export default function ProjectClient({ projectId }) {
                 // moment you zoomed away from whatever level it happened to
                 // be tuned to look right at.
                 const hfov = viewer.dataHelper.zoomLevelToFov(viewer.getZoomLevel())
-                setPinPos(pt ? { x: pt.x, y: pt.y, hfov } : null)
+                // Screen position of a point of the site plan (u across, v
+                // down the drawing), or null when it's behind the camera —
+                // PSV would otherwise project it mirrored onto the screen.
+                let anchor = null, corners = null
+                if (ps.arrow_type === 'siteplan' && ps.plan_shapes) {
+                    const cam = viewer.getPosition()
+                    const camVec = new Vector3(-Math.cos(cam.pitch) * Math.sin(cam.yaw), Math.sin(cam.pitch), Math.cos(cam.pitch) * Math.cos(cam.yaw))
+                    const screenOf = (u, v) => {
+                        const w = planPointAt(ps, u, v, hotspotSizeRef.current)
+                        if (w.dot(camVec) <= 0) return null
+                        const dir = directionOf(w)
+                        return viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: dir.yaw * RAD, pitch: dir.pitch * RAD }) || null
+                    }
+                    const a = ps.plan_shapes.anchor
+                    if (a) anchor = screenOf(a.u, a.v)
+                    // The plan's real outline on screen, where its resize
+                    // handles sit (see the JSX) — the square drag box's own
+                    // corners don't follow the plan's shape or perspective.
+                    corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => screenOf(u, v))
+                }
+                setPinPos(pt ? { x: pt.x, y: pt.y, hfov, anchor, corners } : null)
             } catch { setPinPos(null) }
         } else {
             setPinPos(null)
@@ -1575,7 +1935,7 @@ export default function ProjectClient({ projectId }) {
             const key  = isTextEdit
                 ? `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}|${ps.label}|${ps.color}`
                 : isPlanEdit
-                    ? `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}|${ps.color}|${JSON.stringify(ps.plan_shapes.bbox)}|${ps.plan_shapes.opacity ?? 1}|${ps.plan_shapes.flat !== false}`
+                    ? `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}|${ps.color}|${JSON.stringify(ps.plan_shapes.bbox)}|${ps.plan_shapes.opacity ?? 1}|${ps.plan_shapes.flat !== false}|${ps.plan_shapes.tiltX ?? 0}|${ps.plan_shapes.tiltY ?? 0}|${ps.plan_shapes.stretchX ?? 1}|${ps.plan_shapes.stretchY ?? 1}`
                     : `${ps.yaw}|${ps.pitch}|${size}|${ps.rotate_x ?? 90}|${ps.rotate_y ?? 0}|${ps.rotation ?? 0}`
             // The declarative marker-sync effect (editingId changing when
             // "Edit" is clicked, or any of its other deps) calls
@@ -1605,12 +1965,13 @@ export default function ProjectClient({ projectId }) {
                 const rot = isPlanEdit
                     ? planRenderRotation(ps.plan_shapes, ps.rotate_x, ps.rotate_y, ps.rotation)
                     : { x: ps.rotate_x ?? 90, y: ps.rotate_y ?? 0, z: ps.rotation ?? 0 }
+                const st = isPlanEdit ? planStretch(ps.plan_shapes) : { x: 1, y: 1 }
                 const floorCfg = {
                     id: 'hs_floor_preview',
                     type: 'imageLayer',
                     imageLayer: image,
                     position: { yaw: `${ps.yaw}deg`, pitch: `${ps.pitch}deg` },
-                    size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect, height: size * FLOOR_SIZE_MULTIPLIER },
+                    size: { width: size * FLOOR_SIZE_MULTIPLIER * aspect * st.x, height: size * FLOOR_SIZE_MULTIPLIER * st.y },
                     rotation: { yaw: `${rot.y}deg`, pitch: `${rot.x}deg`, roll: `${rot.z}deg` },
                 }
                 // Only recorded as "applied" once one of the two calls
@@ -1735,7 +2096,7 @@ export default function ProjectClient({ projectId }) {
         if (!file || !drop) return
         try {
             const { dxfTextToShapes } = await import('@/lib/dxf')
-            const { shapes, bbox } = dxfTextToShapes(await file.text())
+            const { shapes, bbox, labels } = dxfTextToShapes(await file.text())
             const pointCount = shapes.reduce((n, s) => n + s.pts.length, 0)
             if (shapes.length > MAX_PLAN_SHAPES || pointCount > MAX_PLAN_POINTS) {
                 setHotspotError(`This DXF is too detailed (${shapes.length} shapes, ${pointCount} points; limit ${MAX_PLAN_SHAPES} shapes / ${MAX_PLAN_POINTS} points). Delete unneeded layers in CAD and export again.`)
@@ -1744,7 +2105,7 @@ export default function ProjectClient({ projectId }) {
             setPopupState({
                 mode: 'new', arrow_type: 'siteplan', ...drop, target_scene_id: '', size: null, rotation: 0,
                 color: DEFAULT_HOTSPOT_COLOR, label_color: DEFAULT_LABEL_COLOR,
-                rotate_x: 90, rotate_y: 0, z_index: 0, plan_shapes: { shapes, bbox, originalBbox: { ...bbox } },
+                rotate_x: 90, rotate_y: 0, z_index: 0, plan_shapes: { shapes, bbox, originalBbox: { ...bbox }, labels },
                 action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
                 toggle_target_id: '', start_hidden: false, animate_line: true,
                 custom_icon_url: '',
@@ -1764,8 +2125,12 @@ export default function ProjectClient({ projectId }) {
         e.preventDefault(); e.stopPropagation()
         if (!pinPos || !viewerRef.current) return
         const rect = viewerRef.current.getBoundingClientRect()
-        const cxPage = rect.left + pinPos.x
-        const cyPage = rect.top  + pinPos.y
+        // Measured from the anchor pin when there is one: resizing then
+        // pivots around it (holdPlanAnchor), so it's the point that stays
+        // still on screen, while the plan's centre moves.
+        const pivot = pinPos.anchor || pinPos
+        const cxPage = rect.left + pivot.x
+        const cyPage = rect.top  + pivot.y
         pinGestureRef.current = {
             mode: 'resize', cxPage, cyPage,
             startSize: popupState.size ?? hotspotSize,
@@ -1810,7 +2175,7 @@ export default function ProjectClient({ projectId }) {
             pinGestureRef.current = {
                 mode: 'heading', cxPage, cyPage,
                 startAngle: Math.atan2(e.clientY - cyPage, e.clientX - cxPage) * 180 / Math.PI,
-                startHeading: (popupState.rotate_y ?? 0) + (popupState.rotation ?? 0),
+                startWorldHeading: (popupState.rotate_y ?? 0) + (popupState.rotation ?? 0) + popupState.yaw,
             }
             setIsDraggingPin(true)
             return
@@ -1833,7 +2198,7 @@ export default function ProjectClient({ projectId }) {
             const rawSize = g.startSize * (dist / g.startDist)
             setPopupState(prev => {
                 if (prev?.mode !== 'new' && prev?.mode !== 'edit-existing') return prev
-                return { ...prev, size: roundTo2(Math.min(maxSizeFor(prev.arrow_type), Math.max(HOTSPOT_SIZE_MIN, rawSize))) }
+                return holdPlanAnchor(prev, { ...prev, size: roundTo2(Math.min(maxSizeFor(prev.arrow_type), Math.max(HOTSPOT_SIZE_MIN, rawSize))) }, hotspotSizeRef.current)
             })
             return
         }
@@ -1847,12 +2212,15 @@ export default function ProjectClient({ projectId }) {
         }
         if (g?.mode === 'heading') {
             const angleDeg = Math.atan2(e.clientY - g.cyPage, e.clientX - g.cxPage) * 180 / Math.PI
-            const heading = roundTo2(wrapDeg180(g.startHeading + angleDeg - g.startAngle))
-            setPopupState(prev =>
-                (prev?.mode === 'new' || prev?.mode === 'edit-existing')
-                    ? { ...prev, rotate_x: 90, rotate_y: 0, rotation: heading }
-                    : prev
-            )
+            // Tracked as the ground heading (heading + yaw, which a slide
+            // across the ground leaves unchanged), because turning around an
+            // anchor moves the plan's centre and with it the yaw its stored
+            // heading is measured from.
+            const worldHeading = g.startWorldHeading + angleDeg - g.startAngle
+            setPopupState(prev => {
+                if (prev?.mode !== 'new' && prev?.mode !== 'edit-existing') return prev
+                return holdPlanAnchor(prev, { ...prev, rotate_x: 90, rotate_y: 0, rotation: wrapDeg180(worldHeading - prev.yaw) }, hotspotSizeRef.current)
+            })
             return
         }
         if (g?.mode === 'axisRotate') {
@@ -1876,7 +2244,56 @@ export default function ProjectClient({ projectId }) {
         }
 
         const coords = sampleAt(e.clientX, e.clientY)
-        if (coords) setPopupState(prev =>
+        if (!coords) return
+
+        // A flat site plan slides across the ground like a sheet of paper
+        // rather than having its centre snapped to the cursor: moved by
+        // exactly how far the cursor travels over the ground, keeping its
+        // real-world heading and size. Snapping the centre to the cursor
+        // spun it (its heading is relative to its direction from the
+        // camera, which swings wildly near the nadir — the middle of an
+        // aerial shot) and resized it (on-screen size depends on how far
+        // out it sits), undoing a fit already made.
+        const ps = popupRef.current
+        if (ps?.arrow_type === 'siteplan' && ps.plan_shapes?.flat !== false) {
+            if (g?.mode !== 'planMove') {
+                // Initialised on the first move (every drag start clears the
+                // gesture), so there's no jump: the delta starts at zero.
+                const h = Math.sin(ps.pitch * RAD)    // plan's height, sphere radius 1
+                pinGestureRef.current = {
+                    mode: 'planMove', h,
+                    startYaw: ps.yaw, startPitch: ps.pitch,
+                    startSize: ps.size ?? hotspotSizeRef.current,
+                    startHeading: (ps.rotate_y ?? 0) + (ps.rotation ?? 0),
+                    centre: groundPointAt(ps.yaw, ps.pitch, h),
+                    grab: groundPointAt(coords.yaw, coords.pitch, h),
+                }
+                return
+            }
+            const cur = groundPointAt(coords.yaw, coords.pitch, g.h)
+            const cx = g.centre.x + cur.x - g.grab.x
+            const cz = g.centre.z + cur.z - g.grab.z
+            const yaw = Math.atan2(cx, cz) * DEG
+            const pitch = Math.atan2(g.h, Math.hypot(cx, cz)) * DEG
+            // PSV places the plan on the sphere along its new direction, i.e.
+            // at a different height than the ground it's meant to lie on;
+            // scaling by the height ratio makes the two look identical.
+            const size = g.startSize * Math.sin(pitch * RAD) / Math.sin(g.startPitch * RAD)
+            // Heading is measured from the plan's direction, so it has to
+            // turn back by however far that direction turned.
+            const heading = wrapDeg180(g.startHeading - wrapDeg180(yaw - g.startYaw))
+            setPopupState(prev => {
+                if (prev?.mode !== 'new' && prev?.mode !== 'edit-existing') return prev
+                return {
+                    ...prev, yaw: roundTo2(yaw), pitch: roundTo2(pitch),
+                    size: roundTo2(Math.min(maxSizeFor(prev.arrow_type), Math.max(HOTSPOT_SIZE_MIN, size))),
+                    rotate_x: 90, rotate_y: 0, rotation: roundTo2(heading),
+                }
+            })
+            return
+        }
+
+        setPopupState(prev =>
             (prev?.mode === 'new' || prev?.mode === 'edit-existing') ? { ...prev, ...coords } : prev
         )
     }, [isDraggingPin, sampleAt])
@@ -2351,6 +2768,123 @@ export default function ProjectClient({ projectId }) {
     // paint-bucket fill: the boundary just closed, so that's a complete zone
     // right there. Same shape as a manual Finish + Save, minus the label
     // step; rename/edit it afterward from the panel like any other zone.
+    // Saves the site plan's boundary, exactly where the plan currently sits
+    // on the photo, as an ordinary zone (hover, label, colours, info card).
+    // Returns a message for the panel. The plan hotspot itself is untouched.
+    async function createZoneFromRegion(ps, regionPts, label) {
+        const points = planRegionToZonePoints(ps, regionPts, hotspotSizeRef.current)
+        const res = await fetch('/api/polygons', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_id: project.id, scene_id: activeScene.id, points, status: 'available', label, detail: {} }),
+        })
+        const json = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(json.error || 'Could not create the zone.')
+        setPolygons(prev => [...prev, json.polygon])
+        return regionPts.length > MAX_POLYGON_VERTICES
+    }
+
+    // Saves the site plan's overall outline, exactly where the plan sits on
+    // the photo, as an ordinary zone. Returns a message for the panel.
+    async function makeZoneFromPlanOutline() {
+        const ps = popupState
+        if (!ps?.plan_shapes || !project || !activeScene) return { ok: false, message: 'Open a site plan first.' }
+        await new Promise(r => setTimeout(r, 0))   // let "Creating…" paint before a big drawing is analysed
+        const { outline } = planFacesFor(ps.plan_shapes)
+        if (!outline) return { ok: false, message: 'No enclosed outline found in this drawing.' }
+        try {
+            const simplified = await createZoneFromRegion(ps, outline, 'Site boundary')
+            return { ok: true, message: `Zone "Site boundary" created${simplified ? ` (simplified to ${MAX_POLYGON_VERTICES} corners)` : ''}. Edit it in the Zones tab.` }
+        } catch (e) {
+            return { ok: false, message: e.message || 'Network error — the zone was not created.' }
+        }
+    }
+
+    // Click-to-zone: while on, clicking inside a region of the plan (a plot)
+    // saves that region as a zone. zonePick: { busy, made, error, hover }.
+    async function toggleZonePick() {
+        if (zonePickRef.current) { setZonePick(null); return }
+        setSnap(null); setAnchorPicking(false)
+        const next = { busy: true, made: 0, error: '', hover: null }
+        zonePickRef.current = next
+        setZonePick(next)
+        await new Promise(r => setTimeout(r, 30))   // paint "Analysing…" before the (possibly slow) first trace
+        const ps = popupRef.current
+        if (ps?.plan_shapes) planFacesFor(ps.plan_shapes)
+        setZonePick(z => z && { ...z, busy: false })
+    }
+
+    // The plot number inside a region, if exactly one of the plan's plot
+    // numbers falls in it ("Plot 36A"), else null.
+    function plotNameForRegion(planShapes, region) {
+        const inside = visiblePlotLabels(planShapes).filter(l => planFaceAt([{ pts: region }], l.x, l.y))
+        const texts = [...new Set(inside.map(l => l.text))]
+        return texts.length === 1 ? `Plot ${texts[0]}` : null
+    }
+
+    const zoneCreatingRef = useRef(false)   // one click-to-zone save at a time — a fast double click made two identical zones
+    async function pickZoneAt(yaw, pitch) {
+        const ps = popupRef.current
+        if (!ps?.plan_shapes || !project || !activeScene || zoneCreatingRef.current) return
+        const region = planRegionAtDirection(ps, yaw, pitch, hotspotSizeRef.current)
+        if (!region) { setZonePick(z => z && { ...z, error: 'No enclosed plot there — click inside one.' }); return }
+        const sceneZones = polygonsRef.current.filter(p => p.scene_id === activeScene.id)
+        const plotName = plotNameForRegion(ps.plan_shapes, region)
+        if (plotName && sceneZones.some(p => p.label === plotName)) {
+            setZonePick(z => z && { ...z, error: `${plotName} already has a zone.` })
+            return
+        }
+        zoneCreatingRef.current = true
+        try {
+            await createZoneFromRegion(ps, region, plotName || `Zone ${sceneZones.length + 1}`)
+            setZonePick(z => z && { ...z, made: z.made + 1, error: '' })
+        } catch (e) {
+            setZonePick(z => z && { ...z, error: e.message || 'Could not create the zone.' })
+        } finally {
+            zoneCreatingRef.current = false
+        }
+    }
+
+    // Every region of the drawing holding exactly one plot number becomes a
+    // zone named after it, in one request. Plots that already have a zone
+    // (same name) are skipped; numbers that couldn't be matched are reported.
+    async function makeAllPlotZones() {
+        const ps = popupState
+        if (!ps?.plan_shapes || !project || !activeScene) return { ok: false, message: 'Open a site plan first.' }
+        if (!visiblePlotLabels(ps.plan_shapes).length)
+            return {
+                ok: false,
+                message: plotNumberLabels(ps.plan_shapes.labels).length
+                    ? 'None of the plot numbers are inside your cropped plan — the numbered part of the drawing is outside the crop.'
+                    : 'This plan has no plot numbers yet — use "Import plot numbers" first.',
+            }
+        await new Promise(r => setTimeout(r, 0))   // let the button's busy state paint before a big drawing is analysed
+        const { plots, unplaced, shared } = matchPlotsToFaces(visiblePlanFaces(ps.plan_shapes), visiblePlotLabels(ps.plan_shapes))
+        const existing = new Set(polygonsRef.current.filter(p => p.scene_id === activeScene.id).map(p => p.label))
+        const todo = plots.filter(p => !existing.has(`Plot ${p.label}`))
+        const already = plots.length - todo.length
+        const notes = [
+            already && `${already} already had zones`,
+            shared && `${shared} numbers share a plot with another number (no dividing line between them in the drawing)`,
+            unplaced && `${unplaced} numbers aren't inside any closed plot`,
+        ].filter(Boolean)
+        if (!todo.length) return { ok: !!already, message: `No new plot zones to make${notes.length ? ` — ${notes.join('; ')}` : ''}.` }
+        try {
+            const res = await fetch('/api/polygons', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    project_id: project.id, scene_id: activeScene.id,
+                    polygons: todo.map(p => ({ points: planRegionToZonePoints(ps, p.pts, hotspotSizeRef.current), label: `Plot ${p.label}`, status: 'available' })),
+                }),
+            })
+            const json = await res.json().catch(() => ({}))
+            if (!res.ok) return { ok: false, message: json.error || 'Could not create the zones.' }
+            setPolygons(prev => [...prev, ...json.polygons])
+            return { ok: true, message: `Created ${json.polygons.length} plot zones${notes.length ? `. Skipped: ${notes.join('; ')}.` : '.'} Set their status in the Zones tab.` }
+        } catch {
+            return { ok: false, message: 'Network error — the zones were not created.' }
+        }
+    }
+
     async function saveAutoPolygon(points) {
         if (!project || !activeScene) return
         const label = `Zone ${zoneNumberRef.current}`
@@ -3218,6 +3752,119 @@ export default function ProjectClient({ projectId }) {
                                     corner+rotate handles, same pattern as the cover-up bounding
                                     box — arrows are always square so there's no aspect-ratio
                                     tracking to do here, unlike cover-ups. */}
+                                {hasPopup && isEditing && pinPos?.anchor && (
+                                    <div className="absolute z-30 pointer-events-none" title="Anchor"
+                                         style={{ left: pinPos.anchor.x, top: pinPos.anchor.y, transform: 'translate(-50%,-50%)' }}>
+                                        <svg width="26" height="26" viewBox="0 0 26 26" style={{ filter: 'drop-shadow(0 0 2px rgba(0,0,0,.9))' }}>
+                                            <circle cx="13" cy="13" r="6" fill="none" stroke="#f59e0b" strokeWidth="2"/>
+                                            <path d="M13 0v8M13 18v8M0 13h8M18 13h8" stroke="#f59e0b" strokeWidth="2"/>
+                                        </svg>
+                                    </div>
+                                )}
+                                {snap && popupState?.plan_shapes && psvRef.current && (() => {
+                                    // Pair markers: numbered plan point (where it is now) →
+                                    // crosshair (where it should be). Recomputed each render,
+                                    // which mainLoop's per-frame pinPos update drives.
+                                    const viewer = psvRef.current
+                                    const screen = d => {
+                                        try { return viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: d.yaw * RAD, pitch: d.pitch * RAD }) } catch { return null }
+                                    }
+                                    const planPt = (u, v) => screen(directionOf(planPointAt(popupState, u, v, hotspotSize)))
+                                    const items = snap.pairs.map((p, i) => ({ n: i + 1, a: planPt(p.u, p.v), b: screen(p.target) }))
+                                    const pend = snap.pending ? planPt(snap.pending.u, snap.pending.v) : null
+                                    return (
+                                        <svg className="absolute inset-0 w-full h-full z-40 pointer-events-none" style={{ filter: 'drop-shadow(0 0 2px rgba(0,0,0,.9))' }}>
+                                            {items.map(({ n, a, b }) => (
+                                                <g key={n}>
+                                                    {a && b && <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="4,3"/>}
+                                                    {b && <path d={`M${b.x - 9} ${b.y}h18M${b.x} ${b.y - 9}v18`} stroke="#ef4444" strokeWidth="2"/>}
+                                                    {a && <><circle cx={a.x} cy={a.y} r="9" fill="#16a34a" stroke="#fff" strokeWidth="1.5"/>
+                                                        <text x={a.x} y={a.y + 3.5} textAnchor="middle" fontSize="10" fontWeight="700" fill="#fff">{n}</text></>}
+                                                </g>
+                                            ))}
+                                            {pend && <><circle cx={pend.x} cy={pend.y} r="9" fill="#f59e0b" stroke="#fff" strokeWidth="1.5"/>
+                                                <text x={pend.x} y={pend.y + 3.5} textAnchor="middle" fontSize="10" fontWeight="700" fill="#fff">{snap.pairs.length + 1}</text></>}
+                                        </svg>
+                                    )
+                                })()}
+                                {zonePick?.hover && popupState?.plan_shapes && psvRef.current && (() => {
+                                    const viewer = psvRef.current
+                                    const pts = zonePick.hover.map(([x, y]) => {
+                                        const { u, v } = planUVOfXY(popupState.plan_shapes, x, y)
+                                        const d = directionOf(planPointAt(popupState, u, v, hotspotSize))
+                                        try { return viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: d.yaw * RAD, pitch: d.pitch * RAD }) } catch { return null }
+                                    })
+                                    if (pts.some(p => !p)) return null
+                                    return (
+                                        <svg className="absolute inset-0 w-full h-full z-40 pointer-events-none">
+                                            <polygon points={pts.map(p => `${p.x},${p.y}`).join(' ')}
+                                                     fill="rgba(34,197,94,.28)" stroke="#16a34a" strokeWidth="2"/>
+                                        </svg>
+                                    )
+                                })()}
+                                {zonePick && (
+                                    <div data-keep-popup className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-white border border-editor-border shadow-lg rounded-xl px-3 py-2 flex items-center gap-3 text-sm">
+                                        <span className="text-editor-ink">
+                                            {zonePick.busy
+                                                ? 'Analysing the drawing…'
+                                                : <>Click inside a plot to make it a zone <span className="text-editor-ink-muted">({zonePick.made} made)</span></>}
+                                        </span>
+                                        {zonePick.error && <span className="text-red-600 text-[12px]">{zonePick.error}</span>}
+                                        <button onClick={() => setZonePick(null)}
+                                                className="h-7 px-3 rounded-lg bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover">Done</button>
+                                    </div>
+                                )}
+                                {snap && (
+                                    <div data-keep-popup className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-white border border-editor-border shadow-lg rounded-xl px-3 py-2 flex items-center gap-3 text-sm">
+                                        <span className="text-editor-ink">
+                                            {snap.pending
+                                                ? <>Now click where point <b>{snap.pairs.length + 1}</b> belongs in the photo</>
+                                                : <>Click a corner of the plan{snap.pairs.length >= 2 ? ' to add another pair' : ''} <span className="text-editor-ink-muted">({snap.pairs.length} pair{snap.pairs.length === 1 ? '' : 's'}{snap.pairs.length < 2 ? ', 2+ needed' : ''})</span></>}
+                                        </span>
+                                        {snap.pairs.length >= 2 && popupState?.plan_shapes && (() => {
+                                            // Average leftover distance between each pair's plan
+                                            // point and its target, in degrees of view angle.
+                                            const errs = snap.pairs.map(p => {
+                                                const a = directionOf(planPointAt(popupState, p.u, p.v, hotspotSize))
+                                                return Math.hypot(wrapDeg180(a.yaw - p.target.yaw) * Math.cos(p.target.pitch * RAD), a.pitch - p.target.pitch)
+                                            })
+                                            const avg = errs.reduce((t, e) => t + e, 0) / errs.length
+                                            return <span className="text-[11px] text-editor-ink-muted font-mono" title="Average leftover error between your pairs">±{avg.toFixed(2)}°</span>
+                                        })()}
+                                        <button onClick={undoSnap} disabled={!snap.pending && !snap.pairs.length}
+                                                className="text-editor-ink-muted hover:text-editor-ink disabled:opacity-40">Undo</button>
+                                        <button onClick={() => setSnap(null)}
+                                                className="h-7 px-3 rounded-lg bg-editor-primary text-white font-semibold hover:bg-editor-primary-hover">Done</button>
+                                    </div>
+                                )}
+                                {hasPopup && isEditing && !anchorPicking && !snap && !zonePick && pinPos?.corners && (() => {
+                                    const cs = pinPos.corners
+                                    const all = cs.every(Boolean)
+                                    return (
+                                        <>
+                                            {/* The plan's real outline, so its extent is visible
+                                                even at low opacity. */}
+                                            {all && (
+                                                <svg className="absolute inset-0 w-full h-full z-20 pointer-events-none">
+                                                    <polygon points={cs.map(c => `${c.x},${c.y}`).join(' ')} fill="none"
+                                                             stroke="var(--editor-indigo-700)" strokeWidth="1.5" strokeDasharray="6,4"
+                                                             style={{ filter: 'drop-shadow(0 0 1.5px rgba(255,255,255,.8))' }}/>
+                                                </svg>
+                                            )}
+                                            {cs.map((c, i) => c && (
+                                                <div key={i} data-keep-popup onMouseDown={startPinResize}
+                                                     className="absolute z-30 w-3 h-3 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize shadow"
+                                                     style={{ left: c.x, top: c.y, transform: 'translate(-50%,-50%)' }}/>
+                                            ))}
+                                        </>
+                                    )
+                                })()}
+                                {anchorPicking && (
+                                    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-amber-50 border border-amber-200 text-amber-800 text-sm px-3 py-2 rounded-lg shadow-sm flex items-center gap-2 pointer-events-auto" data-keep-popup>
+                                        Click the spot on the plan you've already matched to the photo.
+                                        <button onClick={() => setAnchorPicking(false)} className="text-amber-500 hover:text-amber-700">Cancel</button>
+                                    </div>
+                                )}
                                 {hasPopup && isEditing && pinPos && (() => {
                                     const size = popupState.size ?? hotspotSize
                                     // Rotation is never applied to a landmark's own preview — the
@@ -3314,7 +3961,11 @@ export default function ProjectClient({ projectId }) {
                                     const zoomScale = (isFloor || isText || isPlan)
                                         ? (activeScene.initial_hfov ?? DEFAULT_HFOV) / (pinPos.hfov || activeScene.initial_hfov || DEFAULT_HFOV)
                                         : 1
-                                    const boxSize = (isFloor || isText || isPlan) ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
+                                    // A site plan keeps a small fixed box: it resizes from its
+                                    // real corners instead, and a box scaled to its (large)
+                                    // size pushed the heading ring off-screen and covered the
+                                    // photo, swallowing clicks.
+                                    const boxSize = isPlan ? 90 : (isFloor || isText) ? size * 0.25 * FLOOR_SIZE_MULTIPLIER * zoomScale : size
                                     // Gizmo ring geometry, hoisted up here (not just computed inside
                                     // the gizmo's own render below) because the drag/reposition hit
                                     // target right below needs to know gizmoFlat too — it has to stay
@@ -3335,7 +3986,14 @@ export default function ProjectClient({ projectId }) {
                                     // instead (translate(-50%,-100%)) so this preview's dot lands
                                     // on the real point too, not size/2 px below it.
                                     return (
-                                        <div ref={pinBoxRef} className="absolute z-30" style={{ left: pinPos.x, top: pinPos.y, transform: isLandmark ? 'translate(-50%,-100%)' : 'translate(-50%,-50%)' }}>
+                                        // While picking an anchor the box (which at site-plan
+                                        // sizes covers much of the plan) must let the click
+                                        // through to the viewer — otherwise it starts a drag
+                                        // and PSV never sees a click. `inert` also covers the
+                                        // ring hit-paths, which re-enable their own pointer
+                                        // events and so ignore a plain pointer-events:none.
+                                        <div ref={pinBoxRef} className="absolute z-30" inert={anchorPicking || !!snap || !!zonePick}
+                                             style={{ left: pinPos.x, top: pinPos.y, transform: isLandmark ? 'translate(-50%,-100%)' : 'translate(-50%,-50%)', opacity: (anchorPicking || snap || zonePick) ? 0.25 : 1 }}>
                                             <div style={{ width: boxSize, height: boxSize, position: 'relative', transform: boxTransform, transformOrigin: 'center center' }}>
                                                 {isLandmark ? (
                                                     <div
@@ -3452,6 +4110,9 @@ export default function ProjectClient({ projectId }) {
                                                         />
                                                     )
                                                 })()}
+                                                {/* A site plan gets its handles on its real corners
+                                                    instead (rendered outside this box, below). */}
+                                                {!isPlan && <>
                                                 <div onMouseDown={startPinResize}
                                                      className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
                                                      style={{ left: 0, top: 0, transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
@@ -3464,6 +4125,7 @@ export default function ProjectClient({ projectId }) {
                                                 <div onMouseDown={startPinResize}
                                                      className="absolute w-2.5 h-2.5 bg-white border-2 border-editor-primary rounded-sm cursor-nwse-resize"
                                                      style={{ left: '100%', top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
+                                                </>}
                                                 {showGizmo ? (() => {
                                                     // Unreal/Blender-style 3-ring gizmo — the on-canvas
                                                     // drag counterpart to the Rotate X/Y/Z sliders (see
@@ -3750,7 +4412,12 @@ export default function ProjectClient({ projectId }) {
                             {activeRightTab === 'directions' && !polygonPopup && (
                                 <HotspotPanel scenes={scenes} activeSceneId={activeScene?.id}
                                               hotspots={hotspots} onDeleteHotspot={requestDeleteHotspot}
-                                              popupState={popupState} onUpdatePopup={setPopupState}
+                                              popupState={popupState} onUpdatePopup={next => setPopupState(prev => holdPlanAnchor(prev, next, hotspotSizeRef.current))}
+                                              anchorPicking={anchorPicking} onToggleAnchorPick={() => { setSnap(null); setZonePick(null); setAnchorPicking(v => !v) }}
+                                              zonePicking={!!zonePick} onToggleZonePick={toggleZonePick}
+                                              snapping={!!snap} onToggleSnap={toggleSnap}
+                                              onMakeZone={makeZoneFromPlanOutline}
+                                              onMakeAllPlots={makeAllPlotZones}
                                               onSavePopup={handleSave} onCancelPopup={() => setPopupState(null)}
                                               onSelectHotspot={id => onHotspotClickRef.current?.(id)}
                                               onUploadImage={uploadOverlayImage} savingHotspot={flags.savingHotspot}

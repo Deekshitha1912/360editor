@@ -361,6 +361,27 @@ function _planDecalSize(bbox){
   var scale=_PLAN_MAX_DIM/Math.max(w,h);
   return {width:Math.max(1,Math.round(w*scale)),height:Math.max(1,Math.round(h*scale))};
 }
+// Hand-synced copies of lib/arrows.js's planRenderRotation / planStretch.
+function _planRenderRotation(ps,rx,ry,rz){
+  if(ps&&ps.flat===false) return {x:rx==null?90:rx,y:ry==null?0:ry,z:rz==null?0:rz};
+  var heading=(ry==null?0:ry)+(rz==null?0:rz);
+  var tx=Number(ps&&ps.tiltX)||0,ty=Number(ps&&ps.tiltY)||0;
+  if(!tx&&!ty) return {x:90,y:0,z:heading};
+  var R=Math.PI/180;
+  var q=[[1,0,0,-90],[0,0,1,-heading],[1,0,0,tx],[0,1,0,ty]].map(function(v){var s=Math.sin(v[3]*R/2);return [v[0]*s,v[1]*s,v[2]*s,Math.cos(v[3]*R/2)];})
+    .reduce(function(a,b){return [a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];});
+  var x=q[0],y=q[1],z=q[2],w=q[3];
+  var m11=1-2*(y*y+z*z),m13=2*(x*z+w*y),m21=2*(x*y+w*z),m22=1-2*(x*x+z*z),m23=2*(y*z-w*x),m31=2*(x*z-w*y),m33=1-2*(x*x+y*y);
+  var ex=Math.asin(-Math.min(1,Math.max(-1,m23)));
+  var locked=Math.abs(m23)>=0.9999999;
+  var ey=locked?Math.atan2(-m31,m11):Math.atan2(m13,m33);
+  var ez=locked?0:Math.atan2(m21,m22);
+  return {x:-ex/R,y:-ey/R,z:-ez/R};
+}
+function _planStretch(ps){
+  var sx=Number(ps&&ps.stretchX),sy=Number(ps&&ps.stretchY);
+  return {x:isFinite(sx)&&sx>0?sx:1,y:isFinite(sy)&&sy>0?sy:1};
+}
 function _planDecalImage(shapes,bbox,color,opacity){
   var sz=_planDecalSize(bbox);var width=sz.width,height=sz.height;
   var w=(bbox.maxX-bbox.minX)||1;var h=(bbox.maxY-bbox.minY)||1;
@@ -457,9 +478,9 @@ function arrowMarker(h){
   if(h.type==='siteplan'){
     if(!h.planShapes) return null;
     var psz=_planDecalSize(h.planShapes.bbox);var paspect=psz.width/psz.height;var ph=h.size*2.5;
-    // Hand-synced copy of lib/arrows.js's planRenderRotation.
-    var pr=h.planShapes.flat===false?{x:h.rotateX,y:h.rotateY,z:h.rotation||0}:{x:90,y:0,z:(h.rotateY||0)+(h.rotation||0)};
-    return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:_planDecalImage(h.planShapes.shapes,h.planShapes.bbox,h.color,h.planShapes.opacity),position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:ph*paspect,height:ph},rotation:{yaw:pr.y+'deg',pitch:pr.x+'deg',roll:pr.z+'deg'},data:d},extra);
+    var pr=_planRenderRotation(h.planShapes,h.rotateX,h.rotateY,h.rotation);
+    var pst=_planStretch(h.planShapes);
+    return Object.assign({id:'hs_'+h.id,type:'imageLayer',imageLayer:_planDecalImage(h.planShapes.shapes,h.planShapes.bbox,h.color,h.planShapes.opacity),position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},size:{width:ph*paspect*pst.x,height:ph*pst.y},rotation:{yaw:pr.y+'deg',pitch:pr.x+'deg',roll:pr.z+'deg'},data:d},extra);
   }
   // Pulse ring stays a plain billboard (a true 3D marker would freeze its
   // pulse animation to one static frame) but X/Y still get a real visible

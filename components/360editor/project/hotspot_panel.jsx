@@ -15,6 +15,7 @@ import { HOTSPOT_COLORS, LABEL_COLORS, DEFAULT_HOTSPOT_COLOR, MAX_Z_INDEX, HOTSP
 import InfoFieldsEditor from './info_fields_editor'
 import ColorPickerRow from './color_picker_row'
 import PlanCropModal from './plan_crop_modal'
+import { plotNumberLabels, visiblePlotNumbers } from '@/lib/plan-faces'
 export { ARROWS }
 
 function Spinner({ size = 10 }) {
@@ -31,7 +32,36 @@ function Spinner({ size = 10 }) {
 // dragging the bounding box + gizmo on the canvas (middle.jsx) — this form
 // only holds what can't be set by dragging: the label, the click action,
 // and (for landmark/floor/pulse) color and rotation-axis fields.
-function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave, onCancel, onDelete, onUploadImage, saving, deleting, formRef, defaultSize }) {
+function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave, onCancel, onDelete, onUploadImage, saving, deleting, formRef, defaultSize, anchorPicking, onToggleAnchorPick, snapping, onToggleSnap, onMakeZone, zonePicking, onToggleZonePick, onMakeAllPlots }) {
+    const [zoneBusy, setZoneBusy] = useState(false)
+    const [zoneMsg, setZoneMsg] = useState(null)   // { ok, message }
+    // Only plot numbers inside the (possibly cropped) visible plan count —
+    // the same rule the editor applies when making the zones.
+    // (Includes numbers carried over from a numbered duplicate of the layout
+    // when the crop shows an unnumbered copy — see visiblePlotNumbers.)
+    const allPlotNumbers = plotNumberLabels(state.plan_shapes?.labels)
+    const visibleNumbers = state.plan_shapes && allPlotNumbers.length ? visiblePlotNumbers(state.plan_shapes) : { labels: [], borrowed: false }
+    const plotCount = visibleNumbers.labels.length
+    const numbersOutsideCrop = allPlotNumbers.length > 0 && plotCount === 0
+
+    // For a plan imported before plot numbers were kept: re-reads the same
+    // DXF for its text labels only, leaving the drawing and its alignment
+    // untouched. Checked against the plan's own extent, so picking a
+    // different drawing by mistake is caught rather than mislabelling plots.
+    async function importPlotNumbers(file) {
+        try {
+            const { dxfTextToLabels } = await import('@/lib/dxf')
+            const labels = dxfTextToLabels(await file.text())
+            const b = state.plan_shapes.originalBbox || state.plan_shapes.bbox
+            const inside = labels.filter(l => l.x >= b.minX && l.x <= b.maxX && l.y >= b.minY && l.y <= b.maxY)
+            if (!plotNumberLabels(inside).length) return { ok: false, message: 'No plot numbers found in that file for this plan — is it the same drawing?' }
+            if (inside.length < labels.length * 0.5) return { ok: false, message: 'That file does not line up with this plan — pick the DXF it was imported from.' }
+            onUpdate({ ...state, plan_shapes: { ...state.plan_shapes, labels: inside } })
+            return { ok: true, message: `Found ${plotNumberLabels(inside).length} plot numbers. Save the hotspot to keep them.` }
+        } catch (e) {
+            return { ok: false, message: e?.message || 'Could not read that DXF.' }
+        }
+    }
     const sizeMax = maxSizeFor(state.arrow_type)
     const sizeValue = Math.round(state.size ?? defaultSize)
     const setSize = v => {
@@ -51,7 +81,12 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
     const isTextForm = state.arrow_type === 'text'
     const isPlanForm = state.arrow_type === 'siteplan'
     const isFlatPlan = isPlanForm && state.plan_shapes?.flat !== false
-    const heading = Math.round((((((state.rotate_y ?? 0) + (state.rotation ?? 0)) + 180) % 360 + 360) % 360 - 180) * 100) / 100
+    const wrap180 = n => ((n + 180) % 360 + 360) % 360 - 180
+    const heading = Math.round(wrap180((state.rotate_y ?? 0) + (state.rotation ?? 0)) * 100) / 100
+    // Shown as the direction on the ground (heading + yaw), which dragging
+    // and anchor pivots leave unchanged — the stored heading is measured
+    // from the plan's centre direction, so it shifts whenever that moves.
+    const groundHeading = Math.round(wrap180(heading + (state.yaw ?? 0)) * 10) / 10
     // 'floor', 'text' and 'siteplan' (all real 3D-embedded imageLayer
     // planes) and 'pulse' (a plain animated billboard) all get the same
     // Rotate X/Y/Z sliders, matching the same 3-ring gizmo shown for all
@@ -440,20 +475,132 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                             <span className="text-[11px] text-editor-ink">Lay flat on ground</span>
                         </label>
                         {isFlatPlan && (
+                            <div className="space-y-1">
+                                <button type="button" onClick={onToggleSnap}
+                                        className={`w-full h-8 rounded-lg text-[11px] font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                                            snapping
+                                                ? 'bg-amber-50 border border-amber-400 text-amber-700'
+                                                : 'bg-editor-primary text-white hover:bg-editor-primary-hover'
+                                        }`}>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><circle cx="5" cy="5" r="3"/><circle cx="19" cy="19" r="3"/><path d="M8 8l8 8" strokeDasharray="2 2"/></svg>
+                                    {snapping ? 'Snapping… (Done on the canvas)' : 'Snap to points'}
+                                </button>
+                                <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                                    Click a corner of the plan, then the same corner in the photo. Two pairs place it; more make it more accurate.
+                                </p>
+                                <button type="button" onClick={onToggleZonePick}
+                                        className={`w-full h-7 rounded-lg text-[11px] font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                                            zonePicking
+                                                ? 'bg-green-50 border border-green-500 text-green-700'
+                                                : 'border border-editor-border text-editor-ink hover:border-editor-primary/40 hover:bg-editor-primary/5'
+                                        }`}>
+                                    {zonePicking ? 'Making zones… (Done on the canvas)' : 'Click plots to make zones'}
+                                </button>
+                                <button type="button" disabled={zoneBusy || !onMakeZone}
+                                        onClick={async () => {
+                                            setZoneBusy(true); setZoneMsg(null)
+                                            try { setZoneMsg(await onMakeZone()) } finally { setZoneBusy(false) }
+                                        }}
+                                        className="w-full h-7 rounded-lg border border-editor-border text-[11px] font-semibold text-editor-ink hover:border-editor-primary/40 hover:bg-editor-primary/5 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5">
+                                    {zoneBusy ? <><Spinner/>Creating zone…</> : 'Zone from whole outline'}
+                                </button>
+                                {plotCount > 0 ? (
+                                    <button type="button" disabled={zoneBusy || !onMakeAllPlots}
+                                            onClick={async () => {
+                                                setZoneBusy(true); setZoneMsg(null)
+                                                try { setZoneMsg(await onMakeAllPlots()) } finally { setZoneBusy(false) }
+                                            }}
+                                            className="w-full h-7 rounded-lg bg-green-600 text-white text-[11px] font-semibold hover:bg-green-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5">
+                                        {zoneBusy ? <><Spinner/>Working…</> : `Make zones for all ${plotCount} plots`}
+                                    </button>
+                                ) : numbersOutsideCrop ? (
+                                    <p className="text-[10.5px] leading-relaxed text-amber-700">
+                                        This drawing's {allPlotNumbers.length} plot numbers are all outside your cropped area, so plots can't be named automatically. Crop to the numbered part of the drawing, or name zones by hand.
+                                    </p>
+                                ) : (
+                                    <label className="w-full h-7 rounded-lg border border-dashed border-editor-primary/40 text-[11px] font-semibold text-editor-primary hover:bg-editor-primary/5 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                                           title="Pick the same DXF this plan was imported from, to read its plot numbers">
+                                        Import plot numbers from the DXF
+                                        <input type="file" accept=".dxf" className="hidden"
+                                               onChange={async e => {
+                                                   const file = e.target.files?.[0]; e.target.value = ''
+                                                   if (file) setZoneMsg(await importPlotNumbers(file))
+                                               }}/>
+                                    </label>
+                                )}
+                                {zoneMsg && (
+                                    <p className={`text-[10.5px] leading-relaxed ${zoneMsg.ok ? 'text-green-700' : 'text-red-600'}`}>{zoneMsg.message}</p>
+                                )}
+                            </div>
+                        )}
+                        {isFlatPlan && (
                             <div className="space-y-0.5">
                                 <div className="flex items-center justify-between">
                                     <label className="flex items-center gap-1.5 text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">
                                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: '#3b82f6' }}/>
                                         Heading
                                     </label>
-                                    <span className="text-[10px] text-editor-ink-muted font-mono">{Math.round(heading * 10) / 10}°</span>
+                                    <span className="text-[10px] text-editor-ink-muted font-mono">{groundHeading}°</span>
                                 </div>
-                                <input type="range" min="-180" max="180" step="0.1" value={heading}
-                                       onChange={e => onUpdate({ ...state, rotate_x: 90, rotate_y: 0, rotation: Number(e.target.value) })}
+                                <input type="range" min="-180" max="180" step="0.1" value={groundHeading}
+                                       onChange={e => onUpdate({ ...state, rotate_x: 90, rotate_y: 0, rotation: wrap180(Number(e.target.value) - (state.yaw ?? 0)) })}
                                        className="w-full" style={{ accentColor: '#3b82f6' }}/>
                                 <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
                                     Kept exactly level, so it lines up with the ground. Match it by moving, resizing and turning it.
                                 </p>
+
+                                {/* Fine corrections once one end lines up but the other
+                                    drifts: tilt for a camera that isn't quite level,
+                                    stretch for proportions that differ from the DXF. */}
+                                <div className="pt-2 space-y-1">
+                                    <span className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Anchor</span>
+                                    <div className="flex items-center gap-1.5">
+                                        <button type="button" onClick={onToggleAnchorPick}
+                                                className={`flex-1 h-7 rounded-lg border text-[11px] font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                                                    anchorPicking
+                                                        ? 'border-amber-400 bg-amber-50 text-amber-700'
+                                                        : 'border-editor-border text-editor-ink hover:border-editor-primary/40 hover:bg-editor-primary/5'
+                                                }`}>
+                                            <svg width="12" height="12" viewBox="0 0 26 26" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="13" cy="13" r="6"/><path d="M13 0v8M13 18v8M0 13h8M18 13h8"/></svg>
+                                            {anchorPicking ? 'Click the plan…' : (state.plan_shapes.anchor ? 'Move anchor' : 'Set anchor')}
+                                        </button>
+                                        {state.plan_shapes.anchor && (
+                                            <button type="button"
+                                                    onClick={() => onUpdate({ ...state, plan_shapes: { ...state.plan_shapes, anchor: null } })}
+                                                    className="h-7 px-2.5 rounded-lg border border-editor-border text-[11px] text-editor-ink-muted hover:bg-editor-subtle transition-colors">
+                                                Clear
+                                            </button>
+                                        )}
+                                    </div>
+                                    <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">
+                                        {state.plan_shapes.anchor
+                                            ? 'Size, heading, tilt and stretch now pivot around the pin, so the spot you matched stays put.'
+                                            : 'Pin a spot you have already matched; everything below then pivots around it.'}
+                                    </p>
+                                </div>
+                                <div className="flex items-center justify-between pt-2">
+                                    <span className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Fine-tune</span>
+                                    <button type="button"
+                                            onClick={() => onUpdate({ ...state, plan_shapes: { ...state.plan_shapes, tiltX: 0, tiltY: 0, stretchX: 1, stretchY: 1 } })}
+                                            className="text-[10px] text-editor-primary hover:underline">Reset</button>
+                                </div>
+                                {[
+                                    { key: 'tiltX',    label: 'Tilt ↕',    min: -5,  max: 5,   step: 0.05, dflt: 0, fmt: v => `${v.toFixed(2)}°` },
+                                    { key: 'tiltY',    label: 'Tilt ↔',    min: -5,  max: 5,   step: 0.05, dflt: 0, fmt: v => `${v.toFixed(2)}°` },
+                                    { key: 'stretchX', label: 'Stretch ↔', min: 0.8, max: 1.2, step: 0.001, dflt: 1, fmt: v => `${(v * 100).toFixed(1)}%` },
+                                    { key: 'stretchY', label: 'Stretch ↕', min: 0.8, max: 1.2, step: 0.001, dflt: 1, fmt: v => `${(v * 100).toFixed(1)}%` },
+                                ].map(({ key, label, min, max, step, dflt, fmt }) => {
+                                    const v = Number(state.plan_shapes[key] ?? dflt)
+                                    return (
+                                        <div key={key} className="flex items-center gap-2">
+                                            <span className="w-16 shrink-0 text-[10px] text-editor-ink-muted">{label}</span>
+                                            <input type="range" min={min} max={max} step={step} value={v}
+                                                   onChange={e => onUpdate({ ...state, plan_shapes: { ...state.plan_shapes, [key]: Number(e.target.value) } })}
+                                                   className="flex-1 accent-editor-primary h-1 cursor-pointer"/>
+                                            <span className="w-12 shrink-0 text-right text-[10px] font-mono tabular-nums text-editor-ink">{fmt(v)}</span>
+                                        </div>
+                                    )
+                                })}
                             </div>
                         )}
                     </div>
@@ -519,6 +666,14 @@ export default function HotspotPanel({
                                          deletingHotspot,
                                          formRef,
                                          defaultSize = 90,
+                                         anchorPicking = false,
+                                         onToggleAnchorPick,
+                                         snapping = false,
+                                         onToggleSnap,
+                                         onMakeZone,
+                                         onMakeAllPlots,
+                                         zonePicking = false,
+                                         onToggleZonePick,
                                      }) {
     const sceneHotspots = hotspots.filter(h => h.scene_id === activeSceneId)
 
@@ -538,6 +693,14 @@ export default function HotspotPanel({
                 deleting={deletingHotspot}
                 formRef={formRef}
                 defaultSize={defaultSize}
+                anchorPicking={anchorPicking}
+                onToggleAnchorPick={onToggleAnchorPick}
+                snapping={snapping}
+                onToggleSnap={onToggleSnap}
+                onMakeZone={onMakeZone}
+                onMakeAllPlots={onMakeAllPlots}
+                zonePicking={zonePicking}
+                onToggleZonePick={onToggleZonePick}
             />
         )
     }

@@ -11,6 +11,46 @@ export async function POST(req) {
         if (authErr || !user) return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
 
         const body = await req.json()
+
+        // Bulk create: { project_id, scene_id, polygons: [{ points, label, status?, z_index?, show_label? }] }
+        // — for turning a whole site plan's plots into zones in one request.
+        // Same ownership, validation and per-scene cap as a single create;
+        // any invalid shape rejects the whole batch so nothing is half-made.
+        if (Array.isArray(body.polygons)) {
+            const { project_id, scene_id, polygons } = body
+            if (!project_id || !scene_id || !polygons.length)
+                return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 })
+            const { data: project } = await supabase
+                .from('projects').select('id').eq('id', project_id).eq('user_id', user.id).single()
+            if (!project) return NextResponse.json({ error: 'Project not found.' }, { status: 404 })
+            const { data: scene } = await supabase
+                .from('scenes').select('id').eq('project_id', project_id).eq('id', scene_id).maybeSingle()
+            if (!scene) return NextResponse.json({ error: 'scene_id does not belong to this project.' }, { status: 400 })
+
+            const rows = []
+            for (const p of polygons) {
+                const cleanPoints = normalizePoints(p?.points)
+                if (!cleanPoints) return NextResponse.json({ error: 'Every zone needs at least 3 valid [yaw, pitch] points.' }, { status: 400 })
+                rows.push({
+                    project_id, scene_id, points: cleanPoints,
+                    status: normalizeStatus(p.status), label: normalizeLabel(p.label), detail: {},
+                    z_index: normalizeZIndex(p.z_index),
+                    show_label: p.show_label === undefined ? true : !!p.show_label,
+                    edge_lengths: normalizeEdgeLengths(undefined, cleanPoints.length),
+                    action_type: normalizeActionType(undefined, 'info'),
+                    info_fields: normalizeInfoFields(undefined),
+                })
+            }
+            const { count } = await supabase
+                .from('polygons').select('id', { count: 'exact', head: true }).eq('scene_id', scene_id)
+            if ((count ?? 0) + rows.length > MAX_POLYGONS_PER_SCENE)
+                return NextResponse.json({ error: `That would exceed the limit of ${MAX_POLYGONS_PER_SCENE} zones per scene (${count ?? 0} already).` }, { status: 400 })
+
+            const { data: created, error } = await supabase.from('polygons').insert(rows).select()
+            if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+            return NextResponse.json({ polygons: created }, { status: 201 })
+        }
+
         const {
             project_id, scene_id, points, status, label, detail, custom_color, border_color, hover_color, label_color, z_index, show_label, edge_lengths, fill_opacity, hover_opacity,
             action_type, target_scene_id, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden,
