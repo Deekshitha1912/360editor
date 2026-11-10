@@ -16,7 +16,16 @@ export async function proxy(request) {
     if (PUBLIC_TOUR.test(pathname)) return NextResponse.next()
 
     const { supabase, state } = createMiddlewareClient(request)
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { user }, error } = await supabase.auth.getUser()
+
+    // A login cookie whose refresh token no longer exists on the server
+    // (expired, already used, or signed out elsewhere) can never succeed,
+    // but nothing removed it — so Supabase retried and logged "Invalid
+    // Refresh Token" on every request, indefinitely. Delete the dead auth
+    // cookies here, from both the request (so this request's server code
+    // sees a clean logged-out state) and the response (so the browser drops
+    // them). The error is then logged once, by the request that cleans up.
+    if (!user && isDeadSession(error)) state.response = clearAuthCookies(request, state.response)
 
     const isProtected = protectedRoutes.some(r => pathname === r || pathname.startsWith(`${r}/`))
 
@@ -34,6 +43,33 @@ export async function proxy(request) {
     if (user && authRoutes.includes(pathname)) return redirectKeepingCookies('/360editor', request, state)
 
     return state.response
+}
+
+// Errors that mean the stored session can never be recovered, as opposed to
+// a transient failure (network, Supabase briefly down) where the cookie
+// must be kept.
+const DEAD_SESSION_CODES = new Set([
+    'refresh_token_not_found', 'refresh_token_already_used', 'session_not_found', 'session_expired', 'bad_jwt', 'user_not_found',
+])
+function isDeadSession(error) {
+    return !!error && (DEAD_SESSION_CODES.has(error.code) || /invalid refresh token/i.test(error.message || ''))
+}
+
+// Supabase stores the session as sb-<project-ref>-auth-token, split into
+// .0/.1/... chunks when large, plus a PKCE code-verifier cookie.
+// Returns a rebuilt response: NextResponse.next({ request }) captures the
+// request's cookies when it's created, so it has to be made after the
+// deletions for this request's pages to see them gone. Any cookies already
+// set on the old response are carried over.
+function clearAuthCookies(request, response) {
+    const dead = request.cookies.getAll().map(c => c.name)
+        .filter(name => /^sb-.+-auth-token(-code-verifier)?(\.\d+)?$/.test(name))
+    if (!dead.length) return response
+    dead.forEach(name => request.cookies.delete(name))
+    const next = NextResponse.next({ request })
+    response.cookies.getAll().forEach(c => { if (!dead.includes(c.name)) next.cookies.set(c) })
+    dead.forEach(name => next.cookies.set(name, '', { path: '/', maxAge: 0 }))
+    return next
 }
 
 function redirectKeepingCookies(path, request, state) {

@@ -171,15 +171,15 @@
   --editor-cream-50:   #FAFAF7;
   --editor-cream-100:  #F4F4EF;
   --editor-cream-200:  #E2E2DA;
-  --editor-cream-300:  #DDDDD3;
+  --editor-cream-300:  #EFEEE7;
   --editor-cream-400:  #d8d8ce;
   --editor-cream-500:  #c4c4b8;
   --editor-ink-900:    #1a1a18;
   --editor-ink-600:    #6b6b60;
   --editor-ink-400:    #9a9a8e;
-  --editor-indigo-700: #3730a3;
-  --editor-indigo-800: #312e81;
-  --editor-lime-400:   #a3e635;
+  --editor-green-700:  #0b5d3b;
+  --editor-green-800:  #084a2f;
+  --editor-amber-400:  #f5b800;
 }
 
 @theme inline {
@@ -193,9 +193,9 @@
   --color-editor-ink:           var(--editor-ink-900);
   --color-editor-ink-muted:     var(--editor-ink-600);
   --color-editor-ink-dim:       var(--editor-ink-400);
-  --color-editor-primary:       var(--editor-indigo-700);
-  --color-editor-primary-hover: var(--editor-indigo-800);
-  --color-editor-accent:        var(--editor-lime-400);
+  --color-editor-primary:       var(--editor-green-700);
+  --color-editor-primary-hover: var(--editor-green-800);
+  --color-editor-accent:        var(--editor-amber-400);
 
   /* Type scale — none existed before; the editor previously hand-picked
      one-off px sizes (9, 9.5, 10, 10.5, 11, 12, 13, 14) per component. */

@@ -11,7 +11,7 @@
 
 import { useState } from 'react'
 import { ARROWS } from '@/lib/arrows'
-import { HOTSPOT_COLORS, LABEL_COLORS, DEFAULT_HOTSPOT_COLOR, MAX_Z_INDEX, HOTSPOT_SIZE_MIN, maxSizeFor } from '@/lib/hotspots'
+import { HOTSPOT_COLORS, DEFAULT_HOTSPOT_COLOR, MAX_Z_INDEX, HOTSPOT_SIZE_MIN, maxSizeFor } from '@/lib/hotspots'
 import InfoFieldsEditor from './info_fields_editor'
 import ColorPickerRow from './color_picker_row'
 import PlanCropModal from './plan_crop_modal'
@@ -417,6 +417,35 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                 )}
 
                 {isLandmarkForm && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Subtitle</label>
+                        <input value={state.sublabel || ''} maxLength={60}
+                               onChange={e => onUpdate({ ...state, sublabel: e.target.value })}
+                               placeholder="e.g. 18 min"
+                               className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5 text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted"/>
+                        <p className="text-[10.5px] text-editor-ink-dim leading-relaxed">Shown as a pill under the name in the tour's landmark callout. Landmarks are also what the tour's Nearby list and Look around button use.</p>
+                    </div>
+                )}
+
+                {isLandmarkForm && (
+                    <div className="space-y-1">
+                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Nearby panel details</label>
+                        <textarea value={state.description || ''} maxLength={600} rows={3}
+                                  onChange={e => onUpdate({ ...state, description: e.target.value })}
+                                  placeholder="Short description"
+                                  className="w-full bg-editor-surface border border-editor-border rounded-lg px-2.5 py-1.5 text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted resize-none"/>
+                        <input value={state.distance_text || ''} maxLength={80}
+                               onChange={e => onUpdate({ ...state, distance_text: e.target.value })}
+                               placeholder="Distance, e.g. 11.8 km NE · straight line"
+                               className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5 text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted"/>
+                        <input value={state.route_url || ''} maxLength={2000}
+                               onChange={e => onUpdate({ ...state, route_url: e.target.value })}
+                               placeholder="Route: Google Maps link"
+                               className="w-full h-7 bg-editor-surface border border-editor-border rounded-lg px-2.5 text-[12px] text-editor-ink focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted"/>
+                    </div>
+                )}
+
+                {isLandmarkForm && (
                     <label className="flex items-center gap-1.5 text-[11px] text-editor-ink cursor-pointer">
                         <input
                             type="checkbox"
@@ -437,21 +466,6 @@ function HotspotForm({ state, scenes, activeSceneId, hotspots, onUpdate, onSave,
                                         aria-label={c}
                                         className={`w-6 h-6 rounded-full border-2 transition-transform ${
                                             (state.color || HOTSPOT_COLORS[0]) === c ? 'border-editor-ink scale-110' : 'border-white/60 hover:scale-105'
-                                        }`}
-                                        style={{ background: c, boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}/>
-                            ))}
-                        </div>
-                    </div>
-                )}
-                {isLandmarkForm && (
-                    <div className="space-y-1">
-                        <label className="text-[10px] text-editor-ink-muted uppercase tracking-wider font-medium">Label color</label>
-                        <div className="flex gap-1.5">
-                            {LABEL_COLORS.map(c => (
-                                <button key={c} type="button" onClick={() => onUpdate({ ...state, label_color: c })}
-                                        aria-label={c}
-                                        className={`w-6 h-6 rounded-full border-2 transition-transform ${
-                                            (state.label_color || LABEL_COLORS[0]) === c ? 'border-editor-ink scale-110' : 'border-white/60 hover:scale-105'
                                         }`}
                                         style={{ background: c, boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}/>
                             ))}

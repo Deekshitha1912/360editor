@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase-server'
 
 // Everything the editor needs back after a write.
 const SCENE_FIELDS =
-    'id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, created_at'
+    'id, project_id, name, storage_path, url, initial_yaw, initial_pitch, initial_hfov, top_yaw, top_pitch, top_hfov, created_at'
 
 // Ownership is checked with its own SELECT, then the write is a plain update.
 //
@@ -34,7 +34,7 @@ export async function PATCH(req, { params }) {
         const { id } = await params
         const body = await req.json()
 
-        const allowed = ['initial_yaw', 'initial_pitch', 'initial_hfov', 'name']
+        const allowed = ['initial_yaw', 'initial_pitch', 'initial_hfov', 'top_yaw', 'top_pitch', 'top_hfov', 'name']
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
         )

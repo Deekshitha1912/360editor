@@ -35,7 +35,7 @@ export async function PATCH(req, { params }) {
             'label', 'target_scene_id', 'pitch', 'yaw', 'arrow_type', 'size', 'rotation',
             'color', 'label_color', 'rotate_x', 'rotate_y', 'z_index',
             'action_type', 'link_url', 'info_body', 'info_image_url', 'info_fields', 'toggle_target_id', 'start_hidden',
-            'animate_line', 'custom_icon_url', 'plan_shapes',
+            'animate_line', 'custom_icon_url', 'plan_shapes', 'sublabel', 'description', 'route_url', 'distance_text',
         ]
         const updates = Object.fromEntries(
             Object.entries(body).filter(([k]) => allowed.includes(k))
@@ -60,6 +60,10 @@ export async function PATCH(req, { params }) {
         if ('animate_line'    in updates) updates.animate_line    = !!updates.animate_line
         if ('info_fields'     in updates) updates.info_fields     = normalizeInfoFields(updates.info_fields)
         if ('custom_icon_url' in updates) updates.custom_icon_url = clampText(updates.custom_icon_url, 2000)
+        if ('sublabel'        in updates) updates.sublabel        = clampText(updates.sublabel, 60)
+        if ('description'     in updates) updates.description     = clampText(updates.description, 600)
+        if ('route_url'       in updates) updates.route_url       = clampText(updates.route_url, 2000)
+        if ('distance_text'   in updates) updates.distance_text   = clampText(updates.distance_text, 80)
         // undefined (not "in updates") is the "leave untouched" case and an
         // explicit null clears the plan; anything else that fails to
         // normalize is rejected, never silently stored as null (see POST).
@@ -128,7 +132,7 @@ export async function PATCH(req, { params }) {
                 id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
                 color, label_color, rotate_x, rotate_y, z_index,
                 action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
-                custom_icon_url, plan_shapes
+                custom_icon_url, plan_shapes, sublabel, description, route_url, distance_text
             `)
 
         if (updateErr) {

@@ -18,7 +18,7 @@ export async function POST(req) {
             project_id, scene_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation,
             color, label_color, rotate_x, rotate_y, z_index,
             action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line,
-            custom_icon_url, plan_shapes,
+            custom_icon_url, plan_shapes, sublabel, description, route_url, distance_text,
         } = body
 
         if (!project_id || !scene_id || pitch == null || yaw == null)
@@ -75,6 +75,10 @@ export async function POST(req) {
                 animate_line: animate_line == null ? true : !!animate_line,
                 custom_icon_url: clampText(custom_icon_url, 2000),
                 plan_shapes: planShapes,
+                sublabel: clampText(sublabel, 60),
+                description: clampText(description, 600),
+                route_url: clampText(route_url, 2000),
+                distance_text: clampText(distance_text, 80),
             })
             .select().single()
 

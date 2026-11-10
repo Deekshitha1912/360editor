@@ -44,7 +44,7 @@ const ROT_STEP = (10 * Math.PI) / 180
 
 // onSaveView, savingView, savedView are optional — CameraControls still works
 // as plain pan/zoom buttons without them (used in the preview-less contexts).
-export function CameraControls({ psvRef, onSaveView, savingView, savedView }) {
+export function CameraControls({ psvRef, onSaveView, savingView, savedView, onSaveTopView, savingTopView, savedTopView, hasTopView }) {
     const controls = [
         { label: '▲', fn: v => { const p = v.getPosition(); v.rotate({ yaw: p.yaw, pitch: p.pitch + ROT_STEP }) } },
         { label: '▼', fn: v => { const p = v.getPosition(); v.rotate({ yaw: p.yaw, pitch: p.pitch - ROT_STEP }) } },
@@ -70,6 +70,17 @@ export function CameraControls({ psvRef, onSaveView, savingView, savedView }) {
                         : savedView
                             ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Saved</>
                             : 'Set as opening view'}
+                </button>
+            )}
+            {onSaveTopView && (
+                <button onClick={onSaveTopView} disabled={savingTopView}
+                        title="Save the current pan/zoom as the view the tour's Top view button flies to"
+                        className="h-8 px-3 rounded-lg bg-white/90 backdrop-blur text-editor-ink text-editor-sm font-semibold hover:bg-white shadow-sm border border-editor-border disabled:opacity-50 transition-colors flex items-center gap-1.5">
+                    {savingTopView
+                        ? <><Spinner size={11}/>Saving…</>
+                        : savedTopView
+                            ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Saved</>
+                            : (hasTopView ? 'Update top view' : 'Set as top view')}
                 </button>
             )}
         </div>
@@ -103,7 +114,7 @@ export function SettingsModal({ draft, onChange, onSave, onClose, saving, onUplo
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl border border-editor-border shadow-2xl p-6 w-[360px] space-y-4">
+            <div className="bg-white rounded-2xl border border-editor-border shadow-2xl p-6 w-[360px] max-h-[90vh] overflow-y-auto space-y-4">
                 <p className="text-editor-lg font-semibold text-editor-ink">Project settings</p>
 
                 <div className="space-y-1">
@@ -112,6 +123,21 @@ export function SettingsModal({ draft, onChange, onSave, onClose, saving, onUplo
                            onChange={e => onChange({ ...draft, name: e.target.value })}
                            maxLength={120}
                            className="w-full h-8 border border-editor-border rounded-lg px-2.5 text-editor-base focus:outline-none focus:border-editor-primary"/>
+                </div>
+
+                <div className="space-y-1.5">
+                    <label className="text-editor-sm text-editor-ink-muted uppercase tracking-wider">Tour contact & location</label>
+                    {[
+                        { key: 'location_subtitle', placeholder: 'Location line, e.g. Poonthandalam · ECR, Chennai' },
+                        { key: 'contact_phone',     placeholder: 'Phone for the Call button, e.g. +91 98765 43210' },
+                        { key: 'whatsapp_number',   placeholder: 'WhatsApp for the Enquiry button, e.g. +91 98765 43210' },
+                        { key: 'maps_url',          placeholder: 'Google Maps link for the Location button' },
+                    ].map(f => (
+                        <input key={f.key} type="text" value={draft[f.key] || ''} placeholder={f.placeholder}
+                               onChange={e => onChange({ ...draft, [f.key]: e.target.value })}
+                               className="w-full h-8 border border-editor-border rounded-lg px-2.5 text-editor-base focus:outline-none focus:border-editor-primary placeholder:text-editor-ink-muted"/>
+                    ))}
+                    <p className="text-editor-xs text-editor-ink-muted">Leave a field empty to hide its button in the tour.</p>
                 </div>
 
                 <div className="space-y-1">

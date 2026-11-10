@@ -5,7 +5,7 @@
 
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups, overlaysForScene } from '@/lib/overlays'
-import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor } from '@/lib/polygons'
+import { colorForStatus, borderColorFor, hoverColorFor, badgeLabelStyleFor, STATUS_COLORS } from '@/lib/polygons'
 import { DEFAULT_HOTSPOT_COLOR, DEFAULT_LABEL_COLOR } from '@/lib/hotspots'
 
 const PSV_VERSION = '5.15.1'
@@ -34,6 +34,30 @@ function safeJson(value) {
         .replace(/>/g, '\\u003e')
         .replace(/\u2028/g, '\\u2028')
         .replace(/\u2029/g, '\\u2029')
+}
+
+// Plot size for the tour's Minimum size filter and hover tooltip, read from
+// the zone's Details: the first key that names a size or area with a number
+// in its value. Text with its own unit is shown as typed.
+function plotSize(detail) {
+    for (const [k, raw] of Object.entries(detail || {})) {
+        if (!/size|area|sq\.?\s*ft|sqft/i.test(k)) continue
+        const v = String(raw ?? '').trim()
+        const m = v.replace(/,/g, '').match(/\d+(\.\d+)?/)
+        if (!m) continue
+        const n = Number(m[0])
+        return { n, text: /[a-z]/i.test(v) ? v : n.toLocaleString('en-IN') + ' sq.ft' }
+    }
+    return null
+}
+
+// Route links are opened from a button: only web links pass, and a pasted
+// "maps.app.goo.gl/x" without a scheme still works.
+function webUrl(v) {
+    const s = String(v || '').trim()
+    if (!s) return ''
+    if (/^https?:\/\//i.test(s)) return s
+    return /^[a-z][a-z0-9+.-]*:/i.test(s) ? '' : 'https://' + s
 }
 
 export function buildTourHtml({ project, scenes, hotspots, polygons }) {
@@ -95,6 +119,11 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                     // for every other type (and for a 'siteplan' hotspot
                     // whose import never actually succeeded).
                     planShapes: h.plan_shapes || null,
+                    // Landmark callout pill, e.g. "18 min".
+                    sublabel: h.sublabel || '',
+                    description: h.description || '',
+                    distanceText: h.distance_text || '',
+                    routeUrl: webUrl(h.route_url),
                 }
             })
 
@@ -125,6 +154,8 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
                 fillOpacity: z.fill_opacity ?? 0.33,
                 hoverOpacity: z.hover_opacity ?? 0.6,
                 status: z.status,
+                sizeNum: plotSize(z.detail)?.n ?? null,
+                sizeText: plotSize(z.detail)?.text ?? '',
                 label: z.label || '',
                 // ANDed with the tour-wide switch here, once, rather than
                 // shipping both flags and re-checking per frame in the tour.
@@ -152,12 +183,28 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
             yaw:   scene.initial_yaw   ?? 0,
             pitch: scene.initial_pitch ?? -5,
             hfov:  scene.initial_hfov  ?? DEFAULT_HFOV,
+            // The Top view button's target (set in the editor); null falls
+            // back to looking straight down.
+            top: scene.top_pitch != null
+                ? { yaw: scene.top_yaw ?? 0, pitch: scene.top_pitch, hfov: scene.top_hfov ?? scene.initial_hfov ?? DEFAULT_HFOV }
+                : null,
             arrows, covers, zones: sceneZones,
         }
         sceneList.push({ id: scene.id, name: scene.name, url: scene.url })
     }
 
     const toursJson     = safeJson(tours)
+    const statusColorsJson = safeJson(STATUS_COLORS)
+    // Project badge + contact buttons. Digits only for WhatsApp (wa.me wants
+    // the bare international number).
+    const brandJson = safeJson({
+        name: project.name || '',
+        subtitle: project.location_subtitle || '',
+        logo: project.cover_logo_url || '',
+        phone: (project.contact_phone || '').trim(),
+        whatsapp: (project.whatsapp_number || '').replace(/[^0-9]/g, ''),
+        maps: project.maps_url || '',
+    })
     const sceneListJson = safeJson(sceneList)
 
     // Logo watermarks — fixed screen overlays, NOT sphere markers. Because a
@@ -196,21 +243,18 @@ export function buildTourHtml({ project, scenes, hotspots, polygons }) {
 <title>${escapeHtml(project.name)}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@${PSV_VERSION}/index.min.css"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@${PSV_VERSION}/index.min.css"/>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-serif;background:#000}
 #viewer{width:100vw;height:100vh}
 .wm{position:fixed;transform:translate(-50%,-50%);z-index:15000;pointer-events:none;max-width:90vw;}
 .wm img{display:block;width:100%;height:auto;filter:drop-shadow(0 2px 8px rgba(0,0,0,.5));}
-#sceneSidebar{position:fixed;top:50%;right:8px;transform:translateY(-50%);z-index:20000;max-height:80vh;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;display:flex;flex-direction:column;gap:7px;padding:6px 8px;opacity:1;transition:opacity .28s ease,transform .28s ease;}
+#sceneSidebar{position:fixed;top:50%;left:24px;transform:translateY(-50%);z-index:20000;max-height:62vh;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;display:flex;flex-direction:column;gap:8px;padding:8px;background:rgba(250,249,245,.94);border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.25);opacity:1;transition:opacity .28s ease,transform .28s ease;}
 #sceneSidebar::-webkit-scrollbar{display:none}
-#sceneSidebar.hidden{opacity:0;transform:translateY(-50%) translateX(10px);pointer-events:none;}
+#sceneSidebar.hidden{opacity:0;transform:translateY(-50%) translateX(-12px);pointer-events:none;}
 /* Neutral dark glass -- NOT saturate()'d, which was pulling in whatever warm
    tone the panorama behind it happened to be (that's what read as "orange"). */
-#sbToggle{position:fixed;top:18px;right:8px;z-index:20001;width:38px;height:38px;border-radius:50%;border:1px solid rgba(255,255,255,.22);cursor:pointer;background:rgba(15,15,18,.4);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 18px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.18);transition:background .2s ease,transform .2s ease;}
-#sbToggle:hover{background:rgba(15,15,18,.58);transform:scale(1.07)}
-#sbToggle:active{transform:scale(.94)}
 /* Fixed to the image's own width so a long scene name never widens the
    item past it -- the name is what gets trimmed (ellipsis), never the
    image's flush position against the right edge. */
@@ -218,8 +262,6 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 .ss-item img{width:78px;height:49px;object-fit:cover;border-radius:8px;display:block;box-shadow:0 2px 10px rgba(0,0,0,.5);border:2px solid transparent;transition:border-color .2s ease;}
 .ss-item.active img{border-color:#3730a3}
 .ss-item span{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font-size:10px;color:#fff;font-weight:600;text-shadow:0 1px 4px rgba(0,0,0,.75);}
-#controls{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:20000;display:flex;gap:5px;}
-.ctrl{width:38px;height:38px;border-radius:9px;border:none;cursor:pointer;font-size:15px;font-weight:700;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);color:#1a1a18;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.28);transition:background .15s ease;}.ctrl:hover{background:#fff}
 #loadOverlay{position:fixed;inset:0;background:#0a0a0a;color:#fff;display:flex;justify-content:center;align-items:center;flex-direction:column;z-index:100001;}
 #loadTitle{font-size:22px;font-weight:600;margin-bottom:8px;}#loadPct{font-size:13px;opacity:.55;margin-bottom:22px}
 #loadBar{width:260px;height:3px;background:rgba(255,255,255,.18);border-radius:2px;overflow:hidden}#loadFill{height:100%;background:#3730a3;width:0%;transition:width .3s ease}
@@ -272,7 +314,8 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 /* Always-visible plot-number badge at a zone's centre. Neutral light pill
    rather than the zone's own color, so one style stays legible on every
    fill. Non-interactive so it never steals the zone's own click. */
-.zone-label{pointer-events:none;background:rgba(255,255,255,.92);color:#14141a;font-size:12px;font-weight:700;line-height:1;padding:4px 9px;border-radius:20px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.4);}
+.zone-label{pointer-events:none;width:34px;height:34px;border-radius:50%;background:#fff;color:#14141a;border:2.5px solid var(--zc,#22c55e);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;line-height:1;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);transition:transform .2s ease;}
+.zone-label.zl-long{width:auto;min-width:34px;padding:0 7px;border-radius:17px;font-size:12px;}
 /* Mild hover fade for zones. Costs no JavaScript: the markers plugin sets
    fill/stroke with setAttributeNS on an element it REUSES across updates, and
    a presentation attribute participates in the cascade, so changing it
@@ -288,15 +331,78 @@ html,body{height:100%;overflow:hidden;font-family:'Poppins',-apple-system,sans-s
 .hs-info a{display:inline-block;background:#3730a3;color:#fff;font-size:12px;font-weight:600;text-decoration:none;padding:8px 16px;border-radius:20px;margin:0 8px 8px 0;}
 .hs-info .hs-caption{font-size:11px;opacity:.6;margin:-6px 0 10px;}
 .hs-info .hs-field-label{font-size:10.5px;font-weight:700;opacity:.55;text-transform:uppercase;letter-spacing:.04em;margin:0 0 3px;}
-.lm{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:auto;filter:drop-shadow(0 0 1.5px rgba(0,0,0,.75)) drop-shadow(0 2px 4px rgba(0,0,0,.4));}
-.lm-label{background:var(--lm-label-color,#14141a);color:#fff;font-size:12px;font-weight:600;padding:4px 10px;border-radius:8px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35);margin-bottom:4px;border-bottom:2px solid var(--lm-color,#3730a3);}
-.lm-line{width:3.5px;height:var(--lm-height,48px);background:var(--lm-color,#3730a3);border-radius:2px;}
-.lm-dot{width:15px;height:15px;border-radius:50%;background:var(--lm-color,#3730a3);border:2px solid #fff;box-shadow:0 0 0 0 var(--lm-color,#3730a3);animation:lm-pulse 2s ease-out infinite;}
+.lm{position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:auto;filter:drop-shadow(0 4px 10px rgba(0,0,0,.28));}
+.lm-label{background:#fff;color:var(--brand,#0b5d3b);font-size:14px;font-weight:600;line-height:1.25;text-align:center;padding:7px 16px 9px;border-radius:5px;border:2px solid var(--lm-color,#f5b800);max-width:240px;white-space:normal;}
+.lm-pill{display:inline-block;margin-top:5px;background:var(--lm-color,#f5b800);color:#1a1a18;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;}
+.lm-line{width:2.5px;height:var(--lm-height,48px);background:var(--lm-color,#f5b800);}
+.lm-dot{width:13px;height:13px;border-radius:50%;background:var(--lm-color,#f5b800);border:2px solid #fff;box-shadow:0 0 0 0 var(--lm-color,#f5b800);animation:lm-pulse 2s ease-out infinite;}
 @keyframes lm-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--lm-color,#3730a3) 55%, transparent)}70%{box-shadow:0 0 0 14px color-mix(in srgb, var(--lm-color,#3730a3) 0%, transparent)}100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--lm-color,#3730a3) 0%, transparent)}}
 .lm.lm-anim .lm-line{transform:scaleY(0);transform-origin:bottom center;transition:transform 1.1s cubic-bezier(.22,1,.36,1);}
 .lm.lm-anim .lm-label{opacity:0;transition:opacity .3s ease;}
 .lm.lm-anim.lm-in-view .lm-line{transform:scaleY(1);}
 .lm.lm-anim.lm-in-view .lm-label{opacity:1;transition:opacity .3s ease 1.1s;}
+/* ── Tour chrome (badge, top buttons, right rail, legend, plot strip) ── */
+:root{--brand:#0b5d3b;--accent:#f5b800;--chip:rgba(250,249,245,.95);}
+.chip{background:var(--chip);color:#1a1a18;border:none;border-radius:28px;box-shadow:0 4px 16px rgba(0,0,0,.22);font-family:inherit;}
+#brand{position:fixed;top:16px;left:20px;z-index:20000;display:flex;align-items:center;gap:10px;padding:6px 18px 6px 6px;max-width:min(380px,calc(100vw - 40px));}
+#brandMark{width:36px;height:36px;border-radius:50%;background:var(--brand);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden;}
+#brandMark img{width:100%;height:100%;object-fit:cover;}
+#brandName{font-size:15px;font-weight:600;line-height:1.15;color:#1a1a18;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#brandSub{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:#6b6b60;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#topbar{position:fixed;top:16px;right:20px;z-index:20000;display:flex;gap:8px;}
+.tb{position:relative;display:flex;align-items:center;gap:7px;height:42px;padding:0 16px;font-size:14px;font-weight:500;cursor:pointer;transition:transform .15s ease,background .15s ease;}
+.tb:hover{transform:translateY(-1px);background:#fff;}
+.tb svg{flex-shrink:0;}
+.tb.accent{background:var(--accent);}
+.tb.accent:hover{background:#ffc61a;}
+.dd{position:absolute;top:50px;right:0;min-width:200px;max-height:60vh;overflow-y:auto;background:#fff;border-radius:12px;box-shadow:0 10px 32px rgba(0,0,0,.25);padding:6px;display:none;cursor:default;}
+.dd.open{display:block;}
+.dd-item{display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border:none;background:none;border-radius:8px;font:inherit;font-size:13px;color:#1a1a18;text-align:left;cursor:pointer;}
+.dd-item:hover{background:#f3f2ec;}
+.dd-item small{margin-left:auto;font-size:11px;color:#6b6b60;}
+.dd-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+.dd-item input{width:14px;height:14px;accent-color:var(--brand);}
+#rail{position:fixed;top:50%;right:20px;transform:translateY(-50%);z-index:20000;display:flex;flex-direction:column;gap:9px;}
+.rb{width:46px;height:46px;border-radius:10px;border:none;background:var(--chip);color:#1a1a18;box-shadow:0 4px 16px rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:transform .15s ease,background .15s ease;}
+.rb:hover{background:#fff;transform:scale(1.04);}
+.rb.on{background:var(--brand);color:#fff;}
+#legend{position:fixed;left:20px;bottom:88px;z-index:20000;display:flex;align-items:center;gap:14px;padding:8px 16px;font-size:13px;}
+#legend span{display:flex;align-items:center;gap:6px;white-space:nowrap;}
+#legend i{width:11px;height:11px;border-radius:3px;display:inline-block;}
+#legend b{font-weight:600;}
+#strip{position:fixed;left:20px;right:20px;bottom:16px;z-index:20000;height:60px;border-radius:14px;display:flex;align-items:center;gap:6px;padding:0 14px;overflow-x:auto;scrollbar-width:thin;}
+.pl{flex-shrink:0;min-width:44px;height:42px;padding:0 8px;border:none;border-radius:8px;background:transparent;font:inherit;font-size:15px;font-weight:700;color:#1a1a18;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;transition:background .15s ease,opacity .2s ease;}
+.pl:hover,.pl.active{background:#ecebe4;}
+.pl i{width:24px;height:3px;border-radius:2px;display:block;}
+.pl.dim{opacity:.28;}
+.tb.on,.tb.on:hover{background:var(--brand);color:#fff;}
+.fp-title,.np-title{font-size:17px;font-weight:600;color:#14241d;}
+#ddFilter{position:fixed;top:66px;right:20px;z-index:20002;width:min(340px,calc(100vw - 40px));max-height:calc(100vh - 82px);min-width:0;padding:18px;border-radius:14px;background:#fbfaf6;}
+#ddFilter .dd-item{padding:6px 4px;font-size:14px;background:none;}
+#ddFilter .dd-item input{accent-color:auto;}
+#ddFilter .dd-dot{width:12px;height:12px;border-radius:3px;}
+.fp-label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#6b6b60;margin:14px 0 6px;}
+.fp-slider{width:100%;accent-color:var(--brand);cursor:pointer;}
+.fp-ends{display:flex;justify-content:space-between;font-size:12.5px;color:#6b6b60;margin-top:4px;}
+.fp-reset{width:100%;height:42px;margin-top:16px;border:none;border-radius:11px;background:#eeede6;color:#1a1a18;font:inherit;font-size:14px;font-weight:600;cursor:pointer;}
+.fp-reset:hover{background:#e6e5dd;}
+#nearbyPanel{position:fixed;top:66px;right:20px;z-index:20002;width:min(400px,calc(100vw - 40px));max-height:calc(100vh - 82px);overflow-y:auto;background:#fbfaf6;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:18px;display:none;}
+#nearbyPanel.open{display:block;}
+.np-head{display:flex;align-items:center;justify-content:space-between;}
+.np-close{width:34px;height:34px;border:none;border-radius:9px;background:#eeede6;color:#1a1a18;font-size:17px;line-height:1;cursor:pointer;}
+.np-close:hover{background:#e6e5dd;}
+.np-help{font-size:13px;color:#5f5f55;margin:6px 0 13px;}
+.np-card{display:flex;gap:12px;border:1px solid #e4e2da;border-radius:12px;padding:12px;margin-bottom:9px;cursor:pointer;transition:background .15s ease;}
+.np-card:hover{background:#f3f2ec;}
+.np-time{flex-shrink:0;align-self:flex-start;background:#eeede6;color:#1a1a18;font-size:12px;font-weight:600;padding:6px 11px;border-radius:14px;white-space:nowrap;}
+.np-main{flex:1;min-width:0;}
+.np-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
+.np-name{font-size:15px;font-weight:600;line-height:1.25;color:var(--brand);}
+.np-route{flex-shrink:0;border:none;background:#eeede6;color:var(--brand);font:inherit;font-size:11.5px;font-weight:600;padding:4px 9px;border-radius:12px;cursor:pointer;}
+.np-route:hover{background:#e6e5dd;}
+.np-desc{font-size:12.5px;line-height:1.45;color:#5f5f55;margin-top:3px;}
+.np-meta{font-size:11.5px;color:#7a7a6e;margin-top:6px;}
+@media(max-width:900px){.tb .tbt{display:none;}.tb{padding:0 12px;height:38px;}#brandName{font-size:14px;}#brandSub{font-size:10px;}.rb{width:40px;height:40px;}#legend{font-size:12px;gap:10px;bottom:78px;}#strip{height:52px;}}
 </style>
 </head>
 <body>
@@ -307,16 +413,27 @@ ${introHtml}
 ${logoHtml}
 <div id="zoneCardBackdrop"></div><div id="zoneCard"><button class="zc-close" aria-label="Close" onclick="hideZoneCard()">&#10005;</button><div id="zcImages"></div><div id="zcDetail"></div></div>
 <div id="imgLightbox"><div id="imgLbFrame"><img id="imgLbImg" alt=""><button id="imgLbClose" aria-label="Close">&#10005;</button></div></div>
-<button id="sbToggle" onclick="toggleSceneSidebar()" title="Hide scene list" aria-label="Hide scene list">
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-</button>
-<div id="sceneSidebar"></div>
-<div id="controls">
-  <button class="ctrl" onclick="move('up')">▲</button><button class="ctrl" onclick="move('dn')">▼</button>
-  <button class="ctrl" onclick="move('lt')">◀</button><button class="ctrl" onclick="move('rt')">▶</button>
-  <button class="ctrl" onclick="move('zi')">+</button><button class="ctrl" onclick="move('zo')">−</button>
-  <button class="ctrl" onclick="toggleFS()">⛶</button>
+<div id="brand" class="chip"><div id="brandMark"></div><div style="min-width:0"><div id="brandName"></div><div id="brandSub"></div></div></div>
+<div id="topbar">
+  <div style="position:relative" id="tbFilterW"><button class="tb chip" id="tbFilter" type="button"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8.5V19l-4 2v-8.5z"/></svg><span class="tbt">Filter</span></button><div class="dd" id="ddFilter"></div></div>
+  <div style="position:relative" id="tbNearbyW"><button class="tb chip" id="tbNearby" type="button"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 21V4"/><path d="M7 4h9l-2 3 2 3H7"/></svg><span class="tbt">Nearby</span></button></div>
+  <div style="position:relative" id="tbEnquiryW"><button class="tb chip accent" id="tbEnquiry" type="button"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="tbt">Enquiry</span></button></div>
+  <div style="position:relative" id="tbCallW"><button class="tb chip" id="tbCall" type="button"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/></svg><span class="tbt">Call</span></button></div>
+  <div style="position:relative" id="tbLocationW"><button class="tb chip" id="tbLocation" type="button"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.1-7-11.5a7 7 0 0 1 14 0C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg><span class="tbt">Location</span></button></div>
 </div>
+<div id="nearbyPanel"><div class="np-head"><div class="np-title">Nearby landmarks</div><button class="np-close" id="npClose" type="button" aria-label="Close">&times;</button></div><p class="np-help">Tap a place to turn the view towards it.</p><div id="npList"></div></div>
+<div id="rail">
+  <button class="rb" id="rbIn" type="button" title="Zoom in" aria-label="Zoom in"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="rb" id="rbOut" type="button" title="Zoom out" aria-label="Zoom out"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg></button>
+  <button class="rb" id="rbTop" type="button" title="Top view" aria-label="Top view"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="M12 3.5v17M3.5 12H12"/></svg></button>
+  <button class="rb" id="rbLook" type="button" title="Look around" aria-label="Look around"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
+  <button class="rb" id="rbMotion" type="button" title="Move your phone to look around" aria-label="Motion control"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg></button>
+  <button class="rb" id="rbScenes" type="button" title="Scenes" aria-label="Scenes"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></button>
+  <button class="rb" id="rbFs" type="button" title="Fullscreen" aria-label="Fullscreen"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+</div>
+<div id="legend" class="chip"></div>
+<div id="strip" class="chip"></div>
+<div id="sceneSidebar" class="hidden"></div>
 <script type="importmap">
 {"imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@${THREE_VERSION}/build/three.module.js",
@@ -326,9 +443,10 @@ ${logoHtml}
 <script type="module">
 import { Viewer } from 'https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@${PSV_VERSION}/index.module.min.js';
 import { MarkersPlugin } from 'https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@${PSV_VERSION}/index.module.min.js';
+import { GyroscopePlugin } from 'https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/gyroscope-plugin@${PSV_VERSION}/index.module.min.js';
 ${autorotateImport}
 
-var TOURS=${toursJson};var SM=${sceneListJson};
+var TOURS=${toursJson};var SM=${sceneListJson};var BRAND=${brandJson};var STATUS_COLORS=${statusColorsJson};
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 // Two-hex-digit alpha suffix for a zone's fill color -- hand-synced copy of
@@ -409,14 +527,16 @@ function _planDecalImage(shapes,bbox,color,opacity){
 // property assignment, not style.setProperty()), which doesn't reliably
 // set CSS custom properties. An inline style="..." attribute, parsed by
 // the browser while setting innerHTML, doesn't go through that code path.
-function landmarkHtml(label,height,color,labelColor,animate){
+function landmarkHtml(label,height,color,labelColor,animate,sublabel){
   var h=(typeof height==='number'&&isFinite(height))?height:48;
-  var c=/^#[0-9a-f]{6}$/i.test(color||'')?color:'#3730a3';
+  // The editor's default stick colour becomes the tour's accent yellow; a
+  // colour picked on purpose is kept.
+  var c=/^#[0-9a-f]{6}$/i.test(color||'')&&color.toLowerCase()!=='#3730a3'?color:'#f5b800';
   var lc=/^#[0-9a-f]{6}$/i.test(labelColor||'')?labelColor:'#14141a';
   // lm-anim starts the line collapsed (see the .lm.lm-anim CSS rules) --
   // _updateLandmarkAnim adds lm-in-view the moment the camera pans this
   // landmark into the visible frame, which is what actually grows it.
-  return '<div class="lm'+(animate?' lm-anim':'')+'" style="--lm-height:'+h+'px;--lm-color:'+c+';--lm-label-color:'+lc+'"><div class="lm-label">'+esc(label||'Landmark')+'</div><div class="lm-line"></div><div class="lm-dot"></div></div>';
+  return '<div class="lm'+(animate?' lm-anim':'')+'" style="--lm-height:'+h+'px;--lm-color:'+c+';--lm-label-color:'+lc+'"><div class="lm-label">'+esc(label||'Landmark')+(sublabel?'<div><span class="lm-pill">'+esc(sublabel)+'</span></div>':'')+'</div><div class="lm-line"></div><div class="lm-dot"></div></div>';
 }
 // Built for the actionType 'info' case only -- fed straight into a marker's
 // own config.content, which Photo Sphere Viewer's markers-plugin already
@@ -449,7 +569,7 @@ function arrowMarker(h){
   var extra={visible:!h.startHidden};
   if(h.actionType==='info') extra.content=hsInfoContent(h);
   var d={target:h.target,actionType:h.actionType,linkUrl:h.linkUrl,toggleTargetId:h.toggleTargetId,infoImageUrl:h.infoImageUrl,yaw:h.yaw,pitch:h.pitch};
-  if(h.type==='landmark'){return Object.assign({id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor,h.animateLine),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:d},extra);}
+  if(h.type==='landmark'){return Object.assign({id:'hs_'+h.id,type:'html',html:landmarkHtml(h.label,h.size,h.color,h.labelColor,h.animateLine,h.sublabel),anchor:'bottom center',position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},data:d},extra);}
   // Floor decal: a real 3D plane (imageLayer), placed as a single point +
   // a 3-axis rotation object -- rotation.yaw/pitch/roll map to Y/X/Z axis
   // rotation respectively (confirmed from PSV's own Marker3D source), and
@@ -493,7 +613,7 @@ function arrowMarker(h){
   return Object.assign({id:'hs_'+h.id,type:'image',image:h.customIconUrl||h.gif,size:{width:h.size,height:h.size},position:{yaw:h.yaw+'deg',pitch:h.pitch+'deg'},rotation:(h.rotation||0)+'deg',tooltip:h.label||undefined,data:d},extra);
 }
 function coverMarker(c,baseHfov){return {id:'cv_'+c.id,type:'image',image:c.url,size:{width:c.size,height:c.size},position:{yaw:c.yaw+'deg',pitch:c.pitch+'deg'},opacity:c.opacity,rotation:c.rotation+'deg',scale:function(zl){try{return baseHfov/viewer.dataHelper.zoomLevelToFov(zl);}catch(e){return 1;}}};}
-function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+_alphaHex(z.fillOpacity),stroke:z.borderColor||z.color,strokeWidth:'2'},visible:!z.startHidden,data:z};}
+function zoneMarker(z){return {id:'poly_'+z.id,type:'polygon',polygon:z.points.map(function(pt){return [pt[0]+'deg',pt[1]+'deg'];}),svgStyle:{fill:z.color+_alphaHex(z.fillOpacity),stroke:z.borderColor||z.color,strokeWidth:'2'},visible:_zoneShown(z),tooltip:_zoneTip(z),data:z};}
 // The zone's own label as an always-visible badge at its centre -- the
 // plot-number pill a site plan lives on. Plain arithmetic centroid, same
 // simplification lib/polygons.js's centroidOf() documents (not seam-aware),
@@ -503,8 +623,9 @@ function zoneLabelMarker(z){
   if(!z.showLabel||!z.label)return null;
   var n=z.points.length;if(!n)return null;
   var cy=0,cp=0;for(var i=0;i<n;i++){cy+=z.points[i][0];cp+=z.points[i][1];}cy/=n;cp/=n;
-  var st=z.labelStyle?' style="'+z.labelStyle+'"':'';
-  return {id:'zlabel_'+z.id,type:'html',html:'<div class="zone-label"'+st+'>'+esc(z.label)+'</div>',anchor:'center center',position:{yaw:cy+'deg',pitch:cp+'deg'},visible:!z.startHidden,style:{pointerEvents:'none'}};
+  var txt=_plotText(z.label);
+  var st=' style="--zc:'+z.color+';'+(z.labelStyle||'')+'"';
+  return {id:'zlabel_'+z.id,type:'html',html:'<div class="zone-label'+(txt.length>3?' zl-long':'')+'"'+st+'>'+esc(txt)+'</div>',anchor:'center center',position:{yaw:cy+'deg',pitch:cp+'deg'},visible:_zoneShown(z),style:{pointerEvents:'none'}};
 }
 function markersFor(id){
   var s=TOURS[id];
@@ -529,7 +650,7 @@ var viewer=new Viewer({
   defaultYaw:(first?TOURS[first].yaw:0)+'deg',
   defaultPitch:(first?TOURS[first].pitch:0)+'deg',
   minFov:30,maxFov:130,navbar:false,
-  plugins:[[MarkersPlugin,{}]${autorotatePluginEntry}],
+  plugins:[[MarkersPlugin,{}],[GyroscopePlugin,{}]${autorotatePluginEntry}],
 });
 var mp=viewer.getPlugin(MarkersPlugin);
 
@@ -708,7 +829,7 @@ viewer.addEventListener('zoom-updated',_updateLandmarkAnim);
 // point won't project. updateMarker is called only when a badge's visibility
 // actually flips -- it's a real marker mutation that fires a set-markers
 // event, so doing it on every camera event unconditionally would be heavy.
-var _LABEL_BADGE_H=22,_zlVis={};
+var _LABEL_BADGE_H=28,_zlVis={};
 function _zoneFitsLabel(z){
   var minX=1/0,maxX=-1/0,minY=1/0,maxY=-1/0;
   for(var i=0;i<z.points.length;i++){
@@ -720,7 +841,8 @@ function _zoneFitsLabel(z){
     if(pt.y<minY)minY=pt.y;
     if(pt.y>maxY)maxY=pt.y;
   }
-  return (maxX-minX)>=(((z.label||'').length||1)*7.2+20)&&(maxY-minY)>=_LABEL_BADGE_H;
+  var len=_plotText(z.label).length||1;
+  return (maxX-minX)>=Math.max(32,len*8+14)&&(maxY-minY)>=_LABEL_BADGE_H;
 }
 function _updateZoneLabels(){
   var s=_curScene&&TOURS[_curScene];
@@ -730,7 +852,7 @@ function _updateZoneLabels(){
     var fits=_zoneFitsLabel(z);
     if(_zlVis[z.id]===fits)return;
     _zlVis[z.id]=fits;
-    try{mp.updateMarker({id:'zlabel_'+z.id,visible:fits&&!z.startHidden});}catch(e){}
+    try{mp.updateMarker({id:'zlabel_'+z.id,visible:fits&&_zoneShown(z)});}catch(e){}
   });
 }
 viewer.addEventListener('position-updated',_updateZoneLabels);
@@ -786,16 +908,24 @@ function _rebuildEdgeLabels(){
   _elCamKey=null;
   _updateEdgeLabels();
 }
+// PSV projects a point behind the camera to a mirrored screen position
+// rather than null, which sent labels for out-of-view edges into empty sky.
+function _inFront(pt,cam){
+  var y=pt[0]*_DEG,p=pt[1]*_DEG;
+  return Math.cos(p)*Math.cos(cam.pitch)*Math.cos(y-cam.yaw)+Math.sin(p)*Math.sin(cam.pitch)>0.05;
+}
 function _updateEdgeLabels(){
   var s=_curScene&&TOURS[_curScene];
   if(!s)return;
   _edgeLabelSlots(s).forEach(function(slot){
     var el=_elEls[slot.z.id+'_'+slot.i];
     if(!el)return;
-    if(slot.z.startHidden){el.style.display='none';return;}
+    if(!_zoneShown(slot.z)){el.style.display='none';return;}
     var a=slot.z.points[slot.i],b=slot.z.points[(slot.i+1)%slot.z.points.length];
     var pa=null,pb=null;
     try{
+      var cam=viewer.getPosition();
+      if(!_inFront(a,cam)||!_inFront(b,cam))throw 0;
       pa=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:a[0]*Math.PI/180,pitch:a[1]*Math.PI/180});
       pb=viewer.dataHelper.sphericalCoordsToViewerCoords({yaw:b[0]*Math.PI/180,pitch:b[1]*Math.PI/180});
     }catch(e){}
@@ -878,7 +1008,224 @@ function _reclampWM(){_WMCUR.forEach(function(o){_clampWM(o.el,o.l);});}
 window.addEventListener('resize',_reclampWM);
 // _zlVis is reset here, not merged: loadScene rebuilt every marker, so a
 // badge's visibility from the previous scene no longer describes anything.
-function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();_zlVis={};_updateZoneLabels();_rebuildEdgeLabels();}
+function _onScene(id){_curScene=id;_hl(id);_wm(id);hideZoneCard();_updateLandmarkAnim();_zlVis={};_updateZoneLabels();_rebuildEdgeLabels();_renderChrome(id);}
+// ── Tour chrome: badge, top buttons, right rail, legend, plot strip ──────
+var _DEG=Math.PI/180;
+var _hiddenStatus={},_minSize=0;
+function _zoneShown(z){
+  if(z.startHidden||_hiddenStatus[z.status])return false;
+  return !(_minSize>0&&z.label&&!(z.sizeNum>=_minSize));
+}
+// "Plot 13 · 9,806 sq.ft · Available" on hover.
+function _zoneTip(z){
+  if(!z.label)return undefined;
+  var name=/^[0-9]/.test(z.label)?'Plot '+z.label:z.label;
+  return '<b>'+esc(name)+'</b>'+(z.sizeText?' · '+esc(z.sizeText):'')+' · '+esc(_statusName(z.status));
+}
+// "Plot 36A" -> "36A" for the bubble and strip; other labels unchanged.
+function _plotText(label){return String(label||'').replace(/^plot +/i,'');}
+function _stripText(label){var t=_plotText(label);return /^[0-9]$/.test(t)?'0'+t:t;}
+function _natKey(label){var t=_plotText(label);var m=t.match(/^([0-9]+)(.*)$/);return m?[Number(m[1]),m[2]]:[1e9,t];}
+function _statusColor(st){return STATUS_COLORS[st]||'#6366f1';}
+function _statusName(st){st=String(st||'');return st.charAt(0).toUpperCase()+st.slice(1);}
+function _show(id,on){var el=document.getElementById(id);if(el)el.style.display=on?'':'none';}
+
+// Brand badge + the contact buttons (each hidden when its field is empty).
+(function(){
+  var n=BRAND.name||'',words=n.split(' ').filter(Boolean);
+  var ini=((words[0]||'').charAt(0)+(words[1]||'').charAt(0)).toUpperCase()||'?';
+  var mark=document.getElementById('brandMark');
+  if(BRAND.logo){var im=document.createElement('img');im.src=BRAND.logo;im.alt='';mark.appendChild(im);}else{mark.textContent=ini;}
+  document.getElementById('brandName').textContent=n;
+  document.getElementById('brandSub').textContent=BRAND.subtitle||'';
+  _show('brandSub',!!BRAND.subtitle);
+  _show('tbEnquiryW',!!BRAND.whatsapp);
+  _show('tbCallW',!!BRAND.phone);
+  _show('tbLocationW',!!BRAND.maps);
+  document.getElementById('tbEnquiry').addEventListener('click',function(){
+    window.open('https://wa.me/'+BRAND.whatsapp+'?text='+encodeURIComponent('Hi, I am interested in '+n+'.'),'_blank','noopener');
+  });
+  document.getElementById('tbCall').addEventListener('click',function(){location.href='tel:'+BRAND.phone.split(' ').join('');});
+  document.getElementById('tbLocation').addEventListener('click',function(){window.open(BRAND.maps,'_blank','noopener');});
+})();
+
+// Dropdowns (Filter, Nearby): one open at a time, closed by an outside click.
+function _closeDropdowns(except){document.querySelectorAll('.dd.open').forEach(function(d){if(d!==except)d.classList.remove('open');});_syncTb();}
+function _syncTb(){
+  document.getElementById('tbFilter').classList.toggle('on',document.getElementById('ddFilter').classList.contains('open'));
+  document.getElementById('tbNearby').classList.toggle('on',document.getElementById('nearbyPanel').classList.contains('open'));
+}
+function _setNearby(open){document.getElementById('nearbyPanel').classList.toggle('open',open);_syncTb();}
+(function(){
+  var dd=document.getElementById('ddFilter'),np=document.getElementById('nearbyPanel');
+  document.getElementById('tbFilter').addEventListener('click',function(e){
+    e.stopPropagation();var open=!dd.classList.contains('open');
+    _setNearby(false);dd.classList.toggle('open',open);_syncTb();
+  });
+  dd.addEventListener('click',function(e){e.stopPropagation();});
+  document.getElementById('tbNearby').addEventListener('click',function(e){
+    e.stopPropagation();var open=!np.classList.contains('open');
+    _closeDropdowns(null);_setNearby(open);
+  });
+  document.getElementById('npClose').addEventListener('click',function(){_setNearby(false);});
+})();
+document.addEventListener('click',function(){_closeDropdowns(null);});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){_closeDropdowns(null);_setNearby(false);}});
+
+// Camera moves. animate() eases yaw, pitch and zoom together, so a move
+// from the top view to the landmarks reads as one smooth tilt-and-turn.
+function _stopAuto(){try{var ar=viewer.getPlugin('autorotate');if(ar)ar.stop();}catch(e){}}
+function _fly(yaw,pitch,hfov,ms){
+  _stopAuto();
+  var o={yaw:yaw+'deg',pitch:Math.max(-89.9,Math.min(89.9,pitch))+'deg',speed:ms||1600};
+  if(hfov){try{o.zoom=viewer.dataHelper.fovToZoomLevel(Math.max(30,Math.min(130,hfov)));}catch(e){}}
+  return viewer.animate(o);
+}
+function _camYawDeg(){try{return viewer.getPosition().yaw/_DEG;}catch(e){return 0;}}
+function _landmarks(s){return (s&&s.arrows||[]).filter(function(h){return h.type==='landmark'&&!h.startHidden;});}
+function topView(){
+  var s=_curScene&&TOURS[_curScene];if(!s)return;
+  var t=s.top||{yaw:_camYawDeg(),pitch:-89.9,hfov:s.hfov};
+  _fly(t.yaw,t.pitch,t.hfov,1800);
+}
+// Frames every landmark: centre on their average direction (circular mean,
+// so landmarks either side of the 0/360 seam average correctly), aim a
+// little above them since the callouts rise up from their points, and
+// widen the view enough to fit their spread.
+function lookAround(){
+  var s=_curScene&&TOURS[_curScene];if(!s)return;
+  var lm=_landmarks(s);
+  if(!lm.length){_fly(_camYawDeg(),0,90,2200);return;}
+  var sx=0,cx=0,p=0;
+  lm.forEach(function(h){sx+=Math.sin(h.yaw*_DEG);cx+=Math.cos(h.yaw*_DEG);p+=h.pitch;});
+  var yaw=Math.atan2(sx,cx)/_DEG;p/=lm.length;
+  var spread=0;
+  lm.forEach(function(h){var d=Math.abs(((h.yaw-yaw)%360+540)%360-180);if(d>spread)spread=d;});
+  _fly(yaw,Math.max(-30,Math.min(20,p+10)),Math.max(60,Math.min(115,spread*2+40)),2400);
+}
+function flyToLandmark(h){_fly(h.yaw,Math.min(30,h.pitch+12),70,1400);}
+var _activePlot=null;
+function flyToZone(z){
+  var n=z.points.length;if(!n)return;
+  var sx=0,cx=0,p=0;
+  z.points.forEach(function(pt){sx+=Math.sin(pt[0]*_DEG);cx+=Math.cos(pt[0]*_DEG);p+=pt[1];});
+  _activePlot=z.id;_markActivePlot();
+  _fly(Math.atan2(sx,cx)/_DEG,p/n,null,1100).then(function(){
+    // Briefly highlight the plot so it's obvious which one was picked.
+    try{mp.updateMarker({id:'poly_'+z.id,svgStyle:{fill:(z.hoverColor||z.color)+_alphaHex(z.hoverOpacity),stroke:z.borderColor||z.color,strokeWidth:'3'}});}catch(e){}
+    setTimeout(function(){try{mp.updateMarker({id:'poly_'+z.id,svgStyle:{fill:z.color+_alphaHex(z.fillOpacity),stroke:z.borderColor||z.color,strokeWidth:'2'}});}catch(e){}},1600);
+    if(Object.keys(z.detail||{}).length||(z.infoFields||[]).length)showZoneCard(z);
+  });
+}
+function _markActivePlot(){document.querySelectorAll('.pl').forEach(function(b){b.classList.toggle('active',b.dataset.id===_activePlot);});}
+
+// Filter: hiding a status hides its plots, their bubbles and edge labels,
+// and dims them in the strip.
+function _applyFilter(){
+  var s=_curScene&&TOURS[_curScene];if(!s)return;
+  s.zones.forEach(function(z){try{mp.updateMarker({id:'poly_'+z.id,visible:_zoneShown(z)});}catch(e){}});
+  _zlVis={};_updateZoneLabels();_elCamKey=null;_updateEdgeLabels();
+  document.querySelectorAll('.pl').forEach(function(b){var z=s.zones.find(function(q){return q.id===b.dataset.id;});b.classList.toggle('dim',!!z&&!_zoneShown(z));});
+}
+
+// Per-scene parts: legend counts, plot strip, Filter and Nearby lists.
+function _renderChrome(id){
+  var s=TOURS[id];if(!s)return;
+  var plots=s.zones.filter(function(z){return z.label&&!z.startHidden;});
+  plots.sort(function(a,b){var ka=_natKey(a.label),kb=_natKey(b.label);return ka[0]-kb[0]||String(ka[1]).localeCompare(String(kb[1]));});
+  var counts={};plots.forEach(function(z){counts[z.status]=(counts[z.status]||0)+1;});
+  var order=['available','booked','sold'];
+  Object.keys(counts).forEach(function(st){if(order.indexOf(st)<0)order.push(st);});
+  var lg=document.getElementById('legend');lg.innerHTML='';
+  order.forEach(function(st){
+    var sp=document.createElement('span');
+    var dot=document.createElement('i');dot.style.background=_statusColor(st);
+    var t=document.createElement('span');t.textContent=_statusName(st);
+    var b=document.createElement('b');b.textContent=String(counts[st]||0);
+    sp.appendChild(dot);sp.appendChild(t);sp.appendChild(b);lg.appendChild(sp);
+  });
+  _show('legend',plots.length>0);
+  var strip=document.getElementById('strip');strip.innerHTML='';
+  plots.forEach(function(z){
+    var btn=document.createElement('button');btn.type='button';btn.className='pl';btn.dataset.id=z.id;btn.dataset.status=z.status;
+    btn.title=z.label+' - '+_statusName(z.status);
+    var t=document.createElement('span');t.textContent=_stripText(z.label);
+    var u=document.createElement('i');u.style.background=z.color;
+    btn.appendChild(t);btn.appendChild(u);
+    btn.addEventListener('click',function(){flyToZone(z);});
+    strip.appendChild(btn);
+  });
+  _show('strip',plots.length>0);
+  var maxSize=0;plots.forEach(function(z){if(z.sizeNum>maxSize)maxSize=z.sizeNum;});
+  if(_minSize>maxSize)_minSize=0;
+  var fd=document.getElementById('ddFilter');fd.innerHTML='';
+  var ft=document.createElement('div');ft.className='fp-title';ft.textContent='Filter plots';fd.appendChild(ft);
+  var fl=document.createElement('div');fl.className='fp-label';fl.textContent='Status';fd.appendChild(fl);
+  order.forEach(function(st){
+    var row=document.createElement('label');row.className='dd-item';
+    var cb=document.createElement('input');cb.type='checkbox';cb.checked=!_hiddenStatus[st];
+    cb.addEventListener('change',function(){_hiddenStatus[st]=!cb.checked;_applyFilter();});
+    var dot=document.createElement('span');dot.className='dd-dot';dot.style.background=_statusColor(st);
+    var t=document.createElement('span');t.textContent=_statusName(st);
+    row.appendChild(cb);row.appendChild(dot);row.appendChild(t);fd.appendChild(row);
+  });
+  // Minimum size only appears once plots have a size in their Details.
+  if(maxSize>0){
+    var sl=document.createElement('div');sl.className='fp-label';sl.textContent='Minimum size';fd.appendChild(sl);
+    var rng=document.createElement('input');rng.type='range';rng.className='fp-slider';rng.min='0';rng.max=String(maxSize);rng.step=String(Math.max(1,Math.round(maxSize/100)));rng.value=String(_minSize);fd.appendChild(rng);
+    var ends=document.createElement('div');ends.className='fp-ends';
+    var e1=document.createElement('span');e1.textContent='Any';
+    var e2=document.createElement('span');
+    var fmt=function(){e2.textContent=_minSize>0?_minSize.toLocaleString('en-IN')+'+ sq.ft':'Any size';};
+    fmt();ends.appendChild(e1);ends.appendChild(e2);fd.appendChild(ends);
+    rng.addEventListener('input',function(){_minSize=Number(rng.value);fmt();_applyFilter();});
+  }
+  var rs=document.createElement('button');rs.type='button';rs.className='fp-reset';rs.textContent='Reset filter';
+  rs.addEventListener('click',function(){_hiddenStatus={};_minSize=0;_renderChrome(_curScene);});
+  fd.appendChild(rs);
+  _show('tbFilterW',plots.length>0);
+  var lm=_landmarks(s),nd=document.getElementById('npList');nd.innerHTML='';
+  lm.forEach(function(h){
+    var c=document.createElement('div');c.className='np-card';c.tabIndex=0;c.setAttribute('role','button');
+    if(h.sublabel){var tm=document.createElement('div');tm.className='np-time';tm.textContent=h.sublabel;c.appendChild(tm);}
+    var main=document.createElement('div');main.className='np-main';
+    var top=document.createElement('div');top.className='np-top';
+    var nm=document.createElement('div');nm.className='np-name';nm.textContent=h.label||'Landmark';top.appendChild(nm);
+    if(h.routeUrl){
+      var rt=document.createElement('button');rt.type='button';rt.className='np-route';rt.textContent='Route ↗';
+      rt.addEventListener('click',function(e){e.stopPropagation();window.open(h.routeUrl,'_blank','noopener');});
+      top.appendChild(rt);
+    }
+    main.appendChild(top);
+    if(h.description){var ds=document.createElement('div');ds.className='np-desc';ds.textContent=h.description;main.appendChild(ds);}
+    if(h.distanceText){var mt=document.createElement('div');mt.className='np-meta';mt.textContent=h.distanceText;main.appendChild(mt);}
+    c.appendChild(main);
+    c.addEventListener('click',function(){flyToLandmark(h);});
+    c.addEventListener('keydown',function(e){if(e.key==='Enter')flyToLandmark(h);});
+    nd.appendChild(c);
+  });
+  _show('tbNearbyW',lm.length>0);
+  if(!lm.length)_setNearby(false);
+  _activePlot=null;_applyFilter();
+}
+
+// Right rail.
+function _zoomBy(d){_stopAuto();try{viewer.animate({zoom:Math.max(0,Math.min(100,viewer.getZoomLevel()+d)),speed:300});}catch(e){}}
+document.getElementById('rbIn').addEventListener('click',function(){_zoomBy(12);});
+document.getElementById('rbOut').addEventListener('click',function(){_zoomBy(-12);});
+document.getElementById('rbTop').addEventListener('click',topView);
+document.getElementById('rbLook').addEventListener('click',lookAround);
+document.getElementById('rbFs').addEventListener('click',toggleFS);
+document.getElementById('rbScenes').addEventListener('click',toggleSceneSidebar);
+_show('rbScenes',SM.length>1);
+// Motion control only on touch devices (phones/tablets have the sensors).
+_show('rbMotion',('ontouchstart' in window)||navigator.maxTouchPoints>0);
+document.getElementById('rbMotion').addEventListener('click',function(){
+  var g;try{g=viewer.getPlugin('gyroscope');}catch(e){g=null;}
+  if(!g)return;
+  Promise.resolve(g.toggle()).then(function(){document.getElementById('rbMotion').classList.toggle('on',g.isEnabled());}).catch(function(){});
+});
+
 ${introCode}
 
 // Module-scope top-level functions are NOT global — the inline onclick="..."
@@ -887,18 +1234,11 @@ function move(d){var s=10*Math.PI/180;var p=viewer.getPosition();if(d==='up')vie
 window.move=move;
 function toggleFS(){if(!document.fullscreenElement){document.documentElement.requestFullscreen().catch(function(e){console.warn('Fullscreen request was blocked:',e&&e.message);});}else{document.exitFullscreen();}}
 window.toggleFS=toggleFS;
-// Eye / eye-off -- swapped in place rather than kept as two separate nodes,
-// so the single button's own icon always matches what a click does next.
-var _EYE='<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-var _EYE_OFF='<path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a21.8 21.8 0 0 1 5.06-6.06M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a21.8 21.8 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
-var _sidebarHidden=false;
+var _sidebarHidden=true;
 function toggleSceneSidebar(){
   _sidebarHidden=!_sidebarHidden;
-  var sb=document.getElementById('sceneSidebar'),btn=document.getElementById('sbToggle');
-  sb.classList.toggle('hidden',_sidebarHidden);
-  btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">'+(_sidebarHidden?_EYE_OFF:_EYE)+'</svg>';
-  var label=_sidebarHidden?'Show scene list':'Hide scene list';
-  btn.title=label;btn.setAttribute('aria-label',label);
+  document.getElementById('sceneSidebar').classList.toggle('hidden',_sidebarHidden);
+  document.getElementById('rbScenes').classList.toggle('on',!_sidebarHidden);
 }
 window.toggleSceneSidebar=toggleSceneSidebar;
 document.addEventListener('fullscreenchange',function(){var fs=document.fullscreenElement,sb=document.getElementById('sceneSidebar'),sbt=document.getElementById('sbToggle'),ct=document.getElementById('controls'),lg=document.getElementById('wmLayer'),zcb=document.getElementById('zoneCardBackdrop'),zc=document.getElementById('zoneCard'),lb=document.getElementById('imgLightbox');if(fs){if(sb&&!fs.contains(sb))fs.appendChild(sb);if(sbt&&!fs.contains(sbt))fs.appendChild(sbt);if(ct&&!fs.contains(ct))fs.appendChild(ct);if(lg&&!fs.contains(lg))fs.appendChild(lg);if(zcb&&!fs.contains(zcb))fs.appendChild(zcb);if(zc&&!fs.contains(zc))fs.appendChild(zc);if(lb&&!fs.contains(lb))fs.appendChild(lb);}else{if(sb)document.body.appendChild(sb);if(sbt)document.body.appendChild(sbt);if(ct)document.body.appendChild(ct);if(lg)document.body.appendChild(lg);if(zcb)document.body.appendChild(zcb);if(zc)document.body.appendChild(zc);if(lb)document.body.appendChild(lb);}});

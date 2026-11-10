@@ -28,7 +28,7 @@ import { buildTourHtml } from '@/components/360editor/project/export'
 import { ARROWS } from '@/lib/arrows'
 import { projectLogos, projectCoverups } from '@/lib/overlays'
 
-const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups, cover_logo_url'
+const PROJECT_FIELDS = 'id, name, show_intro, auto_rotate, hotspot_size, show_zone_labels, overlays, coverups, cover_logo_url, location_subtitle, contact_phone, whatsapp_number, maps_url'
 
 function isHttpUrl(u) {
     return typeof u === 'string' && /^https?:\/\//i.test(u)
@@ -164,12 +164,12 @@ export async function POST(_req, { params }) {
         const [{ data: scenes }, { data: hotspots }, polygonsRes] = await Promise.all([
             supabase
                 .from('scenes')
-                .select('id, project_id, name, url, initial_yaw, initial_pitch, initial_hfov, created_at')
+                .select('id, project_id, name, url, initial_yaw, initial_pitch, initial_hfov, top_yaw, top_pitch, top_hfov, created_at')
                 .eq('project_id', id)
                 .order('created_at'),
             supabase
                 .from('hotspots')
-                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url, plan_shapes')
+                .select('id, scene_id, project_id, pitch, yaw, arrow_type, label, target_scene_id, size, rotation, color, label_color, rotate_x, rotate_y, z_index, action_type, link_url, info_body, info_image_url, info_fields, toggle_target_id, start_hidden, animate_line, custom_icon_url, plan_shapes, sublabel, description, route_url, distance_text')
                 .eq('project_id', id),
             supabase
                 .from('polygons')

@@ -11,8 +11,8 @@
    type uses) — deliberately NOT a scale factor applied to the whole
    marker: the dot and label are fixed sizes below, so resizing only
    changes how tall the stick is, never how big the bulb/label look.
-   --lm-color tints the dot/line/label together; falls back to the default
-   indigo when a hotspot has no color set yet (pre-existing rows).
+   --lm-color tints the dot, line, card border and pill together; the default
+   is the tour's accent yellow.
 
    Mirrored (not shared — no module boundary between this and the published
    tour) in export.jsx's inline <style> block; keep both in sync. */
@@ -23,40 +23,47 @@
     flex-direction: column;
     align-items: center;
     pointer-events: auto;
-    /* A tight dark outline plus a soft shadow, applied to the whole
-       composite so the thin stick (which has no fill/border loud enough
-       on its own) still reads clearly against a bright sky or a light
-       wall — the same reasoning as the arrow sprites' own drop-shadow. */
-    filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, .75)) drop-shadow(0 2px 4px rgba(0, 0, 0, .4));
+    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .28));
 }
 
 .lm-label {
-    background: var(--lm-label-color, #14141a);
-    color: #fff;
-    font-size: 12px;
+    background: #fff;
+    color: #0b5d3b;
+    font-size: 14px;
     font-weight: 600;
-    padding: 4px 10px;
-    border-radius: 8px;
-    white-space: nowrap;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
-    margin-bottom: 4px;
-    border-bottom: 2px solid var(--lm-color, #3730a3);
+    line-height: 1.25;
+    text-align: center;
+    padding: 7px 16px 9px;
+    border-radius: 5px;
+    border: 2px solid var(--lm-color, #f5b800);
+    max-width: 240px;
+    white-space: normal;
+}
+
+.lm-pill {
+    display: inline-block;
+    margin-top: 5px;
+    background: var(--lm-color, #f5b800);
+    color: #1a1a18;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
 }
 
 .lm-line {
-    width: 3.5px;
+    width: 2.5px;
     height: var(--lm-height, 48px);
-    background: var(--lm-color, #3730a3);
-    border-radius: 2px;
+    background: var(--lm-color, #f5b800);
 }
 
 .lm-dot {
-    width: 15px;
-    height: 15px;
+    width: 13px;
+    height: 13px;
     border-radius: 50%;
-    background: var(--lm-color, #3730a3);
+    background: var(--lm-color, #f5b800);
     border: 2px solid #fff;
-    box-shadow: 0 0 0 0 var(--lm-color, #3730a3);
+    box-shadow: 0 0 0 0 var(--lm-color, #f5b800);
     animation: lm-pulse 2s ease-out infinite;
 }
 
@@ -66,21 +73,33 @@
     100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--lm-color, #3730a3) 0%, transparent); }
 }
 /* Zone label -- the always-visible plot-number badge at a zone centre.
-   Neutral light pill rather than the zone own color, so one style stays
-   legible on every fill (green/red/blue alike) instead of needing a
-   contrasting variant per status. Non-interactive so it never steals the
-   click that belongs to the zone underneath it. */
+   White circle ringed in the zone's status colour (--zc), matching the
+   published tour. Non-interactive so it never steals the click that belongs
+   to the zone underneath it. */
 .zone-label {
     pointer-events: none;
-    background: rgba(255, 255, 255, .92);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #fff;
     color: #14141a;
-    font-size: 12px;
+    border: 2.5px solid var(--zc, #22c55e);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
     font-weight: 700;
     line-height: 1;
-    padding: 4px 9px;
-    border-radius: 20px;
     white-space: nowrap;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+}
+
+.zone-label.zl-long {
+    width: auto;
+    min-width: 34px;
+    padding: 0 7px;
+    border-radius: 17px;
+    font-size: 12px;
 }
 
 /* Mild hover fade for zones. Costs no JavaScript: the markers plugin sets

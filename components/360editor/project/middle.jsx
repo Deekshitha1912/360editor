@@ -318,6 +318,13 @@ function planRegionAtDirection(ps, yaw, pitch, defaultSize) {
     return planFaceAt(planFacesFor(ps.plan_shapes).faces, minX + uv.u * (maxX - minX), maxY - uv.v * (maxY - minY))
 }
 
+// PSV projects a point behind the camera to a mirrored screen position
+// rather than null, so anything placed from a projection must check this.
+function isInFrontOfCamera(viewer, [yaw, pitch]) {
+    const cam = viewer.getPosition(), y = yaw * RAD, p = pitch * RAD
+    return Math.cos(p) * Math.cos(cam.pitch) * Math.cos(y - cam.yaw) + Math.sin(p) * Math.sin(cam.pitch) > 0.05
+}
+
 function rotationFieldsToQuaternion(rotateX, rotateY, rotateZ, arrowType) {
     const { order, negate } = rotationConventionFor(arrowType)
     const sign = negate ? -1 : 1
@@ -344,12 +351,15 @@ function quaternionToRotationFields(q, arrowType) {
 // individual plot happens to be at the current zoom, so badges fade in as
 // you zoom into a block and out again as you pull back.
 //
-// The badge's own footprint, estimated from the label's length — .zone-label
-// is 12px/700 with 9px of side padding, so ~7.2px per character plus 20px of
-// chrome is close enough for a fits/doesn't-fit test.
-const LABEL_BADGE_H_PX = 22
+// The badge's own footprint: a 34px circle, or a pill for longer text. Same
+// thresholds as the published tour's _zoneFitsLabel.
+const LABEL_BADGE_H_PX = 28
+// "Plot 36A" shows as "36A" in the circle.
+function plotBadgeText(label) {
+    return String(label || '').replace(/^plot +/i, '')
+}
 function labelBadgeWidthPx(label) {
-    return (label?.length || 1) * 7.2 + 20
+    return Math.max(32, (plotBadgeText(label).length || 1) * 8 + 14)
 }
 
 // true when the zone's projected bounding box can hold its badge. A point
@@ -473,11 +483,13 @@ const DEFAULT_HFOV = 62
 // each variable's CSS default (48px / indigo) no matter what was saved.
 // An inline `style="..."` HTML attribute, parsed by the browser itself
 // while setting innerHTML, doesn't go through that code path at all.
-function landmarkMarkerHtml(label, height, color, labelColor) {
+function landmarkMarkerHtml(label, height, color, labelColor, sublabel) {
     const h  = Number.isFinite(height) ? height : 48
-    const c  = /^#[0-9a-f]{6}$/i.test(color || '') ? color : DEFAULT_HOTSPOT_COLOR
-    const lc = /^#[0-9a-f]{6}$/i.test(labelColor || '') ? labelColor : DEFAULT_LABEL_COLOR
-    return `<div class="lm" style="--lm-height:${h}px;--lm-color:${c};--lm-label-color:${lc}"><div class="lm-label">${escapeHtml(label || 'Landmark')}</div>`
+    // The default stick colour renders as the tour's accent yellow; a colour
+    // picked on purpose is kept. Same rule as export.jsx's landmarkHtml.
+    const c  = /^#[0-9a-f]{6}$/i.test(color || '') && color.toLowerCase() !== '#3730a3' ? color : '#f5b800'
+    const pill = sublabel ? `<div><span class="lm-pill">${escapeHtml(sublabel)}</span></div>` : ''
+    return `<div class="lm" style="--lm-height:${h}px;--lm-color:${c}"><div class="lm-label">${escapeHtml(label || 'Landmark')}${pill}</div>`
         + `<div class="lm-line"></div><div class="lm-dot"></div></div>`
 }
 
@@ -791,6 +803,8 @@ export default function ProjectClient({ projectId }) {
     const [polygonToDelete, setPolygonToDelete] = useState(null) // set by requestDeletePolygon; confirmed via the modal near the other delete confirmations
     const [savingView, setSavingView]           = useState(false)
     const [savedViewTick, setSavedViewTick]     = useState(false)
+    const [savingTopView, setSavingTopView]     = useState(false)
+    const [savedTopViewTick, setSavedTopViewTick] = useState(false)
 
     // ── Polygon zones ──────────────────────────────────────────────────────
     // Always scene-scoped (no "every scene" concept — a zone marks a specific
@@ -1130,7 +1144,7 @@ export default function ProjectClient({ projectId }) {
             info_fields: h.info_fields || [],
             toggle_target_id: h.toggle_target_id || '', start_hidden: !!h.start_hidden,
             animate_line: h.animate_line !== false,
-            custom_icon_url: h.custom_icon_url || '',
+            custom_icon_url: h.custom_icon_url || '', sublabel: h.sublabel || '', description: h.description || '', route_url: h.route_url || '', distance_text: h.distance_text || '',
             plan_shapes: h.plan_shapes || null,
         })
         setActiveRightTab('directions')
@@ -1453,7 +1467,7 @@ export default function ProjectClient({ projectId }) {
                         // for why that's necessary instead of PSV's `style`
                         // marker config. The dot and label are fixed sizes
                         // in the CSS, so height only changes the stick.
-                        html: landmarkMarkerHtml(h.label, size, h.color, h.label_color),
+                        html: landmarkMarkerHtml(h.label, size, h.color, h.label_color, h.sublabel),
                         anchor: 'bottom center',
                         position: { yaw: `${h.yaw}deg`, pitch: `${h.pitch}deg` },
                         data: { hotspotDbId: h.id },
@@ -1646,14 +1660,14 @@ export default function ProjectClient({ projectId }) {
             .filter(p => p.show_label !== false && p.label)
         const zoneLabelMarkers = labeledZones.map(p => {
             const { yaw, pitch } = centroidOf(p.points)
-            // A chosen label_color overrides the badge's default light-pill
-            // CSS (background+text color, inline so it wins over .zone-label);
-            // unset renders the plain style attribute-free div as before.
-            const style = badgeLabelStyleFor(p.label_color)
+            // Ring in the zone's status colour; a chosen label_color overrides
+            // the white fill (inline, so it wins over .zone-label).
+            const text = plotBadgeText(p.label)
+            const style = `--zc:${colorForStatus(p.status, p.custom_color)};${badgeLabelStyleFor(p.label_color)}`
             return {
                 id: `zlabel_${p.id}`,
                 type: 'html',
-                html: `<div class="zone-label"${style ? ` style="${style}"` : ''}>${escapeHtml(p.label)}</div>`,
+                html: `<div class="zone-label${text.length > 3 ? ' zl-long' : ''}" style="${style}">${escapeHtml(text)}</div>`,
                 anchor: 'center center',
                 position: { yaw: `${yaw}deg`, pitch: `${pitch}deg` },
                 style: { pointerEvents: 'none' },
@@ -1760,7 +1774,7 @@ export default function ProjectClient({ projectId }) {
                             const a = z.points[i], b = z.points[(i + 1) % z.points.length]
                             const pa = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: a[0] * RAD, pitch: a[1] * RAD })
                             const pb = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: b[0] * RAD, pitch: b[1] * RAD })
-                            if (pa && pb) {
+                            if (pa && pb && isInFrontOfCamera(viewer, a) && isInFrontOfCamera(viewer, b)) {
                                 el.style.display = ''
                                 el.style.left = `${(pa.x + pb.x) / 2}px`
                                 el.style.top  = `${(pa.y + pb.y) / 2}px`
@@ -1839,7 +1853,7 @@ export default function ProjectClient({ projectId }) {
             try {
                 setPolygonVertexScreens(pp.points.map(([yaw, pitch]) => {
                     const pt = viewer.dataHelper.sphericalCoordsToViewerCoords({ yaw: yaw * RAD, pitch: pitch * RAD })
-                    return pt ? { x: pt.x, y: pt.y } : null
+                    return pt && isInFrontOfCamera(viewer, [yaw, pitch]) ? { x: pt.x, y: pt.y } : null
                 }))
             } catch { setPolygonVertexScreens([]) }
         } else if (polygonVertexScreensRef.current.length) {
@@ -1890,7 +1904,7 @@ export default function ProjectClient({ projectId }) {
                         id: 'poly_preview',
                         type: 'polyline',
                         polyline: [...dp.points, cursorPoint].map(([yaw, pitch]) => [`${yaw}deg`, `${pitch}deg`]),
-                        svgStyle: { stroke: 'var(--editor-lime-400)', strokeWidth: '3', strokeDasharray: '4,2', fill: 'none' },
+                        svgStyle: { stroke: 'var(--editor-amber-400)', strokeWidth: '3', strokeDasharray: '4,2', fill: 'none' },
                     }
                     try { mp.updateMarker(markerCfg) } catch { try { mp.addMarker(markerCfg) } catch {} }
                 }
@@ -2083,7 +2097,7 @@ export default function ProjectClient({ projectId }) {
                 z_index: 0,
                 action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
                 toggle_target_id: '', start_hidden: false, animate_line: true,
-                custom_icon_url: '',
+                custom_icon_url: '', sublabel: '', description: '', route_url: '', distance_text: '',
             })
         }
     }, [sampleAt, drawingPolygon])
@@ -2108,7 +2122,7 @@ export default function ProjectClient({ projectId }) {
                 rotate_x: 90, rotate_y: 0, z_index: 0, plan_shapes: { shapes, bbox, originalBbox: { ...bbox }, labels },
                 action_type: 'navigate', link_url: '', info_body: '', info_image_url: '', info_fields: [],
                 toggle_target_id: '', start_hidden: false, animate_line: true,
-                custom_icon_url: '',
+                custom_icon_url: '', sublabel: '', description: '', route_url: '', distance_text: '',
             })
         } catch (e) {
             setHotspotError(e?.message || 'Could not read this DXF file.')
@@ -2646,7 +2660,7 @@ export default function ProjectClient({ projectId }) {
                     toggle_target_id: popupState.toggle_target_id || null,
                     start_hidden: !!popupState.start_hidden,
                     animate_line: popupState.animate_line !== false,
-                    custom_icon_url: popupState.custom_icon_url || null,
+                    custom_icon_url: popupState.custom_icon_url || null, sublabel: popupState.sublabel || null, description: popupState.description || null, route_url: popupState.route_url || null, distance_text: popupState.distance_text || null,
                     // Only ever set at drop time by handleSitePlanFile, for
                     // 'siteplan' hotspots — omitted (undefined, stripped by
                     // JSON.stringify) for every other type.
@@ -2698,7 +2712,7 @@ export default function ProjectClient({ projectId }) {
                     toggle_target_id: popupState.toggle_target_id || null,
                     start_hidden:     !!popupState.start_hidden,
                     animate_line:     popupState.animate_line !== false,
-                    custom_icon_url:  popupState.custom_icon_url || null,
+                    custom_icon_url:  popupState.custom_icon_url || null, sublabel: popupState.sublabel || null, description: popupState.description || null, route_url: popupState.route_url || null, distance_text: popupState.distance_text || null,
                     // Present (and unchanged) for every 'siteplan' hotspot
                     // opened via onHotspotClickRef above, so a plain
                     // reposition/resize save doesn't wipe the plan back to
@@ -3144,19 +3158,22 @@ export default function ProjectClient({ projectId }) {
     // Captures wherever you've currently panned/zoomed to and saves it as this
     // scene's opening view. The column and PATCH /api/scenes/[id] support have
     // existed since the start; this is the first thing that actually calls it.
-    async function saveCurrentViewAsOpening() {
+    // which: 'initial' (opening view) or 'top' (what the tour's Top view
+    // button flies to) — same three fields, different prefix.
+    async function saveCurrentViewAsOpening(which = 'initial') {
         const viewer = psvRef.current
         if (!viewer || !activeScene) return
-        setSavingView(true)
+        const setBusy = which === 'top' ? setSavingTopView : setSavingView
+        setBusy(true)
         try {
             const pos  = viewer.getPosition()
             const hfov = viewer.dataHelper.zoomLevelToFov(viewer.getZoomLevel())
             const res = await fetch(`/api/scenes/${activeScene.id}`, {
                 method: 'PATCH', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    initial_yaw:   roundTo2(pos.yaw   * DEG),
-                    initial_pitch: roundTo2(pos.pitch * DEG),
-                    initial_hfov:  roundTo2(hfov),
+                    [`${which}_yaw`]:   roundTo2(pos.yaw   * DEG),
+                    [`${which}_pitch`]: roundTo2(pos.pitch * DEG),
+                    [`${which}_hfov`]:  roundTo2(hfov),
                 }),
             })
             if (res.ok) {
@@ -3167,11 +3184,12 @@ export default function ProjectClient({ projectId }) {
                 // angle for next time this scene is opened.
                 setScenes(prev => prev.map(s => s.id === updated.id ? updated : s))
                 setActiveScene(updated)
-                setSavedViewTick(true)
-                setTimeout(() => setSavedViewTick(false), 1800)
+                const setTick = which === 'top' ? setSavedTopViewTick : setSavedViewTick
+                setTick(true)
+                setTimeout(() => setTick(false), 1800)
             }
         } catch {}
-        finally { setSavingView(false) }
+        finally { setBusy(false) }
     }
 
     async function deleteProject() {
@@ -3408,7 +3426,8 @@ export default function ProjectClient({ projectId }) {
     const selectedCoverup = coverups.find(c => c.id === selectedOverlay)
 
     return (
-        <>
+        <div style={{ display: 'contents', fontFamily: "'Poppins',-apple-system,sans-serif" }}>
+            <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet"/>
             <div className="h-screen flex flex-col bg-editor-canvas overflow-hidden">
 
                 {/* ── Top bar ── */}
@@ -3419,11 +3438,10 @@ export default function ProjectClient({ projectId }) {
                     </Link>
                     <span className="text-editor-border">/</span>
                     <div className="flex items-center gap-2 mr-auto">
-                        <div className="w-6 h-6 bg-editor-primary rounded-md flex items-center justify-center shrink-0">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5">
-                                <circle cx="12" cy="12" r="10"/>
-                                <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                            </svg>
+                        <div className="w-7 h-7 bg-editor-primary text-white rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold overflow-hidden">
+                            {project?.cover_logo_url
+                                ? <img src={project.cover_logo_url} alt="" className="w-full h-full object-cover"/>
+                                : (project?.name || '').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase()}
                         </div>
                         <span className="text-editor-ink font-semibold text-[14px] truncate">{project?.name}</span>
                     </div>
@@ -3431,7 +3449,7 @@ export default function ProjectClient({ projectId }) {
 
                     {/* Settings */}
                     <button
-                        onClick={() => { setSettingsDraft({ name: project?.name || '', cover_logo_url: project?.cover_logo_url || '', show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3, show_zone_labels: project?.show_zone_labels!==false }); setShowSettings(true) }}
+                        onClick={() => { setSettingsDraft({ name: project?.name || '', cover_logo_url: project?.cover_logo_url || '', location_subtitle: project?.location_subtitle || '', contact_phone: project?.contact_phone || '', whatsapp_number: project?.whatsapp_number || '', maps_url: project?.maps_url || '', show_intro: project?.show_intro??true, auto_rotate: project?.auto_rotate??-3, show_zone_labels: project?.show_zone_labels!==false }); setShowSettings(true) }}
                         title="Project settings"
                         className="flex items-center justify-center w-8 h-8 rounded-lg border border-editor-border text-editor-ink-muted hover:bg-editor-subtle transition-colors shrink-0">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -3454,7 +3472,7 @@ export default function ProjectClient({ projectId }) {
                     {/* Preview */}
                     <button onClick={openPreview} disabled={!scenes.length}
                             title="Preview the tour exactly as it will be exported"
-                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-editor-border text-editor-ink-muted text-[12px] font-medium hover:bg-editor-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                            className="flex items-center gap-1.5 h-8 px-3.5 rounded-full border border-editor-border text-editor-ink-muted text-[12px] font-medium hover:bg-editor-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                             <circle cx="12" cy="12" r="3"/>
@@ -3468,7 +3486,7 @@ export default function ProjectClient({ projectId }) {
                         host with no dependency on this app staying up. */}
                     <button onClick={downloadZip} disabled={downloadingZip || !scenes.length}
                             title="Download a self-hostable .zip (HTML + all images) — upload it anywhere. Costs 1 credit per download."
-                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-editor-border text-editor-ink-muted text-[12px] font-medium hover:bg-editor-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                            className="flex items-center gap-1.5 h-8 px-3.5 rounded-full border border-editor-border text-editor-ink-muted text-[12px] font-medium hover:bg-editor-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         {downloadingZip
                             ? <><Spinner/>Building…</>
                             : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download zip</>}
@@ -3477,7 +3495,7 @@ export default function ProjectClient({ projectId }) {
                     {/* Publish — creates (or refreshes) the permanent public link */}
                     <button onClick={publishTour} disabled={flags.publishing || !scenes.length || hostingExpired}
                             title={hostingExpired ? "This tour's 1-year hosting window has ended — renew it below to publish again" : (publicUrl ? 'Push the current version to the live link' : 'Host this tour on a permanent public link')}
-                            className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-editor-primary text-white text-[12px] font-semibold hover:bg-editor-primary-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
+                            className="flex items-center gap-1.5 h-8 px-3.5 rounded-full bg-editor-accent text-editor-ink text-[12px] font-semibold hover:brightness-105 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0">
                         {flags.publishing
                             ? <><Spinner/>{publicUrl ? 'Updating…' : 'Publishing…'}</>
                             : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><polyline points="8 7 12 3 16 7"/><line x1="12" y1="3" x2="12" y2="15"/></svg>{publicUrl ? 'Update live tour' : 'Publish'}</>}
@@ -3580,7 +3598,7 @@ export default function ProjectClient({ projectId }) {
                             <div className={`absolute inset-0 flex flex-col items-center justify-center border-2 border-dashed transition-colors ${isDragOver ? 'border-editor-primary bg-editor-primary/5' : 'border-editor-border'}`}
                                  onDragOver={onViewerDragOver} onDragLeave={() => setIsDragOver(false)} onDrop={onViewerDrop}>
                                 <div className="w-16 h-16 bg-editor-primary/8 rounded-2xl flex items-center justify-center mb-4">
-                                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--editor-indigo-700)" strokeWidth="1.5">
+                                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--editor-green-700)" strokeWidth="1.5">
                                         <circle cx="12" cy="12" r="10"/>
                                         <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                                     </svg>
@@ -3635,7 +3653,7 @@ export default function ProjectClient({ projectId }) {
                                                         width: '100%',
                                                         height: '100%',
                                                         opacity: c.opacity,
-                                                        outline: `2px ${editing ? 'solid' : 'dashed'} var(--editor-indigo-700)`,
+                                                        outline: `2px ${editing ? 'solid' : 'dashed'} var(--editor-green-700)`,
                                                         outlineOffset: '2px',
                                                         display: 'block',
                                                     }}
@@ -3658,7 +3676,7 @@ export default function ProjectClient({ projectId }) {
                                                              style={{ left: '100%', top: '100%', transform: 'translate(-50%,-50%)', zIndex: 2 }}/>
                                                         {/* Rotate handle */}
                                                         <div className="absolute pointer-events-none"
-                                                             style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-indigo-700)' }}/>
+                                                             style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-green-700)' }}/>
                                                         <div onMouseDown={e => startOverlayRotate(e, c.id)}
                                                              className="absolute w-3 h-3 bg-white border-2 border-editor-primary rounded-full"
                                                              style={{ left: '50%', top: -28, transform: 'translate(-50%,-50%)', zIndex: 2, cursor: ROTATE_CURSOR }}/>
@@ -3705,7 +3723,7 @@ export default function ProjectClient({ projectId }) {
                                                 style={{
                                                     width: l.size,
                                                     opacity: l.opacity,
-                                                    outline: sel ? `2px ${editOverlay === l.id ? 'solid' : 'dashed'} var(--editor-indigo-700)` : 'none',
+                                                    outline: sel ? `2px ${editOverlay === l.id ? 'solid' : 'dashed'} var(--editor-green-700)` : 'none',
                                                     outlineOffset: '2px',
                                                     display: 'block',
                                                 }}
@@ -3847,7 +3865,7 @@ export default function ProjectClient({ projectId }) {
                                             {all && (
                                                 <svg className="absolute inset-0 w-full h-full z-20 pointer-events-none">
                                                     <polygon points={cs.map(c => `${c.x},${c.y}`).join(' ')} fill="none"
-                                                             stroke="var(--editor-indigo-700)" strokeWidth="1.5" strokeDasharray="6,4"
+                                                             stroke="var(--editor-green-700)" strokeWidth="1.5" strokeDasharray="6,4"
                                                              style={{ filter: 'drop-shadow(0 0 1.5px rgba(255,255,255,.8))' }}/>
                                                 </svg>
                                             )}
@@ -4007,7 +4025,7 @@ export default function ProjectClient({ projectId }) {
                                                         // for the same custom property. This is exactly the
                                                         // bug that made editing always show default size/
                                                         // color while the bounding box alone resized.
-                                                        dangerouslySetInnerHTML={{ __html: landmarkMarkerHtml(popupState.label, size, popupState.color, popupState.label_color) }}
+                                                        dangerouslySetInnerHTML={{ __html: landmarkMarkerHtml(popupState.label, size, popupState.color, popupState.label_color, popupState.sublabel) }}
                                                     />
                                                 ) : (
                                                     <img
@@ -4036,7 +4054,7 @@ export default function ProjectClient({ projectId }) {
                                                             // gizmo itself is enough of a "this is being
                                                             // edited" indicator, same as floor already relies
                                                             // on with no outline at all.
-                                                            outline: showGizmo ? 'none' : '2px solid var(--editor-indigo-700)',
+                                                            outline: showGizmo ? 'none' : '2px solid var(--editor-green-700)',
                                                             outlineOffset: '2px',
                                                             // NOT elevated above the gizmo (that was tried and
                                                             // reverted — see the dedicated drag-dot below):
@@ -4233,7 +4251,7 @@ export default function ProjectClient({ projectId }) {
                                                 })() : (
                                                     <>
                                                         <div className="absolute pointer-events-none"
-                                                             style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-indigo-700)' }}/>
+                                                             style={{ left: '50%', top: -28, width: 1, height: 28, borderLeft: '1px solid var(--editor-green-700)' }}/>
                                                         <div onMouseDown={startPinRotate}
                                                              className="absolute w-3 h-3 bg-white border-2 border-editor-primary rounded-full"
                                                              style={{ left: '50%', top: -28, transform: 'translate(-50%,-50%)', zIndex: 2, cursor: ROTATE_CURSOR }}/>
@@ -4262,8 +4280,8 @@ export default function ProjectClient({ projectId }) {
                                         <svg className="absolute inset-0 z-30 pointer-events-none overflow-visible" width="100%" height="100%">
                                             <polygon
                                                 points={polygonVertexScreens.map(p => `${p.x},${p.y}`).join(' ')}
-                                                fill="var(--editor-indigo-700)" fillOpacity="0.15"
-                                                stroke="var(--editor-indigo-700)" strokeWidth="2" strokeDasharray="6,3"
+                                                fill="var(--editor-green-700)" fillOpacity="0.15"
+                                                stroke="var(--editor-green-700)" strokeWidth="2" strokeDasharray="6,3"
                                             />
                                         </svg>
                                         {polygonVertexScreens.map((p, i) => (
@@ -4362,9 +4380,13 @@ export default function ProjectClient({ projectId }) {
                                 )}
 
                                 <CameraControls psvRef={psvRef}
-                                                 onSaveView={saveCurrentViewAsOpening}
+                                                 onSaveView={() => saveCurrentViewAsOpening('initial')}
                                                  savingView={savingView}
-                                                 savedView={savedViewTick}/>
+                                                 savedView={savedViewTick}
+                                                 onSaveTopView={() => saveCurrentViewAsOpening('top')}
+                                                 savingTopView={savingTopView}
+                                                 savedTopView={savedTopViewTick}
+                                                 hasTopView={activeScene.top_pitch != null}/>
                             </>
                         )}
                     </div>
@@ -4510,6 +4532,6 @@ export default function ProjectClient({ projectId }) {
                 <TourPreviewModal html={previewHtml} projectName={project?.name}
                                   onClose={() => { previewOpenRef.current = false; setPreviewHtml(null) }}/>
             )}
-        </>
+        </div>
     )
 }
